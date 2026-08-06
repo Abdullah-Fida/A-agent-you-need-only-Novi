@@ -15,7 +15,26 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from modules.image_generator import ImageGenerator
 
-app = FastAPI(title="OmniBot Control API")
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    yield
+    # Shutdown
+    if hasattr(app.state, 'notification_manager'):
+        nm = app.state.notification_manager
+        try:
+            # We must use the sync method directly in a thread to ensure it completes during shutdown
+            import threading
+            subject = "🚨 [URGENT] Daily Pulse — Bot Status: Inactive / Sleeping"
+            body = "<p>Render has sent a shutdown signal. The bot is going to sleep or shutting down.</p>"
+            html = nm._build_html_email("Bot Offline", body, accent_color="#e74c3c")
+            threading.Thread(target=nm._send_email_sync, args=(subject, html)).start()
+        except Exception:
+            pass
+
+app = FastAPI(title="OmniBot Control API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

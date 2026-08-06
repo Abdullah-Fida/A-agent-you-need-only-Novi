@@ -11,9 +11,9 @@ logger = logging.getLogger("OmniBot.AI")
 
 # Model assignments for different tasks
 MODELS = {
-    "synthesizer": "meta-llama/llama-3.1-8b-instruct:free",
-    "headline":    "meta-llama/llama-3.1-8b-instruct:free",
-    "stealth":     "meta-llama/llama-3.1-8b-instruct:free",
+    "synthesizer": "openrouter/free",
+    "headline":    "openrouter/free",
+    "stealth":     "openrouter/free",
 }
 
 
@@ -151,12 +151,11 @@ Your writing style:
 - For international news: Explain the global significance and broader implications.
 - Use a lot of relevant emojis heavily to make the post highly visual, engaging, and fun (5+ emojis per post).
 - NEVER copy-paste from sources. Synthesize in your own words.
-- Credit sources at the end with "via [Source Name]"
 - Keep posts to 3-5 lines maximum"""
 
         user_prompt = f"""Read the following news sources. Your task is to output the final written content ONLY. DO NOT output your thought process. DO NOT repeat these instructions back to me. Output ONLY the raw final posts matching the requested formatting below.
 
-1. A TELEGRAM POST (3-5 lines, strictly in English, with global/crypto/Pakistani lens as appropriate and source credit, lots of emojis)
+1. A TELEGRAM POST (3-5 lines, strictly in English, with global/crypto/Pakistani lens as appropriate, lots of emojis)
 2. A TWEET (max 280 chars, strictly in English, punchy, with 1-2 hashtags)
 3. A REDDIT POST with a title and body (strictly in English, informative, neutral tone)
 
@@ -174,9 +173,7 @@ Format your response EXACTLY like this (do not include anything outside of these
 Context: {niche_context}
 
 Sources:
-{sources_text}
-
-Credit line to use: via {credit_line}"""
+{sources_text}"""
 
 
         result = await self.generate(

@@ -168,7 +168,9 @@ async def main():
             await asyncio.sleep(600)  # 10 minutes
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(f"http://localhost:{server_port}/ping", timeout=aiohttp.ClientTimeout(total=10)):
+                    render_url = os.environ.get("RENDER_EXTERNAL_URL")
+                    ping_url = f"{render_url}/ping" if render_url else f"http://localhost:{server_port}/ping"
+                    async with session.get(ping_url, timeout=aiohttp.ClientTimeout(total=10)):
                         pass
                 logger.debug("Keep-alive self-ping successful.")
             except Exception:
@@ -184,10 +186,15 @@ async def main():
             await asyncio.sleep(1800)  # 30 minutes
             try:
                 # Check main broadcaster
-                if telegram_connected and broadcaster.bot:
+                if telegram_connected and broadcaster.client:
                     try:
-                        await broadcaster.bot.get_me()
-                        logger.info("Heartbeat: Telegram Broadcaster connected ✓")
+                        if broadcaster.client.is_connected():
+                            logger.info("Heartbeat: Telegram Broadcaster connected ✓")
+                        else:
+                            logger.error("Heartbeat: Telegram Broadcaster DISCONNECTED!")
+                            await notification_manager.notify_connection_status(
+                                "Telegram Broadcaster", False, "Connection lost."
+                            )
                     except Exception as e:
                         logger.error(f"Heartbeat: Telegram Broadcaster DISCONNECTED! {e}")
                         await notification_manager.notify_connection_status(
