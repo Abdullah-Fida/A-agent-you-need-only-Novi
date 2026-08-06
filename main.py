@@ -142,6 +142,7 @@ async def main():
         
         # Start Stealth Marketer (which uses its own Telethon client in the background)
         await stealth_marketer.connect()
+        await stealth_marketer.activate()  # Activate by default based on user request
     except Exception as e:
         logger.error(f"Failed to connect Telegram Broadcaster: {e}")
         await brain.handle_error("TelegramBroadcaster", e)
@@ -221,6 +222,21 @@ async def main():
     
     asyncio.create_task(heartbeat_monitor())
     logger.info("Heartbeat monitor started (checks every 30 minutes).")
+
+    # 13. Start Scrape & Invite Loop for Stealth Marketer
+    async def stealth_scrape_loop():
+        """Runs the Scrape and Invite cycle continuously."""
+        while True:
+            # We wait 1 hour between full cycles
+            await asyncio.sleep(3600)
+            try:
+                if stealth_marketer and stealth_marketer.is_active and not brain.is_sleep_time():
+                    await stealth_marketer.scrape_and_invite_cycle()
+            except Exception as e:
+                logger.error(f"Stealth scrape loop error: {e}")
+                
+    asyncio.create_task(stealth_scrape_loop())
+    logger.info("Stealth Scrape & Invite loop started.")
 
     # ========================================
     #   MAIN EVENT LOOP
