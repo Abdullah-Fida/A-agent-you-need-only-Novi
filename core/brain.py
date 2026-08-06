@@ -32,14 +32,14 @@ class BotBrain:
     SCHEDULE = {
         "morning_brief": {"hour": 8, "minute": 0},   # 8:00 AM PKT
         "post_slots": [
-            {"hour": 0, "minute": 25},   # 12:25 AM PKT (Test Post)
+            {"hour": 0, "minute": 40},   # 12:40 AM PKT (Test Post)
             {"hour": 10, "minute": 30},  # 10:30 AM
             {"hour": 13, "minute": 0},   # 1:00 PM
             {"hour": 16, "minute": 0},   # 4:00 PM
             {"hour": 19, "minute": 30},  # 7:30 PM
         ],
         "evening_wrap": {"hour": 21, "minute": 0},    # 9:00 PM PKT
-        "sleep_start": 1,   # 1 AM PKT (Delayed to allow the 12:25 AM post)
+        "sleep_start": 1,   # 1 AM PKT (Delayed to allow the test post)
         "sleep_end": 7,     # 7 AM PKT
     }
     
