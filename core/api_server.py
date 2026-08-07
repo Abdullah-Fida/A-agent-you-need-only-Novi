@@ -118,6 +118,20 @@ async def modify_limits(req: LimitUpdateRequest, request: Request):
         
     return {"success": True, "message": msg}
 
+@app.get("/api/logs")
+async def get_logs():
+    """Fetches the last 200 lines of the bot log to debug remote issues."""
+    try:
+        # Assuming omni_bot.log is in the working directory
+        log_path = os.path.join(os.path.dirname(__file__), "..", "omni_bot.log")
+        if not os.path.exists(log_path):
+            log_path = "omni_bot.log" # fallback to current dir
+            
+        with open(log_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+            return {"logs": lines[-200:]}
+    except Exception as e:
+        return {"error": str(e)}
 
 # ═══════════════════════════════════════════════════════════
 #  STEALTH MARKETER KILL SWITCH API
