@@ -149,7 +149,7 @@ Your writing style:
 - For crypto news: Focus on market impact, price action, regulatory changes, and investor insights.
 - For Pakistani news: Explain WHY this matters for Pakistan, the rupee, or South Asian economies.
 - For international news: Explain the global significance and broader implications.
-- Use a lot of relevant emojis heavily to make the post highly visual, engaging, and fun (5+ emojis per post).
+- Use a lot of relevant emojis heavily to make the post highly visual, engaging, and fun (5+ emojis per post). Prioritize highly animated Telegram emojis like 🔥, 🚀, 📈, 💡, ⚡, 🚨, 💸, ⚠️.
 - NEVER copy-paste from sources. Synthesize in your own words.
 - Keep posts to 3-5 lines maximum"""
 

@@ -213,7 +213,7 @@ class ContentEngine:
 Write a quick morning digest covering the top 3-5 stories.
 Format: Start with "Good morning! Here is your Daily Pulse:" followed by a numbered list.
 Each item: 1-2 lines max, with Pakistani relevance.
-90% English, 10% Urdu flavor. Use emojis sparingly.
+90% English, 10% Urdu flavor. Use animated emojis like 🔥, 🚀, 📈, 💡, ⚡, 🚨 to make it visual!
 End with "Have a productive day! — Daily Pulse PK"
 """
         
