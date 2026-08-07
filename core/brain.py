@@ -35,11 +35,12 @@ class BotBrain:
             {"hour": 0, "minute": 40},   # 12:40 AM PKT (Test Post)
             {"hour": 10, "minute": 30},  # 10:30 AM
             {"hour": 13, "minute": 0},   # 1:00 PM
+            {"hour": 13, "minute": 40},  # 1:40 PM (Makeup post for today)
             {"hour": 16, "minute": 0},   # 4:00 PM
             {"hour": 19, "minute": 30},  # 7:30 PM
         ],
         "evening_wrap": {"hour": 21, "minute": 0},    # 9:00 PM PKT
-        "sleep_start": 1,   # 1 AM PKT (Delayed to allow the test post)
+        "sleep_start": 23,  # Reverted back to 11 PM PKT since tests are done
         "sleep_end": 7,     # 7 AM PKT
     }
     
@@ -84,7 +85,15 @@ class BotBrain:
         pkt_now = self._get_pkt_now()
         hour = pkt_now.hour
         
-        if hour >= self.SCHEDULE["sleep_start"] or hour < self.SCHEDULE["sleep_end"]:
+        start = self.SCHEDULE["sleep_start"]
+        end = self.SCHEDULE["sleep_end"]
+        
+        if start > end:
+            is_sleep = hour >= start or hour < end
+        else:
+            is_sleep = hour >= start and hour < end
+            
+        if is_sleep:
             if not self.is_sleeping:
                 logger.info(f"Entering sleep mode. Current PKT time: {pkt_now.strftime('%I:%M %p')}")
                 self.is_sleeping = True
