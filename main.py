@@ -1,5 +1,5 @@
 """
-Daily Pulse PK — Omni-Channel AI Content & Marketing Bot
+Novi News — Omni-Channel AI Content & Marketing Bot
 Main Orchestrator
 
 This is the central entry point. It initializes all modules,
@@ -44,7 +44,7 @@ logger = logging.getLogger("OmniBot")
 
 async def main():
     logger.info("=" * 60)
-    logger.info("  Daily Pulse PK — Omni-Channel AI Bot Starting...")
+    logger.info("  Novi News — Omni-Channel AI Bot Starting...")
     logger.info("=" * 60)
     
     # 1. Load Configuration
@@ -61,7 +61,7 @@ async def main():
     scraper = NewsScraper(db=db)
     
     images_dir = os.path.join(os.path.dirname(__file__), "assets", "generated_images")
-    channel_name = config.channel_username or "DailyPulsePK"
+    channel_name = config.channel_username or "Novi_Network"
     image_gen = ImageGenerator(output_dir=images_dir, channel_name=channel_name, bing_cookie=config.bing_cookie)
     
     content_engine = ContentEngine(
@@ -351,7 +351,7 @@ async def main():
     # Cleanup
     if telegram_connected:
         await broadcaster.disconnect()
-    logger.info("Daily Pulse PK bot shut down gracefully.")
+    logger.info("Novi News bot shut down gracefully.")
 
 
 if __name__ == "__main__":

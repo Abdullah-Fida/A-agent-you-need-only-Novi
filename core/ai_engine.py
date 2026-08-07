@@ -125,7 +125,7 @@ class AIEngine:
     async def synthesize_news(self, raw_articles: List[Dict], niche_context: str) -> Optional[Dict]:
         """
         Takes 2-3 raw news articles about the same story and synthesizes them
-        into a Daily Pulse PK post with Pakistani/South Asian lens.
+        into a Novi News post with Pakistani/South Asian lens.
         
         Returns a dict with 'telegram_text' and 'tweet_text' keys.
         """
@@ -140,7 +140,7 @@ class AIEngine:
         
         credit_line = ", ".join(set(source_credits))
         
-        system_prompt = """You are a senior news editor for "Daily Pulse" — a Telegram channel 
+        system_prompt = """You are a senior news editor for "Novi News" — a Telegram channel 
 that delivers International News, Crypto/Web3, Business, Tech & Pakistani news to a global audience.
 
 Your writing style:

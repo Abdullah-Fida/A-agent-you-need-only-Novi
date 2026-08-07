@@ -38,7 +38,7 @@ class ArticleAgent:
         category = story.get("category", "News")
 
         prompt = f"""
-        You are an elite senior investigative journalist for Daily Pulse PK. 
+        You are an elite senior investigative journalist for Novi News. 
         Write a comprehensive, 800 to 1,200 word in-depth analytical news article based on this story:
 
         TITLE: {title}

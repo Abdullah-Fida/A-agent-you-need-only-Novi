@@ -209,12 +209,12 @@ class ContentEngine:
             stories_text += f"\n{i}. [{article['source']}] {article['title']}\n"
             stories_text += f"   {article['summary'][:150]}\n"
         
-        system_prompt = """You are the editor of "Daily Pulse PK" morning brief.
+        system_prompt = """You are the editor of "Novi News" morning brief.
 Write a quick morning digest covering the top 3-5 stories.
-Format: Start with "Good morning! Here is your Daily Pulse:" followed by a numbered list.
+Format: Start with "Good morning! Here is your Novi News brief:" followed by a numbered list.
 Each item: 1-2 lines max, with Pakistani relevance.
 90% English, 10% Urdu flavor. Use animated emojis like 🔥, 🚀, 📈, 💡, ⚡, 🚨 to make it visual!
-End with "Have a productive day! — Daily Pulse PK"
+End with "Have a productive day! — Novi News"
 """
         
         user_prompt = f"Write the morning brief from these top stories:\n{stories_text}"
@@ -234,7 +234,7 @@ End with "Have a productive day! — Daily Pulse PK"
         image_path = self.image_gen.generate(
             headline="Morning Brief",
             category="default",
-            source_credit="Daily Pulse PK"
+            source_credit="Novi News"
         )
         
         return {

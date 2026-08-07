@@ -12,7 +12,7 @@ class TwitterBroadcaster:
     Bypasses official API limits by acting like a real user.
     """
     def __init__(self, username: str, password: str, email: str, 
-                 telegram_channel: str = "@DailyPulsePK", db=None):
+                 telegram_channel: str = "@Novi_Network", db=None):
         self.username = username
         self.password = password
         self.email = email

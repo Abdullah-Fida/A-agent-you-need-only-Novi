@@ -2,21 +2,42 @@
 Image Generator Module.
 Uses Bing DALL-E 3 for photorealistic, 
 cinematic AI-generated news thumbnails.
+
+Direct httpx implementation to avoid BingImageCreator's pkg_resources dependency
+which breaks on Render/Linux (Python 3.12+).
 """
 import logging
 import os
 import io
+import re
 import random
-import json
+import asyncio
+import threading
 from datetime import datetime
 from typing import Optional
 import urllib.request
 import urllib.parse
+
+import httpx
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 
 import time
 
 logger = logging.getLogger("OmniBot.ImageGen")
+
+# ── Bing Image Creator constants ─────────────────────────
+BING_URL = "https://www.bing.com"
+FORWARDED_IP = f"13.{random.randint(104, 107)}.{random.randint(0, 255)}.{random.randint(0, 255)}"
+BING_HEADERS = {
+    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+    "accept-language": "en-US,en;q=0.9",
+    "cache-control": "max-age=0",
+    "content-type": "application/x-www-form-urlencoded",
+    "referrer": "https://www.bing.com/images/create/",
+    "origin": "https://www.bing.com",
+    "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36 Edg/110.0.1587.63",
+    "x-forwarded-for": FORWARDED_IP,
+}
 
 # ── Color palettes for different content categories ───────────────────
 COLOR_PALETTES = {
@@ -99,9 +120,13 @@ class ImageGenerator:
     """
     Generates branded post header images using Bing Image Creator (DALL-E 3)
     for stunning AI backgrounds with professional Pillow text overlays.
+    
+    Uses direct httpx calls to Bing Image Creator API instead of the 
+    BingImageCreator library to avoid pkg_resources/regex dependency issues
+    on Render (Linux/Python 3.12+).
     """
     
-    def __init__(self, output_dir: str, channel_name: str = "Daily Pulse PK",
+    def __init__(self, output_dir: str, channel_name: str = "Novi News",
                  bing_cookie: str = ""):
         self.output_dir = output_dir
         self.channel_name = channel_name
@@ -112,68 +137,176 @@ class ImageGenerator:
         os.makedirs(output_dir, exist_ok=True)
         logger.info(f"Image Generator initialized. Output: {output_dir}")
     
-    def _fetch_bing_image(self, prompt: str) -> Optional[Image.Image]:
+    async def _fetch_bing_image_async(self, prompt: str) -> Optional[Image.Image]:
         """
-        Calls Bing Image Creator (DALL-E 3) to generate an image.
+        Calls Bing Image Creator (DALL-E 3) to generate an image using direct httpx.
+        This avoids the BingImageCreator library which depends on pkg_resources/regex 
+        that break on Render's Python 3.12+ environment.
+        
         Returns a PIL Image or None on failure.
         """
         if not self.bing_cookie:
             logger.error("No Bing cookie provided.")
             return None
-            
-        import asyncio
-        from BingImageCreator import ImageGenAsync
         
-        async def fetch():
-            async_gen = ImageGenAsync(self.bing_cookie)
-            try:
-                images = await async_gen.get_images(prompt)
-                logger.info(f"Bing Image URLs: {images}")
-                if not images:
+        try:
+            url_encoded_prompt = urllib.parse.quote(prompt)
+            
+            async with httpx.AsyncClient(
+                headers=BING_HEADERS, 
+                cookies={"_U": self.bing_cookie},
+                timeout=httpx.Timeout(200.0),
+                follow_redirects=False,
+            ) as client:
+                # Step 1: Submit the image generation request (try rt=3 first, then rt=4)
+                url = f"{BING_URL}/images/create?q={url_encoded_prompt}&rt=3&FORM=GENCRE"
+                payload = f"q={url_encoded_prompt}&qs=ds"
+                
+                response = await client.post(url, data=payload)
+                
+                if "this prompt has been blocked" in response.text.lower():
+                    logger.warning("Bing blocked the prompt. Try different wording.")
                     return None
                 
-                # Try finding the first valid OIG image, fallback to first if none
-                img_url = images[0]
-                for url in images:
-                    if "OIG" in url or "mm.bing.net" in url:
-                        img_url = url
-                        break
-                        
-                req = urllib.request.Request(img_url, headers={'User-Agent': 'Mozilla/5.0'})
-                with urllib.request.urlopen(req, timeout=30) as response:
-                    data = response.read()
-                    img = Image.open(io.BytesIO(data)).convert("RGB")
-                    
-                    # Bing images are 1024x1024. Resize and crop to 1280x720
-                    img = img.resize((self.width, self.width), Image.Resampling.LANCZOS)
-                    top = (self.width - self.height) // 2
-                    bottom = top + self.height
-                    img = img.crop((0, top, self.width, bottom))
-                    return img
-            except Exception as e:
-                logger.warning(f"Bing Image generation failed: {e}")
-                return None
+                if response.status_code != 302:
+                    # Try rt=4
+                    url = f"{BING_URL}/images/create?q={url_encoded_prompt}&rt=4&FORM=GENCRE"
+                    response = await client.post(url, data=payload)
+                    if response.status_code != 302:
+                        logger.warning(f"Bing did not redirect. Status: {response.status_code}")
+                        return None
                 
-        # Run the async function synchronously
+                # Step 2: Follow redirect to get the request ID
+                redirect_url = response.headers.get("Location", "").replace("&nfy=1", "")
+                if not redirect_url or "id=" not in redirect_url:
+                    logger.warning(f"No redirect URL from Bing. Headers: {dict(response.headers)}")
+                    return None
+                    
+                request_id = redirect_url.split("id=")[-1]
+                await client.get(f"{BING_URL}{redirect_url}")
+                
+                # Step 3: Poll for results
+                polling_url = f"{BING_URL}/images/create/async/results/{request_id}?q={url_encoded_prompt}"
+                
+                start_wait = time.time()
+                while True:
+                    if time.time() - start_wait > 120:  # 2 minute timeout
+                        logger.warning("Bing image generation timed out after 120s.")
+                        return None
+                    
+                    poll_response = await client.get(polling_url)
+                    if poll_response.status_code != 200:
+                        logger.warning(f"Bing polling returned status {poll_response.status_code}")
+                        return None
+                    
+                    content = poll_response.text
+                    if content and "errorMessage" not in content:
+                        break
+                    
+                    await asyncio.sleep(2)
+                
+                # Step 4: Extract image URLs using stdlib re (not regex)
+                image_links = re.findall(r'src="([^"]+)"', content)
+                # Remove size limit parameters
+                image_links = [link.split("?w=")[0] for link in image_links]
+                # Remove duplicates
+                image_links = list(set(image_links))
+                
+                # Filter out bad/non-image URLs
+                bad_images = [
+                    "https://r.bing.com/rp/in-2zU3AJUdkgFe7ZKv19yPBHVs.png",
+                    "https://r.bing.com/rp/TX9QuO3WzcCJz1uaaSwQAz39Kb0.jpg",
+                ]
+                valid_links = [
+                    url for url in image_links 
+                    if url not in bad_images 
+                    and not url.endswith('.js') 
+                    and not url.endswith('.svg')
+                    and not url.endswith('.gz.js')
+                    and 'clarity.ms' not in url
+                    and ('OIG' in url or 'mm.bing.net' in url or 'th/id/' in url)
+                ]
+                
+                if not valid_links:
+                    # Fallback: try any image-looking URL
+                    valid_links = [
+                        url for url in image_links 
+                        if url not in bad_images 
+                        and not url.endswith('.js')
+                        and not url.endswith('.svg')
+                        and not url.endswith('.gz.js')
+                        and 'clarity.ms' not in url
+                    ]
+                
+                logger.info(f"Bing Image URLs found: {len(image_links)} total, {len(valid_links)} valid")
+                
+                if not valid_links:
+                    logger.warning("No valid image URLs found from Bing.")
+                    return None
+                
+                # Step 5: Download the best image
+                img_url = valid_links[0]
+                logger.info(f"Downloading Bing image: {img_url}")
+                
+                img_response = await client.get(img_url, headers={"User-Agent": "Mozilla/5.0"})
+                if img_response.status_code != 200:
+                    logger.warning(f"Failed to download Bing image. Status: {img_response.status_code}")
+                    return None
+                
+                img = Image.open(io.BytesIO(img_response.content)).convert("RGB")
+                
+                # Bing images are 1024x1024. Resize and crop to 1280x720
+                img = img.resize((self.width, self.width), Image.Resampling.LANCZOS)
+                top = (self.width - self.height) // 2
+                bottom = top + self.height
+                img = img.crop((0, top, self.width, bottom))
+                return img
+                
+        except Exception as e:
+            logger.warning(f"Bing Image generation failed: {e}", exc_info=True)
+            return None
+    
+    def _fetch_bing_image(self, prompt: str) -> Optional[Image.Image]:
+        """
+        Synchronous wrapper around the async Bing image fetch.
+        Handles being called from both sync and async contexts safely.
+        """
+        async def _run():
+            return await self._fetch_bing_image_async(prompt)
+        
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            
+        
         if loop.is_running():
-            # If we're already in an async context, this might fail, but ImageGenerator is run in a thread usually.
-            import threading
+            # We're inside an async context (e.g., called from content_engine).
+            # Run in a separate thread with its own event loop.
             result = None
+            error = None
+            
             def run_in_thread():
-                nonlocal result
-                result = asyncio.run(fetch())
+                nonlocal result, error
+                try:
+                    result = asyncio.run(_run())
+                except Exception as e:
+                    error = e
+            
             t = threading.Thread(target=run_in_thread)
             t.start()
-            t.join()
+            t.join(timeout=180)  # 3-minute max wait
+            
+            if error:
+                logger.warning(f"Bing image thread failed: {error}", exc_info=True)
+                return None
+            if t.is_alive():
+                logger.warning("Bing image thread timed out after 180s.")
+                return None
+                
             return result
         else:
-            return loop.run_until_complete(fetch())
+            return loop.run_until_complete(_run())
 
     def _create_gradient(self, draw: ImageDraw.Draw, 
                          color_start: tuple, color_end: tuple):
@@ -307,7 +440,7 @@ class ImageGenerator:
                     break
                 else:
                     if attempt < max_retries - 1:
-                        logger.warning(f"Bing Image fetch failed. Retrying in {retry_delay}s...")
+                        logger.warning(f"Bing Image fetch failed (attempt {attempt + 1}). Retrying in {retry_delay}s...")
                         time.sleep(retry_delay)
             
             # Fallback to gradient if AI image failed
@@ -329,5 +462,5 @@ class ImageGenerator:
             return filepath
             
         except Exception as e:
-            logger.error(f"Failed to generate image: {e}")
+            logger.error(f"Failed to generate image: {e}", exc_info=True)
             return None

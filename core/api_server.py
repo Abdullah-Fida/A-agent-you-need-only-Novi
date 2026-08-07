@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI):
         try:
             # We must use the sync method directly in a thread to ensure it completes during shutdown
             import threading
-            subject = "🚨 [URGENT] Daily Pulse — Bot Status: Inactive / Sleeping"
+            subject = "🚨 [URGENT] Novi News — Bot Status: Inactive / Sleeping"
             body = "<p>Render has sent a shutdown signal. The bot is going to sleep or shutting down.</p>"
             html = nm._build_html_email("Bot Offline", body, accent_color="#e74c3c")
             threading.Thread(target=nm._send_email_sync, args=(subject, html)).start()
@@ -55,7 +55,7 @@ app.mount("/generated_images", StaticFiles(directory=assets_dir), name="generate
 class ImageGenRequest(BaseModel):
     headline: str
     category: str = "default"
-    source_credit: str = "Daily Pulse PK"
+    source_credit: str = "Novi News"
 
 class LimitUpdateRequest(BaseModel):
     limit_type: str
@@ -184,7 +184,7 @@ async def generate_image_endpoint(req: ImageGenRequest):
     os.makedirs(output_dir, exist_ok=True)
     
     bing_cookie = os.environ.get("BING_COOKIE", "")
-    image_gen = ImageGenerator(output_dir=output_dir, channel_name="DailyPulsePK", bing_cookie=bing_cookie)
+    image_gen = ImageGenerator(output_dir=output_dir, channel_name="NoviNews", bing_cookie=bing_cookie)
     
     # Run synchronously in executor since image_gen.generate is blocking (Pillow + urllib)
     loop = asyncio.get_event_loop()

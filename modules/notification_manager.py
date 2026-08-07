@@ -145,7 +145,7 @@ class NotificationManager:
         Returns True if email delivered successfully.
         """
         prefix = "🚨 [URGENT] " if is_critical else "ℹ️ [INFO] "
-        full_subject = f"{prefix}Daily Pulse — {subject}"
+        full_subject = f"{prefix}Novi News — {subject}"
         accent = "#e74c3c" if is_critical else "#4A90D9"
 
         body_html = f'<p style="color: #c9d1d9; line-height: 1.7; font-size: 14px;">{message.replace(chr(10), "<br>")}</p>'
@@ -196,7 +196,7 @@ class NotificationManager:
         """
         subject = f"✅ Post Published — {title[:50]}"
         html = self._build_html_email("Post Published to Telegram", body, accent_color="#238636")
-        full_subject = f"✅ [POST] Daily Pulse — {subject}"
+        full_subject = f"✅ [POST] Novi News — {subject}"
 
         if self.resend_api_key or (self.sender_email and self.app_password):
             await asyncio.to_thread(self._send_email_sync, full_subject, html)
@@ -222,7 +222,7 @@ class NotificationManager:
         </div>
         """
         prefix = "⚠️" if auto_fixed else "🚨"
-        full_subject = f"{prefix} [ERROR] Daily Pulse — {module}: {type(error).__name__}"
+        full_subject = f"{prefix} [ERROR] Novi News — {module}: {type(error).__name__}"
         html = self._build_html_email(f"Error in {module}", body, accent_color=status_color)
 
         if self.resend_api_key or (self.sender_email and self.app_password):
@@ -240,7 +240,7 @@ class NotificationManager:
             <p style="color: #c9d1d9; font-size: 13px; margin: 0;">{details}</p>
         </div>
         """
-        full_subject = f"{icon} [MODULE] Daily Pulse — {module_name}: {status.upper()}"
+        full_subject = f"{icon} [MODULE] Novi News — {module_name}: {status.upper()}"
         html = self._build_html_email(f"{module_name} Status Change", body, accent_color=color)
 
         if self.resend_api_key or (self.sender_email and self.app_password):
@@ -259,7 +259,7 @@ class NotificationManager:
             </table>
         </div>
         """
-        full_subject = f"📊 [STRATEGY] Daily Pulse — {change_type}: {old_value} → {new_value}"
+        full_subject = f"📊 [STRATEGY] Novi News — {change_type}: {old_value} → {new_value}"
         html = self._build_html_email("Strategy Update", body, accent_color="#6366f1")
 
         if self.resend_api_key or (self.sender_email and self.app_password):
@@ -277,7 +277,7 @@ class NotificationManager:
             <p style="color: #c9d1d9; font-size: 13px; margin: 0;">{details}</p>
         </div>
         """
-        full_subject = f"{icon} [CONNECTION] Daily Pulse — {service}: {status}"
+        full_subject = f"{icon} [CONNECTION] Novi News — {service}: {status}"
         html = self._build_html_email(f"{service} Connection Status", body, accent_color=color)
 
         if self.resend_api_key or (self.sender_email and self.app_password):
@@ -294,7 +294,7 @@ class NotificationManager:
             <p style="color: #c9d1d9; font-size: 13px; margin: 0;">{details}</p>
         </div>
         """
-        full_subject = f"{icon} [STEALTH] Daily Pulse — {action}"
+        full_subject = f"{icon} [STEALTH] Novi News — {action}"
         html = self._build_html_email(f"Stealth Marketer: {action}", body, accent_color=color)
 
         if self.resend_api_key or (self.sender_email and self.app_password):

@@ -267,7 +267,7 @@ class BotBrain:
         gained = self.current_subscribers - self.week_start_subscribers
         
         report = (
-            f"--- Daily Pulse PK Status ---\n"
+            f"--- Novi News Status ---\n"
             f"Time: {pkt_now.strftime('%I:%M %p PKT, %b %d')}\n"
             f"Subscribers: {self.current_subscribers}\n"
             f"Weekly Goal: {gained}/{self.weekly_goal} "
