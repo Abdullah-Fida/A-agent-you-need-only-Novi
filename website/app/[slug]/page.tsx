@@ -15,6 +15,7 @@ const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://novinews.pk';
 const SITE_NAME = process.env.NEXT_PUBLIC_SITE_NAME || 'Novi News';
 
 async function getArticleBySlug(slug: string): Promise<Article | null> {
+  if (!supabase) return null;
   try {
     const { data, error } = await supabase
       .from('articles')
@@ -31,6 +32,7 @@ async function getArticleBySlug(slug: string): Promise<Article | null> {
 }
 
 async function getRelated(category: string, slug: string): Promise<Article[]> {
+  if (!supabase) return [];
   try {
     const { data } = await supabase
       .from('articles')
