@@ -765,19 +765,32 @@ async def create_post_stream(request: Request, category: str = "all"):
 
 
 class ChatProxyRequest(BaseModel):
-    api_key: str
     systemPrompt: str
     input: str
+    api_key: str = ""   # optional legacy override, for local development only
 
 @app.post("/api/chat")
 async def chat_proxy(req: ChatProxyRequest):
+    """
+    Proxies NOVI's voice brain to Groq.
+
+    The key comes from the SERVER environment (GROQ_API_KEY). It used to be
+    sent by the browser via VITE_GROQ_API_KEY, which baked the key into the
+    public JS bundle where anyone could read it.
+    """
     import aiohttp
+
+    api_key = os.environ.get("GROQ_API_KEY", "").strip() or req.api_key
+    if not api_key:
+        return {"error": {"message": "No Groq API key configured on the backend. "
+                                     "Set GROQ_API_KEY in the Render environment."}}
+
     headers = {
-        "Authorization": f"Bearer {req.api_key}",
+        "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "llama-3.1-8b-instant",
+        "model": os.environ.get("NOVI_CHAT_MODEL", "llama-3.1-8b-instant").strip(),
         "messages": [
             {"role": "system", "content": req.systemPrompt},
             {"role": "user", "content": req.input}

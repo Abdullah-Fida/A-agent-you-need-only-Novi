@@ -6,14 +6,13 @@ import { ChatGPTOrb } from './components/NoviSphere';
    Groq AI Engine — Blazing fast inference + Generous free tier
    ═══════════════════════════════════════════════════════════════ */
 async function callGroq(input, signal) {
-  const apiKey = import.meta.env.VITE_GROQ_API_KEY;
-
-  if (!apiKey || apiKey.includes('replace-this')) {
-    return {
-      display: [{ type: 'heading', value: 'API KEY MISSING' }],
-      reply: 'Please configure the Groq API key in the .env file.',
-    };
-  }
+  /*
+   * The Groq key lives on the BACKEND (GROQ_API_KEY on Render), not here.
+   * A VITE_ variable is inlined into the public bundle, so shipping the key
+   * this way made it readable by anyone who opened the site.
+   * VITE_GROQ_API_KEY is still forwarded if present, for local development.
+   */
+  const localKey = import.meta.env.VITE_GROQ_API_KEY || '';
 
   const systemPrompt = `You are NOVI — a futuristic AI assistant built for Abdullah.
 You are the SOLE control interface for the "Daily Pulse" omni-channel content bot system.
@@ -93,7 +92,7 @@ Keys:
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        api_key: apiKey,
+        api_key: localKey,   // empty in production; backend uses its own key
         systemPrompt: systemPrompt,
         input: input
       }),
