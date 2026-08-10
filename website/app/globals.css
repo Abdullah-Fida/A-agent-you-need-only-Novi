@@ -1,10 +1,12 @@
-@import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300..700;1,6..72,300..600&family=Public+Sans:wght@400;500;600;700&display=swap');
-
 /* ═══════════════════════════════════════════════════════════════
    Novi News — editorial design system
 
    Paper-and-ink, not glass-and-gradient. One accent (deep pine),
    used sparingly. Hierarchy comes from type and space, not colour.
+
+   Fonts arrive via next/font in layout.tsx, which self-hosts them and
+   sets --font-display / --font-ui. Loading them with an @import here
+   would be render-blocking and hurt Core Web Vitals.
    ═══════════════════════════════════════════════════════════════ */
 
 :root {
@@ -31,8 +33,11 @@
   /* Editorial highlight, for breaking/live only */
   --flag:         #B3261E;
 
-  --font-display: 'Newsreader', Georgia, 'Times New Roman', serif;
-  --font-ui:      'Public Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  /* --font-display and --font-ui are NOT defined here on purpose.
+     next/font sets them on <html> via its generated class, and that class
+     has the same specificity as :root — so defining them in both places
+     makes which one wins depend on stylesheet order. next/font already
+     bakes in a fallback stack, so it owns these two variables outright. */
 
   --measure:      68ch;
   --shadow:       0 1px 2px rgba(20,22,26,.04);

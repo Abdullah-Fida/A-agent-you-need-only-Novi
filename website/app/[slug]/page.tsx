@@ -1,6 +1,7 @@
 import { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import Link from 'next/link';
+import Image from 'next/image';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import { supabase, Article } from '@/lib/supabase';
@@ -107,25 +108,35 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
   const related = await getRelated(article.category, article.slug);
   const published = formatDate(article.published_at);
 
-  // NewsArticle structured data — required for Google News / Top Stories
+  // NewsArticle structured data — required for Google News / Top Stories.
+  // headline must stay under 110 characters or Google drops the rich result.
   const articleSchema = {
     '@context': 'https://schema.org',
     '@type': 'NewsArticle',
+    '@id': `${SITE_URL}/${article.slug}#article`,
     headline: article.title.slice(0, 110),
     description: article.meta_description || article.summary,
-    image: article.main_image_url ? [article.main_image_url] : undefined,
+    image: article.main_image_url
+      ? [article.main_image_url]
+      : [`${SITE_URL}/og-default.png`],
     datePublished: article.published_at,
-    dateModified: article.published_at,
-    author: { '@type': 'Organization', name: article.author || SITE_NAME, url: SITE_URL },
-    publisher: {
+    dateModified: article.created_at || article.published_at,
+    author: {
       '@type': 'Organization',
-      name: SITE_NAME,
-      logo: { '@type': 'ImageObject', url: `${SITE_URL}/logo.png` },
+      name: article.author || SITE_NAME,
+      url: `${SITE_URL}/about`,
     },
+    publisher: { '@id': `${SITE_URL}/#organization` },
     mainEntityOfPage: { '@type': 'WebPage', '@id': `${SITE_URL}/${article.slug}` },
     articleSection: article.category,
     keywords: (article.seo_keywords || []).join(', '),
     wordCount: article.word_count || undefined,
+    timeRequired: article.reading_minutes ? `PT${article.reading_minutes}M` : undefined,
+    inLanguage: 'en',
+    isAccessibleForFree: true,
+    ...(article.source_url && article.source_name
+      ? { citation: { '@type': 'CreativeWork', name: article.source_name, url: article.source_url } }
+      : {}),
   };
 
   const breadcrumbSchema = {
@@ -174,8 +185,18 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
           </header>
 
           {article.main_image_url && (
-            /* eslint-disable-next-line @next/next/no-img-element */
-            <img className="hero" src={article.main_image_url} alt={article.title} />
+            // This is the page's Largest Contentful Paint element, so it is
+            // preloaded from <head> rather than discovered in <body>.
+            // (`priority` was deprecated in Next.js 16 in favour of `preload`.)
+            <Image
+              className="hero"
+              src={article.main_image_url}
+              alt={article.title}
+              width={1200}
+              height={675}
+              sizes="(max-width: 780px) 100vw, 720px"
+              preload
+            />
           )}
 
           <div

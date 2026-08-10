@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import Image from 'next/image';
 import { Article } from '@/lib/supabase';
 
 interface ArticleCardProps {
@@ -14,11 +15,15 @@ export default function ArticleCard({ article, showImage = true }: ArticleCardPr
   return (
     <Link href={`/${article.slug}`} className="card">
       {showImage && article.main_image_url && (
-        /* eslint-disable-next-line @next/next/no-img-element */
-        <img
+        // next/image resizes, converts to AVIF/WebP and serves from the CDN,
+        // rather than hot-linking the publisher's full-size original.
+        <Image
           className="card-img"
           src={article.main_image_url}
           alt=""
+          width={600}
+          height={400}
+          sizes="(max-width: 700px) 100vw, 33vw"
           loading="lazy"
         />
       )}
