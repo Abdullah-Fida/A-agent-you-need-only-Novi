@@ -1,0 +1,830 @@
+<title>NOVI — Complete System Guide</title>
+<style>
+  :root{
+    --ground:#F7F8FA; --surface:#FFFFFF; --surface-2:#EEF1F5;
+    --ink:#151A21; --ink-2:#3D4754; --muted:#68727F;
+    --line:#DDE3EA; --line-2:#C8D1DB;
+    --accent:#0B7285; --accent-ink:#065666; --accent-wash:#E2F1F4;
+    --ok:#1B7A4B; --ok-wash:#E3F3EA;
+    --warn:#8A5D00; --warn-wash:#FBF0DA;
+    --crit:#A81F27; --crit-wash:#FBE6E7;
+    --code-bg:#EFF2F6;
+    --shadow:0 1px 2px rgba(21,26,33,.06),0 8px 24px -12px rgba(21,26,33,.18);
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --ground:#0E1116; --surface:#151A21; --surface-2:#1C222B;
+      --ink:#DEE4EC; --ink-2:#B3BDC9; --muted:#8593A2;
+      --line:#242C36; --line-2:#323C48;
+      --accent:#3FBFD4; --accent-ink:#7FD7E5; --accent-wash:#10262C;
+      --ok:#4FBF85; --ok-wash:#10241A;
+      --warn:#D9A441; --warn-wash:#2A2113;
+      --crit:#E4707A; --crit-wash:#2B1418;
+      --code-bg:#11161C;
+      --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -12px rgba(0,0,0,.7);
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#0E1116; --surface:#151A21; --surface-2:#1C222B;
+    --ink:#DEE4EC; --ink-2:#B3BDC9; --muted:#8593A2;
+    --line:#242C36; --line-2:#323C48;
+    --accent:#3FBFD4; --accent-ink:#7FD7E5; --accent-wash:#10262C;
+    --ok:#4FBF85; --ok-wash:#10241A;
+    --warn:#D9A441; --warn-wash:#2A2113;
+    --crit:#E4707A; --crit-wash:#2B1418;
+    --code-bg:#11161C;
+    --shadow:0 1px 2px rgba(0,0,0,.4),0 8px 24px -12px rgba(0,0,0,.7);
+  }
+
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%;scroll-behavior:smooth}
+  body{
+    margin:0; background:var(--ground); color:var(--ink);
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    font-size:16px; line-height:1.65; overflow-x:hidden;
+  }
+  .wrap{max-width:1180px;margin:0 auto;padding:0 24px}
+  .layout{display:grid;grid-template-columns:1fr;gap:0}
+  @media (min-width:1040px){
+    .layout{grid-template-columns:224px minmax(0,1fr);gap:56px;align-items:start}
+  }
+
+  header.top{border-bottom:1px solid var(--line);background:var(--surface)}
+  .brand{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;padding:38px 0 10px}
+  .brand h1{margin:0;font-size:clamp(30px,4.6vw,46px);line-height:1.04;
+    letter-spacing:-.028em;font-weight:760;text-wrap:balance}
+  .brand .sub{color:var(--muted);font-size:15px;
+    font-family:ui-monospace,Menlo,Consolas,monospace}
+  .tagline{margin:0 0 26px;color:var(--ink-2);max-width:66ch;font-size:17px}
+  .statusbar{display:flex;gap:8px;flex-wrap:wrap;padding-bottom:26px}
+
+  nav.rail{display:none}
+  @media (min-width:1040px){
+    nav.rail{display:block;position:sticky;top:22px;padding:44px 0 60px;max-height:100vh;overflow-y:auto}
+    nav.rail ol{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:1px}
+    nav.rail a{display:flex;gap:9px;text-decoration:none;color:var(--muted);
+      font-size:13.5px;padding:5px 9px;border-radius:6px}
+    nav.rail a:hover{color:var(--ink);background:var(--surface-2)}
+    nav.rail a:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+    nav.rail .n{color:var(--line-2);font-variant-numeric:tabular-nums;
+      font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;min-width:16px}
+    nav.rail .grp{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+      color:var(--line-2);margin:14px 0 4px 9px;font-weight:700}
+  }
+
+  main{padding:44px 0 96px;min-width:0}
+  section{scroll-margin-top:22px;margin-bottom:56px}
+  h2{margin:0 0 6px;font-size:24px;letter-spacing:-.018em;font-weight:700;
+    display:flex;align-items:baseline;gap:11px;text-wrap:balance}
+  h2 .num{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;font-weight:600;
+    color:var(--accent);background:var(--accent-wash);border-radius:5px;
+    padding:3px 7px;letter-spacing:.04em;flex:none}
+  h3{margin:30px 0 8px;font-size:16.5px;font-weight:680;letter-spacing:-.008em}
+  h4{margin:22px 0 6px;font-size:14.5px;font-weight:680;color:var(--ink)}
+  .lede{color:var(--muted);margin:0 0 22px;max-width:68ch}
+  p{max-width:68ch;color:var(--ink-2)}
+  a{color:var(--accent-ink)}
+
+  .pill{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:650;
+    letter-spacing:.05em;text-transform:uppercase;padding:4px 9px;border-radius:999px;
+    border:1px solid var(--line-2);color:var(--muted);background:var(--surface);
+    font-family:ui-monospace,Menlo,Consolas,monospace;white-space:nowrap}
+  .pill.on{color:var(--ok);background:var(--ok-wash);border-color:transparent}
+  .pill.off{color:var(--muted);background:var(--surface-2);border-color:transparent}
+  .pill.acc{color:var(--accent);background:var(--accent-wash);border-color:transparent}
+  .pill.warn{color:var(--warn);background:var(--warn-wash);border-color:transparent}
+  .dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+
+  .cards{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(248px,1fr));margin:20px 0}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:11px;
+    padding:17px 18px;box-shadow:var(--shadow)}
+  .card h4{margin:0 0 3px;font-size:15.5px;font-weight:680}
+  .card p{margin:6px 0 12px;font-size:14px;color:var(--muted);max-width:none}
+
+  /* steps */
+  ol.steps{list-style:none;counter-reset:s;margin:22px 0;padding:0}
+  ol.steps > li{counter-increment:s;position:relative;padding:0 0 22px 46px;
+    border-left:2px solid var(--line);margin-left:13px}
+  ol.steps > li:last-child{border-left-color:transparent;padding-bottom:4px}
+  ol.steps > li::before{content:counter(s);position:absolute;left:-14px;top:-2px;
+    width:26px;height:26px;border-radius:50%;background:var(--accent);color:#fff;
+    display:grid;place-items:center;font-size:12.5px;font-weight:700;
+    font-family:ui-monospace,Menlo,Consolas,monospace}
+  ol.steps h4{margin:0 0 6px;font-size:15.5px}
+  ol.steps p{margin:0 0 8px;font-size:14.5px}
+
+  .tl{margin:22px 0;border-left:2px solid var(--line);list-style:none;padding:0}
+  .tl li{display:grid;grid-template-columns:82px 1fr;gap:16px;align-items:baseline;
+    padding:9px 0 9px 18px;position:relative}
+  .tl li::before{content:"";position:absolute;left:-5px;top:17px;width:8px;height:8px;
+    border-radius:50%;background:var(--line-2);border:2px solid var(--ground)}
+  .tl li.key::before{background:var(--accent);box-shadow:0 0 0 3px var(--accent-wash)}
+  .tl time{font-family:ui-monospace,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums;
+    font-size:14px;font-weight:640;color:var(--ink)}
+  .tl .what{font-size:14.5px;color:var(--ink-2)}
+  .tl li.sleep{opacity:.62}
+  .tl li.sleep::before{background:transparent;border:2px solid var(--line-2)}
+
+  .scroll{overflow-x:auto;margin:18px 0;border:1px solid var(--line);
+    border-radius:11px;background:var(--surface)}
+  table{border-collapse:collapse;width:100%;font-size:14.5px;min-width:540px}
+  th,td{text-align:left;padding:11px 15px;border-bottom:1px solid var(--line);vertical-align:top}
+  thead th{font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);
+    font-weight:660;background:var(--surface-2);white-space:nowrap}
+  tbody tr:last-child td{border-bottom:0}
+  td.num,td .m,.m{font-family:ui-monospace,Menlo,Consolas,monospace;
+    font-variant-numeric:tabular-nums;font-size:13.5px}
+  td.num{white-space:nowrap;font-weight:640}
+  .say{font-style:italic;color:var(--ink)}
+
+  pre{background:var(--code-bg);border:1px solid var(--line);border-radius:10px;
+    padding:15px 17px;overflow-x:auto;margin:14px 0;font-size:13.5px;line-height:1.6}
+  pre,code{font-family:ui-monospace,"SF Mono","Cascadia Mono",Menlo,Consolas,monospace}
+  code{background:var(--code-bg);padding:1.5px 5px;border-radius:4px;font-size:.88em;
+    border:1px solid var(--line);color:var(--ink)}
+  pre code{background:none;border:0;padding:0;font-size:inherit}
+  .cmt{color:var(--muted)}
+
+  .note{border-radius:10px;padding:14px 17px;margin:18px 0;font-size:14.5px;
+    border:1px solid var(--line);border-left:3px solid var(--muted);background:var(--surface)}
+  .note.warn{border-left-color:var(--warn);background:var(--warn-wash);border-color:transparent}
+  .note.crit{border-left-color:var(--crit);background:var(--crit-wash);border-color:transparent}
+  .note.acc{border-left-color:var(--accent);background:var(--accent-wash);border-color:transparent}
+  .note.ok{border-left-color:var(--ok);background:var(--ok-wash);border-color:transparent}
+  .note strong{color:var(--ink)}
+  .note p{margin:0;max-width:none;color:var(--ink-2)}
+  .note p+p{margin-top:8px}
+
+  ul.tight{max-width:68ch;color:var(--ink-2);padding-left:20px}
+  ul.tight li{margin:5px 0}
+
+  .hostmap{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));margin:22px 0}
+  .host{background:var(--surface);border:1px solid var(--line);border-radius:11px;
+    padding:16px 18px;box-shadow:var(--shadow)}
+  .host .where{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11.5px;
+    text-transform:uppercase;letter-spacing:.07em;color:var(--accent);font-weight:700}
+  .host h4{margin:6px 0 4px;font-size:15.5px}
+  .host p{margin:0;font-size:13.5px;color:var(--muted);max-width:none}
+  .host .root{margin-top:10px;font-size:12.5px;color:var(--ink-2);
+    font-family:ui-monospace,Menlo,Consolas,monospace}
+
+  footer{border-top:1px solid var(--line);padding:26px 0 60px;color:var(--muted);font-size:13.5px}
+  ::selection{background:var(--accent-wash);color:var(--accent-ink)}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+  /* Print / save-as-PDF */
+  @media print{
+    body{background:#fff;color:#000;font-size:11pt}
+    nav.rail,.statusbar{display:none}
+    .layout{grid-template-columns:1fr;gap:0}
+    header.top{border-bottom:2px solid #000}
+    section{page-break-inside:auto;margin-bottom:24px}
+    h2{page-break-after:avoid;border-bottom:1px solid #999;padding-bottom:4px}
+    h3,h4{page-break-after:avoid}
+    table,pre,.note,.card,.host{page-break-inside:avoid}
+    .scroll{overflow:visible;border:1px solid #999}
+    a{color:#000;text-decoration:none}
+    pre,code{background:#f4f4f4;border:1px solid #ccc}
+  }
+</style>
+
+<header class="top">
+  <div class="wrap">
+    <div class="brand">
+      <h1>NOVI — Complete System Guide</h1>
+      <span class="sub">v2 · Aug 2026</span>
+    </div>
+    <p class="tagline">Setup, hosting, daily operation and troubleshooting for the
+      omni-channel news &amp; growth bot. Everything in one place.</p>
+    <div class="statusbar">
+      <span class="pill acc"><span class="dot"></span>168 tests passing</span>
+      <span class="pill acc"><span class="dot"></span>3 hosts</span>
+      <span class="pill acc"><span class="dot"></span>7 API accounts</span>
+      <span class="pill on"><span class="dot"></span>5 publish targets</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap layout">
+  <nav class="rail" aria-label="Contents">
+    <ol>
+      <li class="grp">Getting started</li>
+      <li><a href="#overview"><span class="n">01</span>What it is</a></li>
+      <li><a href="#hosting"><span class="n">02</span>Where to host</a></li>
+      <li><a href="#apis"><span class="n">03</span>APIs you need</a></li>
+      <li><a href="#setup"><span class="n">04</span>Setup, step by step</a></li>
+      <li><a href="#env"><span class="n">05</span>Every variable</a></li>
+      <li class="grp">How it works</li>
+      <li><a href="#daily"><span class="n">06</span>Daily operation</a></li>
+      <li><a href="#modules"><span class="n">07</span>The modules</a></li>
+      <li><a href="#models"><span class="n">08</span>AI models</a></li>
+      <li><a href="#limits"><span class="n">09</span>Limits</a></li>
+      <li><a href="#voice"><span class="n">10</span>Voice control</a></li>
+      <li class="grp">Operations</li>
+      <li><a href="#safety"><span class="n">11</span>Anti-detection</a></li>
+      <li><a href="#database"><span class="n">12</span>Database</a></li>
+      <li><a href="#api"><span class="n">13</span>HTTP API</a></li>
+      <li><a href="#fix"><span class="n">14</span>Troubleshooting</a></li>
+      <li><a href="#maint"><span class="n">15</span>Maintenance</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <!-- 01 -->
+    <section id="overview">
+      <h2><span class="num">01</span>What this system is</h2>
+      <p class="lede">One repository, three deployed pieces, six modules. You control all of
+        it by talking to an orb.</p>
+
+      <h3>What one news story produces</h3>
+      <pre><code>        ┌──────────────► Telegram channel   post + branded image
+        │
+News ───┼──────────────► Website article    800-1200 words, full SEO
+story   │
+        ├──────────────► Facebook           via Buffer, links the article
+        ├──────────────► X / Twitter        optional, off by default
+        └──────────────► Reddit             optional</code></pre>
+      <p>The website article is written <strong>first</strong>, so its URL can be linked from
+        the Facebook caption. Each destination is isolated — one failing never stops the others.</p>
+
+      <div class="note ok">
+        <p><strong>Everything starts OFF.</strong> After deploying, nothing posts until you
+        switch modules on from the dashboard. That is deliberate — it lets you verify the
+        connections before anything goes public.</p>
+      </div>
+    </section>
+
+    <!-- 02 -->
+    <section id="hosting">
+      <h2><span class="num">02</span>Where to host each piece</h2>
+      <p class="lede">All three live in the same GitHub repo. Each host points at a different
+        folder using its <em>Root Directory</em> setting.</p>
+
+      <div class="hostmap">
+        <div class="host">
+          <div class="where">Render · Web Service</div>
+          <h4>The bot (backend)</h4>
+          <p>Python. Runs the scheduler, Telegram clients, AI and the HTTP API. Must run
+             continuously.</p>
+          <div class="root">Root: <strong>/</strong> (repo root)<br>
+            Start: <code>python main.py</code></div>
+        </div>
+        <div class="host">
+          <div class="where">Vercel · Project 1</div>
+          <h4>NOVI dashboard</h4>
+          <p>React + Three.js voice interface. Static — talks to the Render backend over HTTPS.</p>
+          <div class="root">Root: <strong>novi-dashboard</strong><br>
+            Output: <code>dist</code></div>
+        </div>
+        <div class="host">
+          <div class="where">Vercel · Project 2</div>
+          <h4>News website</h4>
+          <p>Next.js. Reads articles straight from Supabase, so it needs no backend.</p>
+          <div class="root">Root: <strong>website</strong></div>
+        </div>
+      </div>
+
+      <div class="note warn">
+        <p><strong>Render's free tier sleeps after ~15 minutes of no traffic.</strong> The bot
+        pings itself every 4 minutes to stay awake, but that only works if
+        <code>RENDER_EXTERNAL_URL</code> is set to your public URL. Without it the ping goes to
+        localhost and Render still idles you — the most common cause of "it randomly stops working".</p>
+      </div>
+
+      <h3>Repository layout</h3>
+      <pre><code>A-agent-you-need-only-Novi/
+├── main.py                 <span class="cmt">← Render runs this</span>
+├── core/  modules/  database/  utils/  tools/  tests/
+├── novi-dashboard/         <span class="cmt">← Vercel project 1</span>
+└── website/                <span class="cmt">← Vercel project 2</span></code></pre>
+    </section>
+
+    <!-- 03 -->
+    <section id="apis">
+      <h2><span class="num">03</span>API accounts you need</h2>
+      <p class="lede">Seven accounts. Five are required; two are optional. Everything can run
+        on free tiers.</p>
+
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Service</th><th>Used for</th><th>Cost</th><th>Needed?</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Telegram</strong><br><span class="m">my.telegram.org</span></td>
+                <td>API ID + hash. <strong>Two phone numbers</strong>: yours for the channel, a burner for growth.</td>
+                <td>Free</td><td><span class="pill on">Required</span></td></tr>
+            <tr><td><strong>Supabase</strong><br><span class="m">supabase.com</span></td>
+                <td>Database for posts, articles, metrics and saved settings.</td>
+                <td>Free tier</td><td><span class="pill on">Required</span></td></tr>
+            <tr><td><strong>OpenRouter</strong><br><span class="m">openrouter.ai</span></td>
+                <td>AI for news posts, signals, stealth replies, captions.</td>
+                <td>Free models</td><td><span class="pill on">Required</span></td></tr>
+            <tr><td><strong>Groq</strong><br><span class="m">console.groq.com</span></td>
+                <td>NOVI's voice brain, and the article writer.</td>
+                <td>Free tier</td><td><span class="pill on">Required</span></td></tr>
+            <tr><td><strong>Resend</strong><br><span class="m">resend.com</span></td>
+                <td>Email notifications over HTTPS.</td>
+                <td>3k/month free</td><td><span class="pill on">Required</span></td></tr>
+            <tr><td><strong>Buffer</strong><br><span class="m">buffer.com</span></td>
+                <td>Facebook posting. Connect your page inside Buffer first.</td>
+                <td>Free tier</td><td><span class="pill warn">For Facebook</span></td></tr>
+            <tr><td><strong>Reddit</strong><br><span class="m">reddit.com/prefs/apps</span></td>
+                <td>Reddit cross-posting.</td>
+                <td>Free</td><td><span class="pill off">Optional</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note crit">
+        <p><strong>Why Resend and not Gmail:</strong> Render's free tier <em>blocks outbound SMTP
+        ports</em>. Gmail works locally and then silently sends nothing in production. Resend uses
+        HTTPS, so it works. Configure both — Gmail is the automatic fallback.</p>
+      </div>
+
+      <div class="note warn">
+        <p><strong>Use a second phone number for the stealth account.</strong> It scrapes and
+        messages strangers; if Telegram flags it you lose that number, not your main account.</p>
+      </div>
+    </section>
+
+    <!-- 04 -->
+    <section id="setup">
+      <h2><span class="num">04</span>Setup, step by step</h2>
+      <p class="lede">About 30–45 minutes end to end.</p>
+
+      <ol class="steps">
+        <li>
+          <h4>Create the database</h4>
+          <p>Supabase → <strong>SQL Editor</strong> → paste all of
+            <code>database/schema.sql</code> → Run. The last statement returns 8 rows; that is
+            your confirmation.</p>
+        </li>
+        <li>
+          <h4>Generate Telegram session strings</h4>
+          <p>Sessions are how the bot logs in without a code every time. Run twice — once per account:</p>
+          <pre><code>python tools/stealth_login.py send main      <span class="cmt"># your number</span>
+python tools/stealth_login.py code 12345
+
+python tools/stealth_login.py send stealth   <span class="cmt"># the burner</span>
+python tools/stealth_login.py code 12345</code></pre>
+          <p>Each prints a long string and writes it into <code>.env</code>.</p>
+        </li>
+        <li>
+          <h4>Find your group IDs</h4>
+          <p><code>python tools/list_groups.py</code> prints every chat the account can see, with IDs.
+             You need the Whale Tracker group and the invite group.</p>
+          <div class="note crit">
+            <p><strong>Supergroup IDs need a <code>-100</code> prefix.</strong>
+            <code>-5533411583</code> will not resolve; <code>-1005533411583</code> will. This one
+            detail silently disables all group posting.</p>
+          </div>
+        </li>
+        <li>
+          <h4>Connect Facebook to Buffer</h4>
+          <p>In Buffer, connect your Facebook page, then create an API token. The bot discovers
+             the page automatically.</p>
+        </li>
+        <li>
+          <h4>Deploy the backend to Render</h4>
+          <p>New <strong>Web Service</strong> → connect the repo → Root <code>/</code> →
+             Build <code>pip install -r requirements.txt</code> → Start <code>python main.py</code>.
+             Add every variable from section 05, then deploy.</p>
+        </li>
+        <li>
+          <h4>Deploy the two Vercel projects</h4>
+          <p>Import the same repo twice. Set <strong>Root Directory</strong> to
+             <code>novi-dashboard</code> for one and <code>website</code> for the other. Only the
+             website needs environment variables.</p>
+        </li>
+        <li>
+          <h4>Link them together</h4>
+          <p>Set <code>SITE_URL</code> on Render to the website's Vercel URL, so Facebook captions
+             link to your articles.</p>
+        </li>
+        <li>
+          <h4>Verify, then switch on</h4>
+          <p>Open <code>/api/health</code> — every module should report connected. Then enable
+             modules from the dashboard one at a time and watch your inbox.</p>
+        </li>
+      </ol>
+    </section>
+
+    <!-- 05 -->
+    <section id="env">
+      <h2><span class="num">05</span>Every environment variable</h2>
+
+      <h3>Render — the backend</h3>
+      <pre><code><span class="cmt"># Database</span>
+SUPABASE_URL=https://xxxx.supabase.co
+SUPABASE_KEY=<span class="cmt">anon key</span>
+
+<span class="cmt"># AI — news, signals, stealth, captions</span>
+OPENROUTER_API_KEYS=key1,key2      <span class="cmt"># commas = automatic failover</span>
+NEWS_API_PROVIDER=openrouter       <span class="cmt"># or groq / openai</span>
+
+<span class="cmt"># AI — NOVI's voice brain</span>
+GROQ_API_KEY=gsk_xxx
+
+<span class="cmt"># AI — the article writer (its own key/model)</span>
+ARTICLE_API_KEYS=gsk_xxx
+ARTICLE_API_PROVIDER=groq
+ARTICLE_MODEL=llama-3.3-70b-versatile
+
+<span class="cmt"># Telegram — main account (posts to the channel)</span>
+TELEGRAM_API_ID=       TELEGRAM_API_HASH=
+TELEGRAM_PHONE=        TELEGRAM_SESSION_STRING=
+CHANNEL_USERNAME=@Your_Channel
+
+<span class="cmt"># Telegram — burner (growth + signal copying)</span>
+STEALTH_PHONE=         STEALTH_SESSION_STRING=
+TARGET_STEALTH_GROUPS=@group1,@group2
+STEALTH_INVITE_GROUP=-100xxxxxxxxxx
+
+<span class="cmt"># Signal copier</span>
+SOURCE_SIGNAL_CHANNELS=@channel1
+SIGNAL_TARGET_GROUP=-100xxxxxxxxxx
+
+<span class="cmt"># Facebook + website</span>
+BUFFER_ACCESS_TOKEN=   BUFFER_ORGANIZATION_ID=
+BUFFER_SERVICES=facebook
+SITE_NAME=Novi News    SITE_URL=https://your-site.vercel.app
+
+<span class="cmt"># Email</span>
+RESEND_API_KEY=re_xxx
+EMAIL_SENDER=          EMAIL_APP_PASSWORD=
+EMAIL_RECEIVER=        <span class="cmt"># blank = send to sender</span>
+
+<span class="cmt"># Limits and schedule</span>
+MAX_DAILY_POSTS=6           MAX_DAILY_INVITES=2
+MAX_DAILY_REDDIT_POSTS=2    MAX_DAILY_X_POSTS=5
+MAX_DAILY_TELEGRAM_REPLIES=8
+MAX_DAILY_SIGNALS=0         <span class="cmt"># 0 = unlimited</span>
+SLEEP_START_HOUR=23         SLEEP_END_HOUR=7   <span class="cmt"># equal = 24/7</span>
+
+<span class="cmt"># Deployment</span>
+RENDER_EXTERNAL_URL=https://your-app.onrender.com
+ENABLE_TWITTER=false        <span class="cmt"># needs ~400MB RAM</span></code></pre>
+
+      <h3>Vercel — the website</h3>
+      <pre><code>NEXT_PUBLIC_SUPABASE_URL=       <span class="cmt"># same as the bot's</span>
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+NEXT_PUBLIC_SITE_URL=
+NEXT_PUBLIC_SITE_NAME=Novi News</code></pre>
+
+      <h3>Vercel — the dashboard</h3>
+      <p><strong>None.</strong> It finds the backend on its own and the Groq key lives server-side.
+         <code>VITE_API_BASE</code> can still override the backend URL if you ever need it.</p>
+
+      <div class="note crit">
+        <p><strong>Never put an API key in a <code>VITE_</code> or <code>NEXT_PUBLIC_</code>
+        variable unless it is meant to be public.</strong> Those are compiled into the JavaScript
+        bundle and readable by anyone who opens the site. The Supabase <em>anon</em> key is designed
+        for this; a Groq or OpenRouter key is not.</p>
+      </div>
+    </section>
+
+    <!-- 06 -->
+    <section id="daily">
+      <h2><span class="num">06</span>Daily operation</h2>
+      <p class="lede">All times Pakistan Standard Time (UTC+5).</p>
+
+      <ol class="tl">
+        <li class="sleep"><time>00:00</time><span class="what">Asleep — no posts, replies or invites</span></li>
+        <li><time>00:40</time><span class="what">Post slot</span></li>
+        <li class="sleep"><time>01:00</time><span class="what">Asleep until 07:00</span></li>
+        <li class="key"><time>08:00</time><span class="what">Morning brief — digest of the top 5 stories</span></li>
+        <li><time>10:30</time><span class="what">Post slot</span></li>
+        <li><time>13:00</time><span class="what">Post slot</span></li>
+        <li><time>13:40</time><span class="what">Post slot</span></li>
+        <li><time>16:00</time><span class="what">Post slot</span></li>
+        <li><time>19:30</time><span class="what">Post slot</span></li>
+        <li class="key"><time>21:00</time><span class="what">Evening wrap</span></li>
+        <li class="sleep"><time>23:00</time><span class="what">Sleep begins</span></li>
+      </ol>
+
+      <h3>What happens at a post slot</h3>
+      <pre><code>slot opens → wait 0-10 min random jitter (never posts on an exact minute)
+           → scrape 21 RSS feeds, score and cluster stories
+           → AI writes Telegram + tweet + Reddit versions
+           → generate branded image
+           → publish to Telegram
+           → write website article  (if the website module is on)
+           → cross-post to Facebook, X, Reddit
+           → email you a confirmation</code></pre>
+      <p>Each slot stays open <strong>25 minutes</strong> — longer than the maximum jitter, so a
+         post can never miss its own window. Every slot fires at most once per day.</p>
+
+      <h3>Background loops</h3>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Loop</th><th>Every</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td>Keep-alive ping</td><td class="num">4 min</td><td>Stops Render idling the instance</td></tr>
+            <tr><td>Heartbeat</td><td class="num">5 min</td><td>Checks every Telegram client and <strong>auto-reconnects</strong> dead ones</td></tr>
+            <tr><td>Stealth invite cycle</td><td class="num">1 hour</td><td>One scrape + invite pass, if all safety gates allow</td></tr>
+            <tr><td>Metric ingest</td><td class="num">3 hours</td><td>Records subscriber count, updates growth stats</td></tr>
+            <tr><td>Main tick</td><td class="num">60 sec</td><td>Checks whether a post slot is due</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Sleep window</h3>
+      <p>Default <strong>23:00 → 07:00</strong>. While asleep: no posts, no replies, no invites.
+         The bot stays connected and the API keeps answering. Change it live:</p>
+      <ul class="tight">
+        <li><span class="say">“Novi, sleep from 1am to 6am”</span></li>
+        <li><span class="say">“Novi, never sleep”</span> → 24/7</li>
+        <li><span class="say">“Novi, are you sleeping?”</span> → reports live state</li>
+      </ul>
+    </section>
+
+    <!-- 07 -->
+    <section id="modules">
+      <h2><span class="num">07</span>The modules</h2>
+      <div class="cards">
+        <div class="card"><h4>News Agent</h4>
+          <p>Scrapes 21 RSS feeds, scores by relevance, clusters related stories, writes the post
+             and image, publishes to Telegram.</p>
+          <span class="pill off"><span class="dot"></span>default off</span></div>
+        <div class="card"><h4>Signal Copier</h4>
+          <p>Watches crypto channels, strips the competitor's branding with AI, posts the cleansed
+             signal into your group. Duplicates ignored.</p>
+          <span class="pill on"><span class="dot"></span>on when connected</span></div>
+        <div class="card"><h4>Stealth Marketer</h4>
+          <p>Two modes: helpful replies in competitor groups, and opt-in invitations sent by DM.</p>
+          <span class="pill off"><span class="dot"></span>default off</span></div>
+        <div class="card"><h4>Website / Auto-Blogging</h4>
+          <p>800–1200 word article per story with full SEO. While off the writer never runs, so
+             its API key is never charged.</p>
+          <span class="pill off"><span class="dot"></span>default off</span></div>
+        <div class="card"><h4>Fan-out</h4>
+          <p>Cross-posts to Reddit, X and Facebook. Each isolated — one failing never stops the rest.</p>
+          <span class="pill acc"><span class="dot"></span>with news agent</span></div>
+        <div class="card"><h4>Growth Engine</h4>
+          <p>Measures whether any of it gains subscribers, attributes growth to actions, recommends
+             what to change.</p>
+          <span class="pill acc"><span class="dot"></span>always measuring</span></div>
+      </div>
+
+      <h3>Relevance scoring</h3>
+      <p>South-Asia keywords <code>+10</code>, crypto <code>+8</code>, general interest
+        <code>+3</code>. Stories cluster when titles overlap &gt;40%, so the AI reads 2–3
+        perspectives before writing. Highest-scoring cluster wins.</p>
+
+      <h3>SEO shipped with every article</h3>
+      <ul class="tight">
+        <li>Canonical URL, OpenGraph and Twitter cards</li>
+        <li><code>NewsArticle</code> + <code>BreadcrumbList</code> JSON-LD</li>
+        <li>AI-written meta title, description and keywords</li>
+        <li>Automatic entry in <code>/sitemap.xml</code> and <code>/feed.xml</code></li>
+        <li>Anything under 250 words is rejected rather than published</li>
+      </ul>
+    </section>
+
+    <!-- 08 -->
+    <section id="models">
+      <h2><span class="num">08</span>AI models</h2>
+      <p class="lede">Two independent engines, so the blog writer can use a stronger model without
+        touching anything else.</p>
+
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Engine</th><th>Serves</th><th>Configured by</th></tr></thead>
+          <tbody>
+            <tr><td><strong>NewsAI</strong></td><td>News agent, signals, stealth, captions, images</td>
+                <td class="m">OPENROUTER_API_KEYS</td></tr>
+            <tr><td><strong>ArticleAI</strong></td><td>The article writer only</td>
+                <td class="m">ARTICLE_API_KEYS<br><span style="opacity:.7">falls back to NewsAI if unset</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="scroll">
+        <table>
+          <thead><tr><th>#</th><th>Task</th><th>Used by</th><th>Produces</th><th>Tokens</th><th>Temp</th></tr></thead>
+          <tbody>
+            <tr><td class="num">1</td><td class="m">synthesizer</td><td>Content Engine</td><td>Telegram post + tweet + Reddit copy</td><td class="num">1200</td><td class="num">0.7</td></tr>
+            <tr><td class="num">2</td><td class="m">headline</td><td>Image Generator</td><td>5–8 word image headline</td><td class="num">30</td><td class="num">0.5</td></tr>
+            <tr><td class="num">3</td><td class="m">article</td><td>Article Agent</td><td>Full article HTML</td><td class="num">3000</td><td class="num">0.7</td></tr>
+            <tr><td class="num">4</td><td class="m">seo</td><td>Article Agent</td><td>Meta title, description, keywords, slug</td><td class="num">700</td><td class="num">0.3</td></tr>
+            <tr><td class="num">5</td><td class="m">social_caption</td><td>Buffer</td><td>Facebook caption + hashtags</td><td class="num">420</td><td class="num">0.7</td></tr>
+            <tr><td class="num">6</td><td class="m">signal_cleansing</td><td>Signal Copier</td><td>Rewritten signal, branding stripped</td><td class="num">500</td><td class="num">0.2</td></tr>
+            <tr><td class="num">7</td><td class="m">stealth</td><td>Stealth Marketer</td><td>Human-sounding replies and invitations</td><td class="num">150</td><td class="num">0.8</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p><strong>Failover:</strong> every call retries at least 3× with exponential backoff. On a
+        404 it walks a fallback model list; on 429/401 it rotates API keys. Only then does it give
+        up and email you.</p>
+
+      <h3>Switching any task to another model</h3>
+      <pre><code>MODEL_ARTICLE=deepseek/deepseek-r1
+MODEL_SEO=openai/gpt-4o-mini</code></pre>
+
+      <div class="note warn">
+        <p><strong>Avoid reasoning models for structured output.</strong> A reasoning model narrates
+        its thinking before answering. The SEO prompt once asked for “meta_title (≤60 chars)” and the
+        model spent its entire token budget counting letters, so no JSON ever arrived. Length limits
+        are now enforced in code and the parser recovers from both reasoning preambles and truncated
+        replies — but a plain instruct model is still the safer choice here.</p>
+      </div>
+    </section>
+
+    <!-- 09 -->
+    <section id="limits">
+      <h2><span class="num">09</span>Daily limits</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Setting</th><th>Default</th><th>Controls</th></tr></thead>
+          <tbody>
+            <tr><td class="m">MAX_DAILY_POSTS</td><td class="num">6</td><td>News posts to Telegram</td></tr>
+            <tr><td class="m">MAX_DAILY_REDDIT_POSTS</td><td class="num">2</td><td>Reddit cross-posts</td></tr>
+            <tr><td class="m">MAX_DAILY_X_POSTS</td><td class="num">5</td><td>X / Twitter cross-posts</td></tr>
+            <tr><td class="m">MAX_DAILY_TELEGRAM_REPLIES</td><td class="num">8</td><td>Stealth replies in groups</td></tr>
+            <tr><td class="m">MAX_DAILY_INVITES</td><td class="num">2</td><td>People invited — <strong>hard cap 30</strong></td></tr>
+            <tr><td class="m">MAX_DAILY_SIGNALS</td><td class="num">0</td><td>Signals copied (0 = unlimited)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Change any of them live: <span class="say">“Novi, increase posts to 10”</span>.</p>
+      <div class="note crit">
+        <p><strong>The invite cap is enforced in code at 30/day.</strong> Ask for more and NOVI
+        applies 30 and tells you it capped it. Telegram bans burner numbers that invite
+        aggressively, so this ceiling is not adjustable from the dashboard.</p>
+      </div>
+    </section>
+
+    <!-- 10 -->
+    <section id="voice">
+      <h2><span class="num">10</span>Voice control</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Say</th><th>Effect</th></tr></thead>
+          <tbody>
+            <tr><td class="say">“Post now”</td><td>Creates <strong>and</strong> publishes everywhere in one step</td></tr>
+            <tr><td class="say">“Create a post”</td><td>Drafts for review — does not publish</td></tr>
+            <tr><td class="say">“Publish it”</td><td>Publishes the draft you just reviewed</td></tr>
+            <tr><td class="say">“Add subscribers now”</td><td>Runs an invite cycle immediately</td></tr>
+            <tr><td class="say">“How is growth?”</td><td>Measured growth + a recommendation</td></tr>
+            <tr><td class="say">“Is everything working?”</td><td>Full health: modules, connections, awake or asleep</td></tr>
+            <tr><td class="say">“Turn on the news agent”</td><td>Starts scheduled posting</td></tr>
+            <tr><td class="say">“Turn on the website”</td><td>Starts auto-blogging</td></tr>
+            <tr><td class="say">“Increase invites to 5”</td><td>Raises the daily invite limit</td></tr>
+            <tr><td class="say">“Never sleep”</td><td>24/7 mode</td></tr>
+            <tr><td class="say">“Stop everything”</td><td>Master kill switch</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 11 -->
+    <section id="safety">
+      <h2><span class="num">11</span>Anti-detection</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Protection</th><th>Detail</th></tr></thead>
+          <tbody>
+            <tr><td>Burner account</td><td>Stealth runs on a separate number, never your personal one</td></tr>
+            <tr><td>Stable device fingerprint</td><td>Derived from account identity, so it does <strong>not</strong> change between restarts — a shifting device is an obvious bot signal</td></tr>
+            <tr><td>Sleep-hour enforcement</td><td>No invites or replies at 4 AM local time</td></tr>
+            <tr><td>Minimum invite spacing</td><td class="num">≥ 25 min between invitations</td></tr>
+            <tr><td>Hard daily cap</td><td class="num">30/day, enforced in code</td></tr>
+            <tr><td>Randomised delays</td><td>30–120 s before invites · 2–5 min before replies · 30–90 min between groups</td></tr>
+            <tr><td>Typing simulation</td><td>Realistic typing duration before every send</td></tr>
+            <tr><td>Consent-based invites</td><td>Invitation by DM — never force-added</td></tr>
+            <tr><td>Zero-trace logging</td><td>Scraped user IDs never touch console or log files</td></tr>
+            <tr><td>Auto-kill triggers</td><td><code>PeerFloodError</code>, <code>FloodWait &gt; 60s</code>, session revoked, number banned</td></tr>
+            <tr><td>Emergency lock</td><td>After auto-kill, reactivation is blocked until you manually reset</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="note crit">
+        <p><strong>One session string, one IP.</strong> Telegram permanently revokes an
+        authorization key used from two IP addresses at once. Never run the bot locally while
+        Render is running the same session — suspend the Render service first.</p>
+      </div>
+    </section>
+
+    <!-- 12 -->
+    <section id="database">
+      <h2><span class="num">12</span>Database</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Table</th><th>Holds</th></tr></thead>
+          <tbody>
+            <tr><td class="m">posts</td><td>Every post on every platform</td></tr>
+            <tr><td class="m">articles</td><td>The website's content</td></tr>
+            <tr><td class="m">metrics</td><td>Subscriber counts, limit changes, module toggles</td></tr>
+            <tr><td class="m">alerts</td><td>Dashboard notifications</td></tr>
+            <tr><td class="m">error_logs</td><td>Every error, and whether it self-healed</td></tr>
+            <tr><td class="m">scraped_users</td><td>Invite dedupe — who has been contacted</td></tr>
+            <tr><td class="m">bot_state</td><td>Toggles + limits — <strong>survives restarts</strong></td></tr>
+            <tr><td class="m">social_posts</td><td>Cross-platform delivery tracking, incl. Buffer IDs</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>The bot verifies the schema at startup and names any missing table in the log, rather than
+         discarding writes silently.</p>
+      <div class="note warn">
+        <p><strong>RLS must allow the anon role.</strong> The bot connects with the Supabase
+        <em>anon</em> key. A policy requiring <code>authenticated</code> or
+        <code>service_role</code> rejects every insert with no visible error.</p>
+      </div>
+    </section>
+
+    <!-- 13 -->
+    <section id="api">
+      <h2><span class="num">13</span>HTTP API</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Endpoint</th><th>Method</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td class="m">/api/health</td><td class="num">GET</td><td><strong>Everything at once</strong> — modules, connections, awake/asleep, email, growth</td></tr>
+            <tr><td class="m">/api/schedule</td><td class="num">GET</td><td>Sleep window and post slots</td></tr>
+            <tr><td class="m">/api/schedule/sleep_window</td><td class="num">POST</td><td>Change sleep hours</td></tr>
+            <tr><td class="m">/api/modify_limits</td><td class="num">POST</td><td>Change any limit</td></tr>
+            <tr><td class="m">/api/post_now</td><td class="num">POST</td><td>Create and publish everywhere</td></tr>
+            <tr><td class="m">/api/growth/status</td><td class="num">GET</td><td>Measured growth + recommendation</td></tr>
+            <tr><td class="m">/api/growth/invite_now</td><td class="num">POST</td><td>Run an invite cycle now</td></tr>
+            <tr><td class="m">/api/news/toggle</td><td class="num">POST</td><td>News agent on/off</td></tr>
+            <tr><td class="m">/api/website/toggle</td><td class="num">POST</td><td>Auto-blogging on/off</td></tr>
+            <tr><td class="m">/api/master_kill</td><td class="num">POST</td><td>Stop everything</td></tr>
+            <tr><td class="m">/api/stealth/emergency_reset</td><td class="num">POST</td><td>Clear the emergency lock</td></tr>
+            <tr><td class="m">/api/logs</td><td class="num">GET</td><td>Last 200 log lines</td></tr>
+            <tr><td class="m">/ping</td><td class="num">GET</td><td>Keep-alive</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 14 -->
+    <section id="fix">
+      <h2><span class="num">14</span>Troubleshooting</h2>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Symptom</th><th>Cause</th><th>Fix</th></tr></thead>
+          <tbody>
+            <tr><td>Bot “randomly stops working”</td><td>Render idled the instance</td><td>Set <code>RENDER_EXTERNAL_URL</code></td></tr>
+            <tr><td>Dashboard: “backend unreachable”</td><td>Vercel reused the build cache</td><td>Redeploy with cache disabled; the status strip names the URL it tried</td></tr>
+            <tr><td>Nothing posts to a group</td><td>Missing <code>-100</code> prefix</td><td>Use <code>tools/list_groups.py</code></td></tr>
+            <tr><td>Signals AND invites both dead</td><td>Stealth session revoked — they share it</td><td>Regenerate with <code>stealth_login.py</code></td></tr>
+            <tr><td>“used under two different IP addresses”</td><td>Bot ran locally and on Render at once</td><td>Regenerate; never run both</td></tr>
+            <tr><td>No emails</td><td>SMTP blocked on Render</td><td>Set <code>RESEND_API_KEY</code></td></tr>
+            <tr><td>Website: “No stories published yet”</td><td>Website module off, or table missing</td><td>Turn it on; run <code>schema.sql</code></td></tr>
+            <tr><td>Articles never appear</td><td>RLS blocked the anon key</td><td>Re-run <code>schema.sql</code></td></tr>
+            <tr><td>Facebook posts don't send</td><td>Buffer channel disconnected</td><td>Check <code>/api/health</code>; reconnect at buffer.com</td></tr>
+            <tr><td>Buffer returns 401</td><td>Legacy REST host</td><td>Only <code>api.buffer.com/graphql</code> accepts modern tokens</td></tr>
+            <tr><td>Settings reset after redeploy</td><td><code>bot_state</code> table missing</td><td>Run <code>schema.sql</code></td></tr>
+            <tr><td>Posts stop mid-day</td><td>Daily limit reached</td><td><span class="say">“Novi, increase posts to N”</span></td></tr>
+            <tr><td>Invites do nothing</td><td>Emergency lock engaged</td><td><code>/api/stealth/emergency_reset</code></td></tr>
+            <tr><td>Article uses the wrong model</td><td><code>ARTICLE_API_KEYS</code> empty</td><td>Provider/model alone do nothing without a key</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- 15 -->
+    <section id="maint">
+      <h2><span class="num">15</span>Maintenance</h2>
+
+      <h3>Commands</h3>
+      <pre><code>python main.py                      <span class="cmt"># run the bot</span>
+python run_tests.py                 <span class="cmt"># 168 checks — run before deploying</span>
+python tools/list_groups.py         <span class="cmt"># find a group's real ID</span>
+python tools/stealth_login.py send stealth   <span class="cmt"># regenerate a session</span></code></pre>
+
+      <h3>Routine checks</h3>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>When</th><th>Do</th></tr></thead>
+          <tbody>
+            <tr><td>Daily</td><td>Skim the notification emails — every post, signal and invite is reported</td></tr>
+            <tr><td>Weekly</td><td>Read the growth report; act on its recommendation</td></tr>
+            <tr><td>Monthly</td><td>Check Buffer is still connected and Telegram sessions are alive</td></tr>
+            <tr><td>Before deploying</td><td><code>python run_tests.py</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Key hygiene</h3>
+      <ul class="tight">
+        <li>Never commit <code>.env</code> — it is gitignored, keep it that way</li>
+        <li>Rotate any key that has been pasted into a chat, email or screenshot</li>
+        <li>Telegram session strings are <strong>full account access</strong>; treat them like passwords</li>
+        <li>To revoke a leaked session: Telegram → Settings → Devices → Terminate All Other Sessions</li>
+      </ul>
+
+      <div class="note acc">
+        <p><strong>Saving this document:</strong> press <code>Ctrl+P</code> (or <code>⌘P</code>)
+        and choose “Save as PDF”. The layout is print-optimised — the navigation is removed and
+        tables and code blocks avoid page breaks.</p>
+      </div>
+    </section>
+  </main>
+</div>
+
+<footer>
+  <div class="wrap">NOVI — Omni-Channel Bot System · full reference also in
+    <code>SYSTEM.md</code> in the repository</div>
+</footer>
