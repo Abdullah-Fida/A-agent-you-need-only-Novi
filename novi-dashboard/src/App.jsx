@@ -181,16 +181,42 @@ const THINKING_MESSAGES = [
  *   2. same origin              (when the dashboard is served BY the backend)
  *   3. http://localhost:8000    (local dev with `npm run dev`)
  */
+/*
+ * The production backend. Used whenever the dashboard is served from a host
+ * that has no backend of its own (Vercel, Netlify, GitHub Pages).
+ *
+ * This is a real fallback, not a convenience: Vite inlines env vars at BUILD
+ * time, so a "Redeploy" that reuses the build cache silently ships a bundle
+ * without VITE_API_BASE — which looks exactly like the backend being down.
+ */
+const PRODUCTION_API = 'https://a-agent-you-need-only-novi.onrender.com';
+
 const API_BASE = (() => {
+  // 1. Explicit build-time override always wins
   const explicit = import.meta.env.VITE_API_BASE;
   if (explicit) return explicit.replace(/\/$/, '');
 
-  if (typeof window !== 'undefined' && window.location?.origin) {
-    const { origin, hostname } = window.location;
-    const isLocalDevServer =
-      (hostname === 'localhost' || hostname === '127.0.0.1') &&
-      window.location.port && window.location.port !== '8000';
-    if (!isLocalDevServer) return origin;
+  if (typeof window !== 'undefined' && window.location) {
+    const { origin, hostname, port } = window.location;
+
+    // 2. Runtime override, for testing without a rebuild:
+    //    localStorage.setItem('novi_api', 'https://...')
+    try {
+      const stored = window.localStorage?.getItem('novi_api');
+      if (stored) return stored.replace(/\/$/, '');
+    } catch (_) { /* storage can be blocked */ }
+
+    const isLocalhost = hostname === 'localhost' || hostname === '127.0.0.1';
+
+    // 3. Static hosts serve the UI but have no /api — use the real backend
+    const isStaticHost = /\.(vercel\.app|netlify\.app|github\.io|pages\.dev)$/.test(hostname);
+    if (isStaticHost) return PRODUCTION_API;
+
+    // 4. Local dev server (vite on :5173) talks to the local backend
+    if (isLocalhost && port && port !== '8000') return 'http://localhost:8000';
+
+    // 5. Otherwise the backend is serving this page — same origin
+    if (!isLocalhost) return origin;
   }
   return 'http://localhost:8000';
 })();
@@ -1014,7 +1040,9 @@ function App() {
                 color: 'rgba(255,255,255,0.5)'
               }}>
                 {healthError && (
-                  <span style={{ color: '#ef4444' }}>⚠ backend unreachable</span>
+                  <span style={{ color: '#ef4444' }}>
+                    ⚠ backend unreachable — tried {API_BASE}
+                  </span>
                 )}
                 {health && !healthError && (
                   <>
