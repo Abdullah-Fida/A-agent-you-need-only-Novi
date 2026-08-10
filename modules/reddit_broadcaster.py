@@ -3,9 +3,9 @@ Reddit Broadcaster Module.
 Posts text-based summaries to Reddit using PRAW (Python Reddit API Wrapper).
 Implements the 'Trapdoor' method to avoid shadowbans (no direct links in posts).
 """
+import asyncio
 import logging
 import random
-import os
 from typing import Optional, Dict
 
 logger = logging.getLogger("OmniBot.Broadcaster.Reddit")
@@ -42,10 +42,12 @@ class RedditBroadcaster:
                     password=password,
                     user_agent=user_agent
                 )
-                # Quick verification
-                _ = self.reddit.user.me()
+                # Verified lazily on first post — a blocking network check here
+                # delayed startup by up to 30s when Reddit was slow or the
+                # credentials were wrong (a frequent error in the logs).
                 self._connected = True
-                logger.info(f"Reddit Broadcaster connected as u/{username}")
+                logger.info(f"Reddit Broadcaster configured for u/{username} "
+                            f"(credentials verified on first post).")
             else:
                 logger.warning("Reddit credentials incomplete. Running in offline mode.")
         except ImportError:
@@ -78,17 +80,16 @@ class RedditBroadcaster:
         
         try:
             logger.info(f"Attempting to post to r/{subreddit_name}...")
-            
-            # Since PRAW is blocking, we should technically run it in an executor, 
-            # but for 1 post a day, it's fast enough.
-            subreddit = self.reddit.subreddit(subreddit_name)
-            
-            # Submit text post (self-post)
-            submission = subreddit.submit(
-                title=original_title,
-                selftext=trapdoor_text
-            )
-            
+
+            # PRAW is fully synchronous. Calling it directly froze the entire
+            # event loop — stalling Telegram listeners and the scheduler for as
+            # long as Reddit took to answer. Always run it in a worker thread.
+            def _submit():
+                subreddit = self.reddit.subreddit(subreddit_name)
+                return subreddit.submit(title=original_title, selftext=trapdoor_text)
+
+            submission = await asyncio.wait_for(asyncio.to_thread(_submit), timeout=60)
+
             logger.info(f"Successfully posted to Reddit: {submission.shortlink}")
             
             # Log to Supabase

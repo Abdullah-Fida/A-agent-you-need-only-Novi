@@ -30,13 +30,17 @@ class ContentEngine:
         ("pakistan", 0.10),
     ]
     
-    def __init__(self, ai_engine: AIEngine, scraper: NewsScraper, 
-                 image_gen: ImageGenerator, db=None):
+    def __init__(self, ai_engine: AIEngine, scraper: NewsScraper,
+                 image_gen: ImageGenerator, db=None,
+                 site_name: str = "Novi News", site_url: str = "",
+                 article_ai: AIEngine = None):
         self.ai = ai_engine
         self.scraper = scraper
         self.image_gen = image_gen
         self.db = db
-        self.article_agent = ArticleAgent(ai_engine=ai_engine, db=db)
+        # The article agent may run on its own provider/key/model
+        self.article_agent = ArticleAgent(ai_engine=article_ai or ai_engine, db=db,
+                                          site_name=site_name, site_url=site_url)
         self.posts_generated_today = 0
         logger.info("Content Engine & ArticleAgent initialized.")
     
@@ -154,19 +158,10 @@ class ContentEngine:
         if not image_path:
             logger.warning("Image generation failed. Proceeding without image.")
         
-        # 6. Generate Website Article via ArticleAgent & Link to Telegram
-        article_record = await self.article_agent.generate_and_publish_article(
-            story=best_group[0],
-            main_image_url=best_group[0].get("real_image_url", "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3")
-        )
-
-        if article_record:
-            # We don't have a domain yet, so skip the website link for now.
-            # article_link = f"\n\n📖 <b>Read Full Detailed Article:</b>\nhttps://novinetwork.com/{article_record['slug']}"
-            # telegram_text += article_link
-            pass
-
-        # 7. Build and return content package
+        # 6. Build and return content package.
+        # The website article is written by Fanout AFTER the Telegram post
+        # succeeds, so a slow article generation never delays the post and a
+        # failed post never leaves an orphan article behind.
         self.posts_generated_today += 1
         
         package = {
@@ -179,7 +174,9 @@ class ContentEngine:
             "source_credits": source_credits,
             "original_title": best_group[0]["title"],
             "source_count": len(best_group),
-            "real_image_url": best_group[0].get("real_image_url", "")
+            "real_image_url": best_group[0].get("real_image_url", ""),
+            # The lead story, carried through so Fanout can write the article
+            "story": best_group[0],
         }
         
         logger.info(f"Content package #{self.posts_generated_today} produced successfully with Website Article link!")

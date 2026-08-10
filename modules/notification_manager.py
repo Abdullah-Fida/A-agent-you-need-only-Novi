@@ -5,9 +5,12 @@ Sends email confirmation for EVERY event: errors, posts, module status, strategy
 connection status, and speed/volume adjustments.
 """
 import logging
+import os
 import smtplib
 import asyncio
+import time
 import traceback
+from collections import deque
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timezone, timedelta
@@ -30,24 +33,54 @@ class NotificationManager:
     Every action NOVI takes is reported via email to keep the admin fully informed.
     Requires a Gmail App Password (not your regular password).
     """
+    MAX_SEND_ATTEMPTS = 3
+
     def __init__(self, sender_email: str, app_password: str, receiver_email: str,
-                 resend_api_key: str = "", whatsapp_phone: str = "", whatsapp_api_key: str = "", db=None):
+                 resend_api_key: str = "", db=None, from_address: str = ""):
         self.sender_email = sender_email
         self.app_password = app_password
         self.resend_api_key = resend_api_key
         # If receiver is empty, send to self
         self.receiver_email = receiver_email if receiver_email else sender_email
-        self.whatsapp_phone = whatsapp_phone
-        self.whatsapp_api_key = whatsapp_api_key
         self.db = db
+
+        # Resend's shared sender only delivers to the account owner's address.
+        # Override with a verified domain sender once you have one.
+        self.from_address = from_address or os.environ.get(
+            "RESEND_FROM", "NOVI Bot <onboarding@resend.dev>")
 
         self.smtp_server = "smtp.gmail.com"
         self.smtp_port = 587
 
-        if not self.sender_email and not self.resend_api_key:
+        # Notifications that could not be delivered, exposed via /api/health
+        # so a silent email outage is visible instead of invisible.
+        self._failed_sends: deque = deque(maxlen=50)
+        self.sent_count = 0
+
+        if not self.receiver_email:
+            logger.error("No receiver email configured — you will NOT receive any notifications.")
+        elif not self.resend_api_key and not (self.sender_email and self.app_password):
             logger.warning("Email credentials missing. Notifications will only be logged locally.")
         else:
-            logger.info(f"NotificationManager ready. Receiver: {self.receiver_email} (Using {'Resend API' if self.resend_api_key else 'SMTP'})")
+            transports = []
+            if self.resend_api_key:
+                transports.append("Resend API")
+            if self.sender_email and self.app_password:
+                transports.append("Gmail SMTP")
+            logger.info(f"NotificationManager ready. Receiver: {self.receiver_email} "
+                        f"(transports: {' -> '.join(transports)})")
+
+    @property
+    def health(self) -> dict:
+        """Delivery health, surfaced on the dashboard."""
+        return {
+            "receiver": self.receiver_email,
+            "resend_configured": bool(self.resend_api_key),
+            "smtp_configured": bool(self.sender_email and self.app_password),
+            "sent_ok": self.sent_count,
+            "recent_failures": list(self._failed_sends)[-5:],
+            "failure_count": len(self._failed_sends),
+        }
 
     # ═══════════════════════════════════════════════════════════
     #  CORE EMAIL SENDER
@@ -82,56 +115,141 @@ class NotificationManager:
 
     def _send_email_sync(self, full_subject: str, html_body: str) -> bool:
         """
-        Synchronous email send. Prioritizes Resend API (HTTP port 443, allowed on Render Free).
-        Falls back to SMTP if Resend is not configured.
+        Synchronous email send with retry and automatic fallback.
+
+        Delivery order:
+          1. Resend API over HTTPS (works on Render free tier, which blocks SMTP ports)
+          2. Gmail SMTP (works locally)
+
+        Each transport is retried on transient failures, and if Resend fails
+        entirely we fall through to SMTP rather than dropping the notification.
+        Every send is also recorded in _failed_sends so nothing goes missing
+        without a trace.
         """
-        try:
-            if self.resend_api_key:
-                import requests
-                headers = {
-                    "Authorization": f"Bearer {self.resend_api_key}",
-                    "Content-Type": "application/json"
-                }
-                payload = {
-                    "from": "NOVI Bot <onboarding@resend.dev>",
-                    "to": self.receiver_email,
-                    "subject": full_subject,
-                    "html": html_body
-                }
-                resp = requests.post("https://api.resend.com/emails", json=payload, headers=headers, timeout=15)
+        attempts = []
+
+        if self.resend_api_key:
+            if self._send_via_resend(full_subject, html_body, attempts):
+                return True
+            if self.sender_email and self.app_password:
+                logger.warning("Resend failed — falling back to SMTP.")
+
+        if self.sender_email and self.app_password:
+            if self._send_via_smtp(full_subject, html_body, attempts):
+                return True
+
+        self._failed_sends.append({
+            "subject": full_subject,
+            "at": _get_pkt_now_str(),
+            "errors": attempts,
+        })
+        logger.error(f"EMAIL NOT DELIVERED: '{full_subject}'. Attempts: {attempts}")
+        return False
+
+    def _send_via_resend(self, subject: str, html_body: str, attempts: list) -> bool:
+        """Sends via the Resend HTTPS API, retrying transient failures."""
+        import requests
+
+        headers = {
+            "Authorization": f"Bearer {self.resend_api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "from": self.from_address,
+            "to": self.receiver_email,
+            "subject": subject,
+            "html": html_body,
+        }
+
+        for attempt in range(self.MAX_SEND_ATTEMPTS):
+            try:
+                resp = requests.post("https://api.resend.com/emails",
+                                     json=payload, headers=headers, timeout=20)
                 if resp.status_code in (200, 201):
-                    logger.info(f"Email sent successfully via Resend to {self.receiver_email}")
+                    logger.info(f"Email sent via Resend to {self.receiver_email}")
                     return True
-                else:
-                    logger.error(f"Resend API Failed: {resp.status_code} {resp.text}")
+
+                body = (resp.text or "")[:300]
+                attempts.append(f"resend:{resp.status_code}")
+
+                # 4xx (bad key, unverified sender) will never succeed on retry
+                if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                    logger.error(f"Resend rejected the email ({resp.status_code}): {body}")
                     return False
-            else:
+
+                logger.warning(f"Resend transient failure {resp.status_code}, retrying...")
+            except Exception as e:
+                attempts.append(f"resend:{type(e).__name__}")
+                logger.warning(f"Resend attempt {attempt + 1} failed: {type(e).__name__}")
+
+            if attempt < self.MAX_SEND_ATTEMPTS - 1:
+                time.sleep(2 ** attempt)
+
+        return False
+
+    def _send_via_smtp(self, subject: str, html_body: str, attempts: list) -> bool:
+        """Sends via Gmail SMTP, retrying transient failures."""
+        for attempt in range(self.MAX_SEND_ATTEMPTS):
+            server = None
+            try:
                 msg = MIMEMultipart("alternative")
                 msg['From'] = f"NOVI Bot <{self.sender_email}>"
                 msg['To'] = self.receiver_email
-                msg['Subject'] = full_subject
-
+                msg['Subject'] = subject
                 msg.attach(MIMEText(html_body, 'html'))
 
-                server = smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=15)
+                server = smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=20)
                 server.ehlo()
                 server.starttls()
                 server.ehlo()
                 server.login(self.sender_email, self.app_password)
                 server.send_message(msg)
-                server.quit()
-
-                logger.info(f"Email sent successfully via SMTP to {self.receiver_email}")
+                logger.info(f"Email sent via SMTP to {self.receiver_email}")
                 return True
 
-        except smtplib.SMTPAuthenticationError as e:
-            logger.error(f"SMTP Authentication Failed — check your App Password: {e}")
+            except smtplib.SMTPAuthenticationError as e:
+                # Wrong app password — retrying cannot help
+                attempts.append("smtp:auth")
+                logger.error(f"SMTP authentication failed — check your Gmail App Password: {e}")
+                return False
+            except Exception as e:
+                attempts.append(f"smtp:{type(e).__name__}")
+                logger.warning(f"SMTP attempt {attempt + 1} failed: {type(e).__name__}")
+                if attempt < self.MAX_SEND_ATTEMPTS - 1:
+                    time.sleep(2 ** attempt)
+            finally:
+                if server is not None:
+                    try:
+                        server.quit()
+                    except Exception:
+                        pass
+
+        return False
+
+    async def _dispatch(self, full_subject: str, html: str) -> bool:
+        """
+        Single place every notification goes through.
+
+        Runs the blocking send in a worker thread so the event loop keeps
+        serving Telegram and the API while email is in flight, and never lets
+        an email failure propagate into the caller — a broken inbox must not
+        take down posting.
+        """
+        if not self.receiver_email:
+            logger.warning(f"[NO RECEIVER] Would have emailed: {full_subject}")
             return False
-        except smtplib.SMTPException as e:
-            logger.error(f"SMTP Error: {e}")
+
+        if not self.resend_api_key and not (self.sender_email and self.app_password):
+            logger.warning(f"[NO EMAIL CONFIGURED] Would have emailed: {full_subject}")
             return False
+
+        try:
+            ok = await asyncio.to_thread(self._send_email_sync, full_subject, html)
+            if ok:
+                self.sent_count += 1
+            return ok
         except Exception as e:
-            logger.error(f"Email send failed: {type(e).__name__}: {e}")
+            logger.error(f"Notification dispatch crashed: {type(e).__name__}: {e}")
             return False
 
     # ═══════════════════════════════════════════════════════════
@@ -169,13 +287,8 @@ class NotificationManager:
             except Exception as e:
                 logger.warning(f"Could not log alert to DB: {e}")
 
-        email_success = False
-
-        # Send Email (non-blocking via thread)
-        if self.resend_api_key or (self.sender_email and self.app_password):
-            email_success = await asyncio.to_thread(self._send_email_sync, full_subject, html)
-
-        return email_success
+        # Send Email (non-blocking via thread, with retry + SMTP fallback)
+        return await self._dispatch(full_subject, html)
 
     # ═══════════════════════════════════════════════════════════
     #  SPECIFIC EVENT NOTIFICATIONS
@@ -198,8 +311,7 @@ class NotificationManager:
         html = self._build_html_email("Post Published to Telegram", body, accent_color="#238636")
         full_subject = f"✅ [POST] Novi News — {subject}"
 
-        if self.resend_api_key or (self.sender_email and self.app_password):
-            await asyncio.to_thread(self._send_email_sync, full_subject, html)
+        await self._dispatch(full_subject, html)
 
     async def notify_error(self, module: str, error: Exception, auto_fixed: bool = False, fix_action: str = ""):
         """Sends email when any error occurs in any module."""
@@ -225,8 +337,7 @@ class NotificationManager:
         full_subject = f"{prefix} [ERROR] Novi News — {module}: {type(error).__name__}"
         html = self._build_html_email(f"Error in {module}", body, accent_color=status_color)
 
-        if self.resend_api_key or (self.sender_email and self.app_password):
-            await asyncio.to_thread(self._send_email_sync, full_subject, html)
+        await self._dispatch(full_subject, html)
 
     async def notify_module_status(self, module_name: str, status: str, details: str = ""):
         """Sends email when a module is turned ON/OFF or connected/disconnected."""
@@ -243,8 +354,7 @@ class NotificationManager:
         full_subject = f"{icon} [MODULE] Novi News — {module_name}: {status.upper()}"
         html = self._build_html_email(f"{module_name} Status Change", body, accent_color=color)
 
-        if self.resend_api_key or (self.sender_email and self.app_password):
-            await asyncio.to_thread(self._send_email_sync, full_subject, html)
+        await self._dispatch(full_subject, html)
 
     async def notify_strategy_change(self, change_type: str, old_value: str, new_value: str, reason: str = ""):
         """Sends email when NOVI changes its posting strategy or limits."""
@@ -262,8 +372,7 @@ class NotificationManager:
         full_subject = f"📊 [STRATEGY] Novi News — {change_type}: {old_value} → {new_value}"
         html = self._build_html_email("Strategy Update", body, accent_color="#6366f1")
 
-        if self.resend_api_key or (self.sender_email and self.app_password):
-            await asyncio.to_thread(self._send_email_sync, full_subject, html)
+        await self._dispatch(full_subject, html)
 
     async def notify_connection_status(self, service: str, connected: bool, details: str = ""):
         """Sends email when a connection (Telegram, StealthMarketer) changes status."""
@@ -280,8 +389,7 @@ class NotificationManager:
         full_subject = f"{icon} [CONNECTION] Novi News — {service}: {status}"
         html = self._build_html_email(f"{service} Connection Status", body, accent_color=color)
 
-        if self.resend_api_key or (self.sender_email and self.app_password):
-            await asyncio.to_thread(self._send_email_sync, full_subject, html)
+        await self._dispatch(full_subject, html)
 
     async def notify_stealth_step(self, action: str, details: str = "", success: bool = True):
         """Sends email after every step the StealthMarketer takes."""
@@ -297,5 +405,4 @@ class NotificationManager:
         full_subject = f"{icon} [STEALTH] Novi News — {action}"
         html = self._build_html_email(f"Stealth Marketer: {action}", body, accent_color=color)
 
-        if self.resend_api_key or (self.sender_email and self.app_password):
-            await asyncio.to_thread(self._send_email_sync, full_subject, html)
+        await self._dispatch(full_subject, html)

@@ -21,7 +21,7 @@ You are the SOLE control interface for the "Daily Pulse" omni-channel content bo
 == YOUR KNOWLEDGE & ARCHITECTURE ==
 - You are a React + Three.js voice interface (the orb on screen is YOU).
 - Your brain runs on Groq (LLaMA 3.1) for fast inference.
-- You connect to a Python FastAPI backend at localhost:8000 that runs the actual bot.
+- You connect to a Python FastAPI backend that runs the actual bot.
 - You autonomously post to Telegram 3 times a day: 10:00 AM, 4:00 PM, and 10:00 PM (PKT). You DO NOT need to be told to post at these times, you do it automatically in the background.
 
 == YOUR POWERS (ACTIONS YOU CAN EXECUTE) ==
@@ -29,16 +29,30 @@ You have REAL control over the backend. When Abdullah asks you to DO something, 
 CRITICAL RULE: DO NOT TRIGGER ACTIONS IF HE IS JUST ASKING A QUESTION. Only trigger actions if he explicitly commands you to DO it.
 
 1. "test_email" — Send a test email to Abdullah's inbox. Use when he says "send test email".
-2. "modify_limits" — Change posting or stealth reply limits. You MUST include "limit_type" ("post" or "stealth") and "new_value" (integer). Use when he says "increase posts to 10".
+2. "modify_limits" — Change any daily limit. You MUST include "limit_type" and "new_value" (integer).
+   limit_type options:
+     - "post"           → max news posts per day ("increase posts to 10")
+     - "stealth"        → max stealth replies per day
+     - "stealth_invite" → max people invited to the group per day ("increase invites to 5", "add more members per day")
+     - "signal"         → max crypto signals copied per day (0 means unlimited)
+   Note: the invite limit is hard-capped by the backend for account safety. If the backend caps it, tell Abdullah the real applied number and why.
 3. "generate_image" — Generate an AI news image. You MUST include "headline" (string) and "category" (string). Use when he says "generate an image about...".
 4. "draft_new_content" — DRAFTS a completely new post by scraping the web. ONLY use this if he says "create a new post", "draft a post", "fetch news", or "make a post". DO NOT use this if he says "post it to channels"!
 5. "publish_to_channels" — PUBLISHES the already-drafted post to Telegram. ONLY use this when he explicitly says "publish it", "send it", or "post it on channels".
-6. "status" — Fetch live bot stats. Use when he says "what's the status", "how is the bot doing", "give me a report".
-7. "clear" — Dismiss the data panel. Use when he says "hide", "clear", "dismiss".
-8. "stealth_toggle" — Toggle the Stealth Marketer ON or OFF. Use when he says "turn on stealth", "turn off stealth".
-9. "stealth_status" — Get the current Stealth Marketer status. Use when he says "stealth status".
-10. "check_telegram" — Check if Telegram is connected. Use when he says "is telegram connected".
-11. "check_stealth_connection" — Check if the StealthMarketer account is connected. Use when he says "is stealth connected".
+37. "clear" — Dismiss the data panel. Use when he says "hide", "clear", "dismiss".
+38. "news_toggle" — Toggle News Agent ON or OFF. Use when he says "toggle news", "turn on news", "stop news".
+38b. "website_toggle" — Toggle the Website / auto-blogging module ON or OFF. Default is OFF. While OFF no articles are written at all. Use when he says "turn on the website", "start blogging", "stop writing articles", "enable auto blogging".
+39. "signal_toggle" — Toggle Whale Tracker VIP Signal Copier ON or OFF. Use when he says "toggle signal copier", "start whale tracker", "stop copying signals".
+40. "stealth_reply_toggle" — Toggle Stealth Marketer Reply Mode ON or OFF.
+41. "stealth_invite_toggle" — Toggle Stealth Marketer Member Adding ON or OFF.
+42. "master_kill" — Engage or release the Master Kill Switch. Stops ALL modules instantly. Use when he says "stop everything", "kill switch", "emergency stop".
+43. "check_telegram" — Check if Telegram is connected. Use when he says "is telegram connected".
+44. "check_stealth_connection" — Check if the StealthMarketer account is connected. Use when he says "is stealth connected".
+45. "health" — Full system health: what is running, what is connected, whether the bot is awake or sleeping right now. Use when he says "how is everything", "system health", "is everything working", "are you awake", "is it sleeping".
+46. "set_sleep_window" — Change the hours the bot sleeps. Include "start_hour" and "end_hour" (0-23, PKT). Set both to the SAME number for 24/7 always-on. Use when he says "sleep from 1am to 6am", "never sleep", "stay awake all day", "work 24/7".
+47. "post_now" — Create AND publish a post to Telegram immediately in one step. Optionally include "category". Use when he says "post now", "publish something now", "send a post right now". (Different from draft_new_content, which only drafts for review.)
+48. "invite_now" — Immediately run a subscriber-invite cycle instead of waiting for the hourly schedule. Use when he says "add subscribers", "add members now", "grow the channel", "invite people now".
+49. "growth_report" — Show measured subscriber growth and what NOVI recommends changing. Use when he says "how is growth", "are we gaining subscribers", "growth report", "what should we change".
 
 == HOW TO RESPOND ==
 RESPOND WITH ONLY A RAW JSON OBJECT. No markdown, no code fences.
@@ -155,7 +169,31 @@ const THINKING_MESSAGES = [
   'Computing…',
 ];
 
-const API_BASE = 'http://localhost:8000';
+/*
+ * Backend base URL.
+ *
+ * This was hardcoded to http://localhost:8000, which meant the deployed
+ * dashboard could never reach the backend — every action failed in
+ * production with "backend not reachable".
+ *
+ * Resolution order:
+ *   1. VITE_API_BASE            (explicit override at build time)
+ *   2. same origin              (when the dashboard is served BY the backend)
+ *   3. http://localhost:8000    (local dev with `npm run dev`)
+ */
+const API_BASE = (() => {
+  const explicit = import.meta.env.VITE_API_BASE;
+  if (explicit) return explicit.replace(/\/$/, '');
+
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    const { origin, hostname } = window.location;
+    const isLocalDevServer =
+      (hostname === 'localhost' || hostname === '127.0.0.1') &&
+      window.location.port && window.location.port !== '8000';
+    if (!isLocalDevServer) return origin;
+  }
+  return 'http://localhost:8000';
+})();
 
 /* ═══════════════════════════════════════════════════════════════
    MAIN APP
@@ -167,6 +205,12 @@ function App() {
   const [status, setStatus] = useState('OFFLINE');
   const [subtitle, setSubtitle] = useState('');
   const [micEnabled, setMicEnabled] = useState(true);
+
+  /* Live system health, polled from the backend. Without this the toggle
+     buttons were fire-and-forget — there was no way to see what was
+     actually running without asking NOVI out loud. */
+  const [health, setHealth] = useState(null);
+  const [healthError, setHealthError] = useState(false);
 
   const [hasData, setHasData] = useState(false);
   const [displayItems, setDisplayItems] = useState([]);
@@ -457,21 +501,126 @@ function App() {
           });
           if (apiRes.ok) {
             const data = await apiRes.json();
-            textToSpeak = response.reply || data.message;
+            // Always speak the REAL applied result, so a capped invite limit
+            // is never reported back as the number he asked for.
+            textToSpeak = data.message;
+            actionItems = [
+              { type: 'heading', value: 'Limit Updated' },
+              { type: 'highlight', value: data.message },
+            ];
           } else {
-            textToSpeak = "I couldn't update the limits. The backend might not be running.";
+            const err = await apiRes.json().catch(() => ({}));
+            textToSpeak = `I couldn't update the limits. ${err.detail || 'The backend might not be running.'}`;
           }
-        } else if (response.action === 'status') {
-          const apiRes = await fetch(`${API_BASE}/api/report`);
+        } else if (response.action === 'post_now') {
+          textToSpeak = "Working on it, Abdullah. Scraping the news and publishing now.";
+          setSubtitle('Creating and publishing post...');
+          const apiRes = await fetch(`${API_BASE}/api/post_now`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ category: response.category || '', publish: true })
+          });
+          if (apiRes.ok) {
+            const data = await apiRes.json();
+            const pkg = data.package || {};
+            textToSpeak = data.message || "Published, Abdullah.";
+            actionItems = [
+              {
+                type: 'post_preview',
+                package: pkg,
+                image_url: pkg.image_url ? (API_BASE + pkg.image_url) : null
+              }
+            ];
+          } else {
+            const err = await apiRes.json().catch(() => ({}));
+            textToSpeak = `I couldn't publish that. ${err.detail || 'Check the logs.'}`;
+          }
+        } else if (response.action === 'invite_now') {
+          const apiRes = await fetch(`${API_BASE}/api/growth/invite_now`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ count: response.count || 1 })
+          });
+          if (apiRes.ok) {
+            const data = await apiRes.json();
+            textToSpeak = data.message;
+            actionItems = [
+              { type: 'heading', value: 'Subscriber Growth' },
+              { type: 'highlight', value: data.message },
+              { type: 'stat', value: `Invites today: ${data.invites_today ?? 0} / ${data.daily_limit ?? 0}` },
+            ];
+          } else {
+            const err = await apiRes.json().catch(() => ({}));
+            textToSpeak = `I couldn't start the invite cycle. ${err.detail || ''}`;
+          }
+        } else if (response.action === 'growth_report') {
+          const apiRes = await fetch(`${API_BASE}/api/growth/status`);
+          if (apiRes.ok) {
+            const g = await apiRes.json();
+            const rec = g.recommendation || {};
+            const wk = g.weekly || {};
+            textToSpeak = `${rec.headline || 'Here is the growth report.'} ${
+              (rec.suggested_changes || []).map(c => c.why).join(' ')}`;
+            actionItems = [
+              { type: 'heading', value: 'Growth Report' },
+              { type: 'large', value: `${g.subscribers ?? '—'} subscribers` },
+              { type: 'stat', value: `Last 24h: ${g.growth_24h == null ? 'measuring…' : (g.growth_24h > 0 ? '+' : '') + g.growth_24h}` },
+              { type: 'stat', value: `This week: ${wk.gained ?? 0} / ${wk.goal ?? 0} (${wk.percent ?? 0}%)` },
+              { type: 'highlight', value: rec.headline || '' },
+              ...(rec.suggested_changes || []).map(c => ({ type: 'text', value: `• ${c.what}: ${c.why}` })),
+            ];
+          } else {
+            textToSpeak = "I can't reach the growth data right now.";
+          }
+        } else if (response.action === 'health') {
+          const apiRes = await fetch(`${API_BASE}/api/health`);
+          if (apiRes.ok) {
+            const h = await apiRes.json();
+            const m = h.modules || {};
+            textToSpeak = h.awake
+              ? `Everything is up, Abdullah. It's ${h.current_time_pkt} and the bot is awake.`
+              : `The bot is currently ${h.master_kill ? 'stopped by the kill switch' : 'sleeping'}, Abdullah. It's ${h.current_time_pkt}.`;
+            actionItems = [
+              { type: 'heading', value: 'System Health' },
+              { type: 'stat', value: `Now: ${h.current_time_pkt}` },
+              { type: 'stat', value: `State: ${h.awake ? '🟢 Awake' : '😴 Sleeping'}` },
+              { type: 'stat', value: `Sleep window: ${h.always_on ? '24/7 — never sleeps' : h.sleep_window}` },
+              { type: 'stat', value: `News Agent: ${m.news_agent?.active ? '🟢 ON' : '🔴 OFF'} (TG ${m.news_agent?.telegram_connected ? '✓' : '✗'})` },
+              { type: 'stat', value: `Signals: ${m.signal_copier?.active ? '🟢 ON' : '🔴 OFF'} — ${m.signal_copier?.signals_copied_today ?? 0} today` },
+              { type: 'stat', value: `Stealth: ${m.stealth_marketer?.active ? '🟢 ON' : '🔴 OFF'} — ${m.stealth_marketer?.invites_today ?? 0}/${m.stealth_marketer?.max_invites_per_day ?? 0} invites` },
+              { type: 'stat', value: `Database: ${h.database_connected ? '🟢 Connected' : '🔴 Offline'}` },
+            ];
+          } else {
+            textToSpeak = "I can't reach the backend to check health.";
+          }
+        } else if (response.action === 'set_sleep_window') {
+          const apiRes = await fetch(`${API_BASE}/api/schedule/sleep_window`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ start_hour: response.start_hour, end_hour: response.end_hour })
+          });
+          if (apiRes.ok) {
+            const data = await apiRes.json();
+            textToSpeak = data.message;
+            actionItems = [
+              { type: 'heading', value: 'Schedule Updated' },
+              { type: 'highlight', value: data.message },
+            ];
+          } else {
+            textToSpeak = "I couldn't change the sleep schedule.";
+          }
+        } else if (response.action === 'status' || response.action === 'stealth_status') {
+          const apiRes = await fetch(`${API_BASE}/api/modules/status`);
           if (apiRes.ok) {
             const s = await apiRes.json();
-            textToSpeak = response.reply || `The bot is ${s.status}. ${s.posts_today} posts and ${s.replies_today} stealth replies so far today.`;
+            textToSpeak = response.reply || `Here is the system status, Abdullah.`;
             actionItems = [
-              { type: 'heading', value: 'Bot Status Report' },
-              { type: 'stat', value: `Status: ${s.status}` },
-              { type: 'stat', value: `Subscribers: ${s.subscribers}` },
-              { type: 'stat', value: `Posts Today: ${s.posts_today} / ${s.max_posts}` },
-              { type: 'stat', value: `Stealth Replies: ${s.replies_today} / ${s.max_replies}` },
+              { type: 'heading', value: 'Live System Status' },
+              { type: 'stat', value: `News Agent: ${s.news_agent ? '🟢 ON' : '🔴 OFF'}` },
+              { type: 'stat', value: `Signal Copier: ${s.signal_copier ? '🟢 ON' : '🔴 OFF'}` },
+              { type: 'stat', value: `Stealth Reply: ${s.stealth_reply_mode ? '🟢 ON' : '🔴 OFF'}` },
+              { type: 'stat', value: `Stealth Invite: ${s.stealth_invite_mode ? '🟢 ON' : '🔴 OFF'}` },
+              { type: 'stat', value: `Master Kill: ${s.master_kill ? '⚠️ ENGAGED' : '✅ Clear'}` },
             ];
           } else {
             textToSpeak = "I can't reach the backend server. Make sure main.py is running, Abdullah.";
@@ -488,7 +637,7 @@ function App() {
             if (data.image_url) {
               actionItems = [
                 { type: 'heading', value: 'Generated Image' },
-                { type: 'image', value: `http://localhost:8000${data.image_url}` }
+                { type: 'image', value: `${API_BASE}${data.image_url}` }
               ];
             }
           } else {
@@ -538,7 +687,7 @@ function App() {
                             { 
                               type: 'post_preview', 
                               package: pkg,
-                              image_url: pkg.image_url ? ('http://localhost:8000' + pkg.image_url) : null
+                              image_url: pkg.image_url ? (API_BASE + pkg.image_url) : null
                             }
                           ];
                           
@@ -574,38 +723,25 @@ function App() {
             const err = await apiRes.json().catch(() => ({}));
             textToSpeak = `I could not publish the post. ${err.detail || 'Make sure you generated a post first.'}`;
           }
-        } else if (response.action === 'stealth_toggle') {
-          const apiRes = await fetch(`${API_BASE}/api/stealth/toggle`, { method: 'POST' });
+        } else if (['news_toggle', 'website_toggle', 'signal_toggle', 'stealth_reply_toggle', 'stealth_invite_toggle', 'master_kill'].includes(response.action)) {
+          let endpoint = '';
+          if (response.action === 'news_toggle') endpoint = '/api/news/toggle';
+          if (response.action === 'website_toggle') endpoint = '/api/website/toggle';
+          if (response.action === 'signal_toggle') endpoint = '/api/signal_copier/toggle';
+          if (response.action === 'stealth_reply_toggle') endpoint = '/api/stealth/toggle_reply';
+          if (response.action === 'stealth_invite_toggle') endpoint = '/api/stealth/toggle_invite';
+          if (response.action === 'master_kill') endpoint = '/api/master_kill';
+
+          const apiRes = await fetch(`${API_BASE}${endpoint}`, { method: 'POST' });
           if (apiRes.ok) {
             const data = await apiRes.json();
-            textToSpeak = data.active
-              ? "Stealth Marketer has been activated, Abdullah. It is now monitoring competitor groups and running the drip invite strategy. I will notify you via email for every action taken."
-              : "Stealth Marketer has been shut down, Abdullah. All scraping and invitation activity has stopped immediately.";
+            textToSpeak = response.reply || data.message;
             actionItems = [
-              { type: 'heading', value: data.active ? '🟢 STEALTH MARKETER: ACTIVE' : '🔴 STEALTH MARKETER: OFFLINE' },
-              { type: 'highlight', value: data.message },
+              { type: 'heading', value: 'Module Status Updated' },
+              { type: 'highlight', value: data.message }
             ];
           } else {
-            textToSpeak = "I couldn't toggle the Stealth Marketer. The backend might not be running.";
-          }
-        } else if (response.action === 'stealth_status') {
-          const apiRes = await fetch(`${API_BASE}/api/stealth/status`);
-          if (apiRes.ok) {
-            const s = await apiRes.json();
-            textToSpeak = response.reply || `The Stealth Marketer is currently ${s.active ? 'active' : 'offline'}. ${s.invites_today} invites sent today out of ${s.max_invites_per_day} max.`;
-            actionItems = [
-              { type: 'heading', value: 'Stealth Marketer Status' },
-              { type: 'stat', value: `Status: ${s.active ? '🟢 ACTIVE' : '🔴 OFFLINE'}` },
-              { type: 'stat', value: `Reply Mode: ${s.reply_mode ? 'ON' : 'OFF'}` },
-              { type: 'stat', value: `Scrape Mode: ${s.scrape_mode ? 'ON' : 'OFF'}` },
-              { type: 'stat', value: `Invites Today: ${s.invites_today} / ${s.max_invites_per_day}` },
-              { type: 'stat', value: `Emergency Stop: ${s.emergency_stop ? '⚠️ ENGAGED' : '✅ Clear'}` },
-              { type: 'stat', value: `Device Fingerprint: ${s.device_fingerprint}` },
-              { type: 'stat', value: `Target Groups: ${s.target_groups}` },
-              { type: 'stat', value: `Uptime: ${s.uptime_minutes} min` },
-            ];
-          } else {
-            textToSpeak = "I can't reach the Stealth Marketer. Make sure the backend is running.";
+            textToSpeak = "I couldn't toggle the module. The backend might not be running.";
           }
         } else if (response.action === 'check_telegram') {
           const apiRes = await fetch(`${API_BASE}/api/telegram/connection_status`);
@@ -641,7 +777,7 @@ function App() {
         }
       } catch (err) {
         console.error("API Action Error:", err);
-        textToSpeak = "I tried to execute your command, but the backend server at localhost 8000 is not reachable. Make sure main.py is running.";
+        textToSpeak = "I tried to execute your command, but the backend server is not reachable right now.";
       }
 
       const items = actionItems;
@@ -692,6 +828,25 @@ function App() {
       speak('Novi is online.');
     }, 600);
   }, [initRecognition, speak]);
+
+  /* ── Live health polling ───────────────────────────────── */
+  const refreshHealth = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/health`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setHealth(await res.json());
+      setHealthError(false);
+    } catch {
+      setHealthError(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!initialized) return;
+    refreshHealth();
+    const id = setInterval(refreshHealth, 15000);
+    return () => clearInterval(id);
+  }, [initialized, refreshHealth]);
 
   /* ── Cleanup ───────────────────────────────────────────── */
   useEffect(() => {
@@ -747,21 +902,19 @@ function App() {
 
           {/* Control Buttons */}
           {initialized && (
-            <div style={{ display: 'flex', gap: '10px', marginTop: '12px' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '12px', justifyContent: 'center' }}>
               {/* Mic Toggle Button */}
               <button
                 id="mic-toggle-btn"
                 className="control-btn"
                 onClick={() => {
                   if (micEnabled) {
-                    // Pause mic
                     voicePausedRef.current = true;
                     setMicEnabled(false);
                     stopRecognition();
                     setStatus('PAUSED');
                     setSubtitle('Voice paused. Say "NOVI" to wake me up.');
                   } else {
-                    // Resume mic
                     voicePausedRef.current = false;
                     setMicEnabled(true);
                     setStatus('LISTENING');
@@ -773,71 +926,124 @@ function App() {
                   background: micEnabled ? 'rgba(56, 189, 95, 0.15)' : 'rgba(239, 68, 68, 0.15)',
                   border: `1px solid ${micEnabled ? 'rgba(56, 189, 95, 0.4)' : 'rgba(239, 68, 68, 0.4)'}`,
                   color: micEnabled ? '#38bd5f' : '#ef4444',
-                  padding: '6px 16px',
-                  borderRadius: '20px',
-                  fontSize: '0.65rem',
-                  fontWeight: 500,
-                  letterSpacing: '1.5px',
-                  cursor: 'pointer',
-                  fontFamily: 'inherit',
-                  textTransform: 'uppercase',
-                  transition: 'all 0.3s ease',
-                  backdropFilter: 'blur(12px)',
+                  padding: '6px 12px', borderRadius: '12px', fontSize: '0.6rem', fontWeight: 600,
+                  cursor: 'pointer', textTransform: 'uppercase', backdropFilter: 'blur(12px)'
                 }}
               >
-                {micEnabled ? '🎤 LISTENING' : '🔇 PAUSED'}
+                {micEnabled ? '🎤 MIC ON' : '🔇 MIC OFF'}
               </button>
 
-              {/* Stealth Toggle Button */}
-              <button
-                id="stealth-toggle-btn"
-                className="control-btn"
-                onClick={async () => {
-                  setSubtitle('Toggling Stealth Marketer...');
-                  try {
-                    const res = await fetch(`${API_BASE}/api/stealth/toggle`, { method: 'POST' });
-                    if (res.ok) {
-                      const data = await res.json();
-                      const msg = data.active 
-                        ? '🟢 Stealth Marketer ACTIVATED.'
-                        : '🔴 Stealth Marketer DEACTIVATED.';
-                      setSubtitle(msg);
-                      speak(data.active 
-                        ? 'Stealth Marketer activated, Abdullah.'
-                        : 'Stealth Marketer deactivated.');
+              {/* Module Toggles — each reflects its REAL live state */}
+              {[
+                { label: '📰 NEWS AGENT', action: 'news_toggle', color: '14, 165, 233',
+                  on: health?.modules?.news_agent?.active },
+                { label: '🌐 WEBSITE', action: 'website_toggle', color: '99, 102, 241',
+                  on: health?.modules?.website?.active },
+                { label: '🐳 SIGNAL COPIER', action: 'signal_toggle', color: '245, 158, 11',
+                  on: health?.modules?.signal_copier?.active },
+                { label: '💬 STEALTH REPLY', action: 'stealth_reply_toggle', color: '139, 92, 246',
+                  on: health?.modules?.stealth_marketer?.reply_mode },
+                { label: '📥 STEALTH INVITE', action: 'stealth_invite_toggle', color: '16, 185, 129',
+                  on: health?.modules?.stealth_marketer?.scrape_mode },
+                { label: '🛑 MASTER KILL', action: 'master_kill', color: '239, 68, 68',
+                  on: health?.master_kill }
+              ].map(btn => (
+                <button
+                  key={btn.action}
+                  className="control-btn"
+                  onClick={async () => {
+                    setSubtitle(`Triggering ${btn.label}...`);
+                    try {
+                      let endpoint = '';
+                      if (btn.action === 'news_toggle') endpoint = '/api/news/toggle';
+                      if (btn.action === 'website_toggle') endpoint = '/api/website/toggle';
+                      if (btn.action === 'signal_toggle') endpoint = '/api/signal_copier/toggle';
+                      if (btn.action === 'stealth_reply_toggle') endpoint = '/api/stealth/toggle_reply';
+                      if (btn.action === 'stealth_invite_toggle') endpoint = '/api/stealth/toggle_invite';
+                      if (btn.action === 'master_kill') endpoint = '/api/master_kill';
                       
-                      // Also show it in the data panel
-                      setHasData(true);
-                      setDisplayItems([
-                        { type: 'heading', value: data.active ? '🟢 STEALTH: ACTIVE' : '🔴 STEALTH: OFFLINE' },
-                        { type: 'highlight', value: msg }
-                      ]);
-                      setPanelLayout('center');
-                      moveSphere(true, 'center');
+                      const res = await fetch(`${API_BASE}${endpoint}`, { method: 'POST' });
+                      if (res.ok) {
+                        const data = await res.json();
+                        setSubtitle(data.message);
+                        speak(data.message);
+                        setHasData(true);
+                        setDisplayItems([
+                          { type: 'heading', value: 'System Updated' },
+                          { type: 'highlight', value: data.message }
+                        ]);
+                        setPanelLayout('center');
+                        moveSphere(true, 'center');
+                        refreshHealth();   // reflect the new state immediately
+                      }
+                    } catch (err) {
+                      setSubtitle('Error: Cannot reach backend server.');
+                      speak('Cannot reach the backend server.');
                     }
-                  } catch (err) {
-                    setSubtitle('Error: Cannot reach backend server.');
-                    speak('Cannot reach the backend server.');
-                  }
-                }}
-                style={{
-                  background: 'rgba(99, 102, 241, 0.15)',
-                  border: '1px solid rgba(99, 102, 241, 0.4)',
-                  color: '#818cf8',
-                  padding: '6px 16px',
-                  borderRadius: '20px',
-                  fontSize: '0.65rem',
-                  fontWeight: 500,
-                  letterSpacing: '1.5px',
-                  cursor: 'pointer',
-                  fontFamily: 'inherit',
-                  textTransform: 'uppercase',
-                  transition: 'all 0.3s ease',
-                  backdropFilter: 'blur(12px)',
-                }}
-              >
-                🕵️ STEALTH
-              </button>
+                  }}
+                  title={btn.on ? 'Currently ON — click to turn off'
+                                : 'Currently OFF — click to turn on'}
+                  style={{
+                    /* Solid when live, ghosted when off, so state is readable
+                       at a glance instead of every button looking identical. */
+                    background: btn.on ? `rgba(${btn.color}, 0.28)` : 'rgba(255,255,255,0.04)',
+                    border: `1px solid rgba(${btn.color}, ${btn.on ? 0.85 : 0.25})`,
+                    color: btn.on ? `rgb(${btn.color})` : 'rgba(255,255,255,0.45)',
+                    boxShadow: btn.on ? `0 0 14px rgba(${btn.color}, 0.35)` : 'none',
+                    padding: '6px 12px', borderRadius: '12px', fontSize: '0.6rem', fontWeight: 600,
+                    cursor: 'pointer', textTransform: 'uppercase', backdropFilter: 'blur(12px)',
+                    display: 'inline-flex', alignItems: 'center', gap: '6px',
+                    transition: 'all .2s ease', opacity: health ? 1 : 0.55
+                  }}
+                >
+                  <span style={{
+                    width: 6, height: 6, borderRadius: '50%', flex: 'none',
+                    background: btn.on ? `rgb(${btn.color})` : 'rgba(255,255,255,0.3)'
+                  }} />
+                  {btn.label}
+                </button>
+              ))}
+
+              {/* Live status strip — answers "is it working right now?"
+                  without having to ask out loud. */}
+              <div style={{
+                width: '100%', display: 'flex', justifyContent: 'center',
+                gap: '14px', flexWrap: 'wrap', marginTop: '10px',
+                fontSize: '0.58rem', letterSpacing: '.06em', textTransform: 'uppercase',
+                fontFamily: 'ui-monospace, Menlo, Consolas, monospace',
+                color: 'rgba(255,255,255,0.5)'
+              }}>
+                {healthError && (
+                  <span style={{ color: '#ef4444' }}>⚠ backend unreachable</span>
+                )}
+                {health && !healthError && (
+                  <>
+                    <span style={{ color: health.awake ? '#38bd5f' : '#f59e0b' }}>
+                      {health.awake ? '● awake' : '◌ sleeping'}
+                    </span>
+                    <span>{health.current_time_pkt} PKT</span>
+                    <span>sleep {health.always_on ? 'never' : health.sleep_window}</span>
+                    <span>
+                      posts {health.modules?.news_agent?.posts_today ?? 0}/
+                      {health.modules?.news_agent?.max_posts ?? 0}
+                    </span>
+                    <span>
+                      invites {health.modules?.stealth_marketer?.invites_today ?? 0}/
+                      {health.modules?.stealth_marketer?.max_invites_per_day ?? 0}
+                    </span>
+                    <span>signals {health.modules?.signal_copier?.signals_copied_today ?? 0}</span>
+                    <span style={{ color: health.database_connected ? '#38bd5f' : '#ef4444' }}>
+                      db {health.database_connected ? 'ok' : 'down'}
+                    </span>
+                    {health.growth?.subscribers != null && (
+                      <span>subs {health.growth.subscribers}
+                        {health.growth.growth_24h != null &&
+                          ` (${health.growth.growth_24h >= 0 ? '+' : ''}${health.growth.growth_24h})`}
+                      </span>
+                    )}
+                  </>
+                )}
+              </div>
             </div>
           )}
         </header>

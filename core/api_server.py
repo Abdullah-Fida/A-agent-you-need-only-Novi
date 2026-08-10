@@ -72,13 +72,73 @@ async def get_report(request: Request):
         return {"status": "API standalone mode", "subscribers": 0, "posts_today": 0, "replies_today": 0, "max_posts": 0, "max_replies": 0}
         
     brain = request.app.state.brain
+    status = ("killed" if brain.master_kill else
+              "paused" if brain.is_paused else
+              "sleeping" if brain.is_sleeping else "running")
     return {
-        "status": "paused" if brain.is_paused else ("sleeping" if brain.is_sleeping else "running"),
+        "status": status,
         "subscribers": brain.current_subscribers,
         "posts_today": brain.posts_today,
         "replies_today": brain.replies_today,
         "max_posts": brain.max_posts_today,
-        "max_replies": brain.max_replies_today
+        "max_replies": brain.max_replies_today,
+        "errors_today": brain.errors_today,
+        "current_time_pkt": brain._get_pkt_now().strftime("%I:%M %p, %b %d"),
+        "sleep_window": f"{brain.SCHEDULE['sleep_start']}:00 - {brain.SCHEDULE['sleep_end']}:00 PKT",
+    }
+
+
+@app.get("/api/health")
+async def health(request: Request):
+    """
+    Full system health in one call: what is running, what is connected,
+    and whether the bot is currently awake. Use this to answer
+    'is it working right now?' without digging through logs.
+    """
+    st = request.app.state
+    brain = getattr(st, 'brain', None)
+    sm = getattr(st, 'stealth_marketer', None)
+    sc = getattr(st, 'signal_copier', None)
+    bc = getattr(st, 'telegram_broadcaster', None)
+
+    def connected(mod):
+        try:
+            return bool(mod and mod.client and mod.client.is_connected())
+        except Exception:
+            return False
+
+    awake = bool(brain) and not brain.is_sleeping and not brain.master_kill and not brain.is_paused
+
+    return {
+        "ok": True,
+        "awake": awake,
+        "current_time_pkt": brain._get_pkt_now().strftime("%I:%M %p, %b %d") if brain else None,
+        "sleeping": brain.is_sleeping if brain else None,
+        "sleep_window": (f"{brain.SCHEDULE['sleep_start']}:00 - {brain.SCHEDULE['sleep_end']}:00 PKT"
+                         if brain else None),
+        "always_on": (brain.SCHEDULE['sleep_start'] == brain.SCHEDULE['sleep_end']) if brain else None,
+        "master_kill": brain.master_kill if brain else None,
+        "modules": {
+            "news_agent": {
+                "active": brain.news_module_active if brain else False,
+                "telegram_connected": connected(bc),
+                "posts_today": brain.posts_today if brain else 0,
+                "max_posts": brain.max_posts_today if brain else 0,
+            },
+            "signal_copier": sc.status if sc else {"active": False, "wired": False},
+            "stealth_marketer": sm.status if sm else {"active": False, "wired": False},
+            "website": {
+                "active": brain.website_module_active if brain else False,
+                "articles_written": getattr(
+                    getattr(getattr(st, 'content_engine', None), 'article_agent', None),
+                    'articles_written', 0),
+                "site_url": getattr(getattr(st, 'config', None), 'site_url', ''),
+            },
+        },
+        "buffer": bb.status if (bb := getattr(st, 'buffer_broadcaster', None)) else {"configured": False},
+        "database_connected": bool(brain and brain.db and getattr(brain.db, "_initialized", False)),
+        "email": nm.health if (nm := getattr(st, 'notification_manager', None)) else {"configured": False},
+        "growth": ge.summary() if (ge := getattr(st, 'growth_engine', None)) else None,
     }
 
 @app.post("/api/test_email")
@@ -95,28 +155,133 @@ async def test_email(request: Request):
 
 @app.post("/api/modify_limits")
 async def modify_limits(req: LimitUpdateRequest, request: Request):
-    """Modifies Brain limits and sends a notification email."""
-    if not hasattr(request.app.state, 'brain'):
+    """
+    Modifies any runtime limit and sends a notification email.
+
+    Supported limit_type values:
+      post            — max news posts per day
+      stealth         — max stealth replies per day
+      stealth_invite  — max people invited per day (hard-capped for safety)
+      signal          — max signals copied per day (0 = unlimited)
+    """
+    brain = getattr(request.app.state, 'brain', None)
+    if not brain:
         raise HTTPException(status_code=500, detail="Brain not wired.")
-        
-    brain = request.app.state.brain
-    nm = request.app.state.notification_manager
-    msg = ""
-    
-    if req.limit_type == "stealth":
-        brain.max_replies_today = req.new_value
-        msg = f"Dashboard manually updated daily stealth replies to {req.new_value}."
-    elif req.limit_type == "post":
-        brain.max_posts_today = req.new_value
-        msg = f"Dashboard manually updated daily posts to {req.new_value}."
+
+    nm = getattr(request.app.state, 'notification_manager', None)
+    sm = getattr(request.app.state, 'stealth_marketer', None)
+    sc = getattr(request.app.state, 'signal_copier', None)
+
+    limit_type = (req.limit_type or "").strip().lower()
+    new_value = int(req.new_value)
+    if new_value < 0:
+        raise HTTPException(status_code=400, detail="Limit cannot be negative.")
+
+    detail = {}
+
+    if limit_type == "stealth":
+        old = brain.max_replies_today
+        brain.max_replies_today = new_value
+        msg = f"Daily stealth reply limit updated: {old} → {new_value}."
+
+    elif limit_type == "post":
+        old = brain.max_posts_today
+        brain.max_posts_today = new_value
+        msg = f"Daily news post limit updated: {old} → {new_value}."
+
+    elif limit_type in ("stealth_invite", "invite"):
+        if not sm:
+            raise HTTPException(status_code=500, detail="Stealth Marketer not wired.")
+        detail = sm.set_daily_invite_limit(new_value)
+        msg = f"Daily invite limit updated: {detail['old']} → {detail['applied']}."
+        if detail["capped"]:
+            msg += (f" Requested {detail['requested']} but capped at "
+                    f"{detail['hard_cap']} to protect the account from a Telegram ban.")
+
+    elif limit_type == "signal":
+        if not sc:
+            raise HTTPException(status_code=500, detail="Signal Copier not wired.")
+        old = sc.max_signals_per_day
+        sc.set_daily_limit(new_value)
+        msg = (f"Daily signal limit updated: {old or 'unlimited'} → "
+               f"{sc.max_signals_per_day or 'unlimited'}.")
+
     else:
-        raise HTTPException(status_code=400, detail="Invalid limit type.")
-        
-    # Brain notifies the decision it implemented
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid limit type. Use: post, stealth, stealth_invite, or signal."
+        )
+
     if nm:
-        await nm.send_notification("Dashboard Action: Limits Modified", msg)
-        
-    return {"success": True, "message": msg}
+        await nm.notify_strategy_change(
+            change_type=f"{limit_type} limit changed",
+            old_value=str(detail.get("old", "")) or "previous",
+            new_value=str(detail.get("applied", new_value)),
+            reason="Manually changed from the NOVI dashboard."
+        )
+
+    if brain.db:
+        await brain.db.log_metric(f"limit_{limit_type}", new_value,
+                                  {"action": "manual_update", "detail": detail})
+    await brain.save_state()
+
+    return {"success": True, "message": msg, "detail": detail}
+
+
+class SleepWindowRequest(BaseModel):
+    start_hour: int
+    end_hour: int
+
+
+@app.get("/api/schedule")
+async def get_schedule(request: Request):
+    """Returns the current sleep window and posting schedule (PKT)."""
+    brain = getattr(request.app.state, 'brain', None)
+    if not brain:
+        raise HTTPException(status_code=500, detail="Brain not wired.")
+
+    now = brain._get_pkt_now()
+    return {
+        "current_time_pkt": now.strftime("%I:%M %p, %b %d"),
+        "sleep_start_hour": brain.SCHEDULE["sleep_start"],
+        "sleep_end_hour": brain.SCHEDULE["sleep_end"],
+        "currently_sleeping": brain.is_sleeping,
+        "always_on": brain.SCHEDULE["sleep_start"] == brain.SCHEDULE["sleep_end"],
+        "post_slots": brain.SCHEDULE["post_slots"],
+        "morning_brief": brain.SCHEDULE["morning_brief"],
+    }
+
+
+@app.post("/api/schedule/sleep_window")
+async def set_sleep_window(req: SleepWindowRequest, request: Request):
+    """
+    Changes when the bot sleeps. Set start_hour == end_hour for 24/7 operation.
+    This answers 'I don't know when it is sleeping and working'.
+    """
+    brain = getattr(request.app.state, 'brain', None)
+    if not brain:
+        raise HTTPException(status_code=500, detail="Brain not wired.")
+
+    nm = getattr(request.app.state, 'notification_manager', None)
+    old = (brain.SCHEDULE["sleep_start"], brain.SCHEDULE["sleep_end"])
+    brain.set_sleep_window(req.start_hour, req.end_hour)
+    new = (brain.SCHEDULE["sleep_start"], brain.SCHEDULE["sleep_end"])
+
+    always_on = new[0] == new[1]
+    msg = ("Bot is now ALWAYS ON (24/7, never sleeps)." if always_on
+           else f"Sleep window updated: {new[0]}:00 → {new[1]}:00 PKT.")
+
+    if nm:
+        await nm.notify_strategy_change(
+            change_type="Sleep Window Changed",
+            old_value=f"{old[0]}:00 → {old[1]}:00 PKT",
+            new_value="24/7 — never sleeps" if always_on else f"{new[0]}:00 → {new[1]}:00 PKT",
+            reason="Changed from the NOVI dashboard."
+        )
+
+    await brain.save_state()
+    return {"success": True, "message": msg, "currently_sleeping": brain.is_sleeping,
+            "sleep_start_hour": new[0], "sleep_end_hour": new[1], "always_on": always_on}
 
 @app.get("/api/logs")
 async def get_logs():
@@ -173,6 +338,315 @@ async def stealth_emergency_reset(request: Request):
     sm = request.app.state.stealth_marketer
     sm.reset_emergency()
     return {"success": True, "message": "Emergency stop flag has been reset. You can now reactivate the Stealth Marketer."}
+
+
+# ═══════════════════════════════════════════════════════════
+#  MODULE TOGGLE ENDPOINTS (Dashboard Control Panel)
+# ═══════════════════════════════════════════════════════════
+
+@app.get("/api/modules/status")
+async def modules_status(request: Request):
+    """Returns the ON/OFF status of all modules for the dashboard."""
+    brain = getattr(request.app.state, 'brain', None)
+    sm = getattr(request.app.state, 'stealth_marketer', None)
+    sc = getattr(request.app.state, 'signal_copier', None)
+    
+    return {
+        "news_agent": brain.news_module_active if brain else False,
+        "website_module": brain.website_module_active if brain else False,
+        "signal_copier": sc.is_active if sc else False,
+        "stealth_reply_mode": sm._reply_active if sm else False,
+        "stealth_invite_mode": sm._scraping_active if sm else False,
+        "master_kill": brain.master_kill if brain else False,
+        "stealth_status": sm.status if sm else {},
+        "signal_copier_status": sc.status if sc else {},
+    }
+
+@app.post("/api/news/toggle")
+async def toggle_news(request: Request):
+    """Toggles the News Agent ON or OFF."""
+    brain = getattr(request.app.state, 'brain', None)
+    nm = getattr(request.app.state, 'notification_manager', None)
+    if not brain:
+        raise HTTPException(status_code=500, detail="Brain not wired.")
+    
+    brain.news_module_active = not brain.news_module_active
+    status = "ACTIVE" if brain.news_module_active else "DEACTIVATED"
+    
+    if nm:
+        await nm.notify_module_status("News Agent (@Novi_Network)", status,
+            f"News posting has been turned {'ON' if brain.news_module_active else 'OFF'} from the dashboard.")
+    
+    if brain.db:
+        await brain.db.log_metric("news_module_status", 1 if brain.news_module_active else 0,
+                                   {"action": "toggled", "new_status": status})
+    
+    await brain.save_state()
+    return {"success": True, "active": brain.news_module_active, "message": f"News Agent is now {status}."}
+
+@app.post("/api/website/toggle")
+async def toggle_website(request: Request):
+    """
+    Toggles the Website / auto-blogging module ON or OFF.
+
+    Default is OFF. While off, the Article Agent does not run at all — no
+    article is generated and nothing is published to the site, so its
+    (separate) API key is never charged.
+    """
+    brain = getattr(request.app.state, 'brain', None)
+    nm = getattr(request.app.state, 'notification_manager', None)
+    if not brain:
+        raise HTTPException(status_code=500, detail="Brain not wired.")
+
+    brain.website_module_active = not brain.website_module_active
+    status = "ACTIVE" if brain.website_module_active else "DEACTIVATED"
+
+    if nm:
+        await nm.notify_module_status(
+            "Website / Auto-Blogging", status,
+            f"Article generation has been turned "
+            f"{'ON' if brain.website_module_active else 'OFF'} from the dashboard."
+        )
+
+    if brain.db:
+        await brain.db.log_metric("website_module_status",
+                                  1 if brain.website_module_active else 0,
+                                  {"action": "toggled", "new_status": status})
+
+    await brain.save_state()
+    return {"success": True, "active": brain.website_module_active,
+            "message": f"Website / Auto-Blogging is now {status}."}
+
+
+@app.post("/api/signal_copier/toggle")
+async def toggle_signal_copier(request: Request):
+    """Toggles the Signal Copier (Whale Tracker VIP) ON or OFF."""
+    sc = getattr(request.app.state, 'signal_copier', None)
+    if not sc:
+        raise HTTPException(status_code=500, detail="Signal Copier not wired.")
+    
+    if sc.is_active:
+        await sc.deactivate()
+        return {"success": True, "active": False, "message": "Signal Copier (Whale Tracker VIP) has been DEACTIVATED."}
+    else:
+        await sc.activate()
+        return {"success": True, "active": True, "message": "Signal Copier (Whale Tracker VIP) has been ACTIVATED."}
+
+@app.post("/api/stealth/toggle_reply")
+async def toggle_stealth_reply(request: Request):
+    """Toggles the Stealth Marketer Reply Mode ON or OFF."""
+    sm = getattr(request.app.state, 'stealth_marketer', None)
+    nm = getattr(request.app.state, 'notification_manager', None)
+    if not sm:
+        raise HTTPException(status_code=500, detail="Stealth Marketer not wired.")
+    
+    sm._reply_active = not sm._reply_active
+    status = "ACTIVE" if sm._reply_active else "DEACTIVATED"
+    
+    if nm:
+        await nm.notify_module_status("Stealth Reply Mode", status,
+            f"Reply mode has been turned {'ON' if sm._reply_active else 'OFF'} from the dashboard.")
+    
+    if sm.db:
+        await sm.db.log_metric("stealth_reply_status", 1 if sm._reply_active else 0,
+                                {"action": "toggled", "new_status": status})
+    
+    return {"success": True, "active": sm._reply_active, "message": f"Stealth Reply Mode is now {status}."}
+
+@app.post("/api/stealth/toggle_invite")
+async def toggle_stealth_invite(request: Request):
+    """Toggles the Stealth Marketer Member Adding ON or OFF."""
+    sm = getattr(request.app.state, 'stealth_marketer', None)
+    nm = getattr(request.app.state, 'notification_manager', None)
+    if not sm:
+        raise HTTPException(status_code=500, detail="Stealth Marketer not wired.")
+    
+    sm._scraping_active = not sm._scraping_active
+    status = "ACTIVE" if sm._scraping_active else "DEACTIVATED"
+    
+    if nm:
+        await nm.notify_module_status("Stealth Member Adding", status,
+            f"Member adding has been turned {'ON' if sm._scraping_active else 'OFF'} from the dashboard.")
+    
+    if sm.db:
+        await sm.db.log_metric("stealth_invite_status", 1 if sm._scraping_active else 0,
+                                {"action": "toggled", "new_status": status})
+    
+    return {"success": True, "active": sm._scraping_active, "message": f"Stealth Member Adding is now {status}."}
+
+@app.post("/api/master_kill")
+async def master_kill(request: Request):
+    """Master kill switch — stops ALL modules."""
+    brain = getattr(request.app.state, 'brain', None)
+    sm = getattr(request.app.state, 'stealth_marketer', None)
+    sc = getattr(request.app.state, 'signal_copier', None)
+    nm = getattr(request.app.state, 'notification_manager', None)
+    
+    if not brain:
+        raise HTTPException(status_code=500, detail="Brain not wired.")
+    
+    brain.master_kill = not brain.master_kill
+    
+    if brain.master_kill:
+        # Kill everything
+        brain.news_module_active = False
+        if sm:
+            await sm.deactivate(reason="Master Kill Switch engaged from dashboard")
+        if sc:
+            await sc.deactivate()
+        
+        if nm:
+            await nm.send_notification(
+                subject="MASTER KILL SWITCH — ALL MODULES STOPPED",
+                message="The master kill switch has been engaged from the dashboard. ALL modules are now OFF.",
+                is_critical=True
+            )
+        return {"success": True, "master_kill": True, "message": "MASTER KILL ENGAGED. All modules stopped."}
+    else:
+        if nm:
+            await nm.send_notification(
+                subject="Master Kill Switch Released",
+                message="The master kill switch has been released. Modules can now be individually activated.",
+                is_critical=False
+            )
+        return {"success": True, "master_kill": False, "message": "Master kill released. You can now activate individual modules."}
+
+# ═══════════════════════════════════════════════════════════
+#  ON-DEMAND ACTIONS (NOVI voice / dashboard commands)
+# ═══════════════════════════════════════════════════════════
+
+class GrowNowRequest(BaseModel):
+    count: int = 1
+
+
+@app.post("/api/growth/invite_now")
+async def invite_now(req: GrowNowRequest, request: Request):
+    """
+    Runs an invite cycle IMMEDIATELY on command, instead of waiting for the
+    hourly loop. This is what makes "Novi, add some subscribers" actually do
+    something right now.
+
+    All normal safety rules still apply — daily cap, spacing, sleep hours and
+    the emergency stop are enforced inside the Stealth Marketer.
+    """
+    sm = getattr(request.app.state, 'stealth_marketer', None)
+    brain = getattr(request.app.state, 'brain', None)
+    if not sm:
+        raise HTTPException(status_code=500, detail="Stealth Marketer not wired.")
+
+    if brain and brain.master_kill:
+        raise HTTPException(status_code=409, detail="Master kill switch is engaged. Release it first.")
+    if sm._emergency_stop:
+        raise HTTPException(status_code=409,
+                            detail="Emergency stop is engaged. Reset it before inviting.")
+    if not sm.client:
+        raise HTTPException(status_code=409, detail="Stealth account is not connected.")
+
+    if not sm.is_active:
+        await sm.activate()
+
+    remaining = sm._invites_max_per_day - sm._invites_today
+    if remaining <= 0:
+        return {"success": False,
+                "message": f"Daily invite limit already reached "
+                           f"({sm._invites_today}/{sm._invites_max_per_day}). "
+                           f"Raise the limit or wait until tomorrow."}
+
+    # Run in the background — a full cycle includes long human-like delays
+    # and must never block the HTTP response.
+    asyncio.create_task(sm.scrape_and_invite_cycle())
+
+    return {
+        "success": True,
+        "message": f"Invite cycle started. Up to {min(req.count, remaining)} "
+                   f"invitation(s) will go out with human-like delays. "
+                   f"You will get an email for each one.",
+        "invites_today": sm._invites_today,
+        "daily_limit": sm._invites_max_per_day,
+    }
+
+
+@app.get("/api/growth/status")
+async def growth_status(request: Request):
+    """Subscriber growth, measured — plus a recommendation on what to change."""
+    ge = getattr(request.app.state, 'growth_engine', None)
+    if not ge:
+        raise HTTPException(status_code=500, detail="Growth Engine not wired.")
+    return ge.summary()
+
+
+class PublishRequest(BaseModel):
+    category: str = ""
+    publish: bool = True
+
+
+@app.post("/api/post_now")
+async def post_now(req: PublishRequest, request: Request):
+    """
+    Full one-shot pipeline on command: scrape -> synthesize -> image -> publish.
+
+    This is the "Novi, post something right now" path. /api/create_post only
+    drafts; this drafts AND publishes in a single call.
+    """
+    st = request.app.state
+    ce = getattr(st, 'content_engine', None)
+    bc = getattr(st, 'telegram_broadcaster', None)
+    brain = getattr(st, 'brain', None)
+
+    if not ce:
+        raise HTTPException(status_code=500, detail="Content Engine not wired.")
+    if brain and brain.master_kill:
+        raise HTTPException(status_code=409, detail="Master kill switch is engaged.")
+
+    category = (req.category or "").strip() or "all"
+    if category.lower() == "trending":
+        category = "all"
+
+    try:
+        package = await ce.produce_content_package(category=category, force=True)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Content generation failed: {e}")
+
+    if not package:
+        raise HTTPException(status_code=500,
+                            detail="Could not produce a post. News sources or the AI may be unreachable.")
+
+    if package.get("image_path"):
+        package["image_url"] = f"/generated_images/{os.path.basename(package['image_path'])}"
+    st.last_generated_package = package
+
+    if not req.publish:
+        return {"success": True, "published": False,
+                "message": "Draft ready for review.", "package": package}
+
+    if not bc or not bc.is_ready:
+        raise HTTPException(status_code=409,
+                            detail="Telegram Broadcaster is not connected, so the post could not be published.")
+
+    ok = await bc.post(package)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Telegram rejected the post. Check the logs.")
+
+    if brain:
+        brain.record_post(category=package.get("category", "general"),
+                          topic=package.get("original_title", ""))
+    ge = getattr(st, 'growth_engine', None)
+    if ge:
+        ge.record_action(ge.ACTION_POST, {"category": package.get("category")})
+
+    # Same fan-out the scheduler uses: website article, Reddit, X, Facebook
+    fanout_results = {}
+    fo = getattr(st, 'fanout', None)
+    if fo:
+        fanout_results = await fo.distribute(package, story=package.get("story"))
+
+    delivered = [k for k, v in fanout_results.items() if v]
+    return {"success": True, "published": True,
+            "message": f"Published to {bc.channel_username}"
+                       + (f" and {', '.join(delivered)}." if delivered else "."),
+            "fanout": fanout_results,
+            "package": {k: v for k, v in package.items() if k != "story"}}
+
 
 @app.post("/api/generate_image")
 async def generate_image_endpoint(req: ImageGenRequest):

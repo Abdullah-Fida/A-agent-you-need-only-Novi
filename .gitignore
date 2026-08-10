@@ -5,3 +5,9 @@ omni_bot.log
 sessions/
 novi-dashboard/node_modules/
 novi-dashboard/dist/
+
+# Build artifacts / generated output
+assets/generated_images/
+twitter_auth.json
+twitter_error.png
+*.log

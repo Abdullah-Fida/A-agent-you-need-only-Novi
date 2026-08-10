@@ -13,6 +13,7 @@ SECURITY ARCHITECTURE:
 """
 import logging
 import asyncio
+import hashlib
 import random
 import time
 import os
@@ -40,6 +41,8 @@ from telethon.errors import (
     AuthKeyUnregisteredError,
     PhoneNumberBannedError
 )
+
+from utils.telegram_utils import resolve_chat
 
 # Custom logger that NEVER writes scraped user data
 logger = logging.getLogger("OmniBot.Stealth")
@@ -82,13 +85,14 @@ class StealthMarketer:
                  ai_engine: Any, brain: Any, channel_username: str,
                  target_groups: list, engagement_rate: float = 0.01,
                  notification_manager: Any = None, db: Any = None,
-                 session_string: str = ""):
+                 session_string: str = "", stealth_invite_group: str = ""):
         self.api_id = api_id
         self.api_hash = api_hash
         self.phone = stealth_phone
         self.ai = ai_engine
         self.brain = brain
         self.channel_username = channel_username
+        self.stealth_invite_group = stealth_invite_group
         self.target_groups = target_groups
         self.engagement_rate = engagement_rate
         self.nm = notification_manager
@@ -104,12 +108,31 @@ class StealthMarketer:
         # Anti-detection counters
         self._invites_today = 0
         self._invites_max_per_day = 2
+        # Hard ceiling. Telegram reliably flags accounts well before this, so
+        # the dashboard cannot raise the daily limit past it.
+        self.INVITE_HARD_CAP = 30
         self._last_invite_time = 0
         self._last_scrape_time = 0
         self._session_start = 0
+        self._invite_day = None  # PKT date the counter belongs to
 
-        # Pick a random device fingerprint for this session
-        self._device = random.choice(DEVICE_PROFILES)
+        # Cached resolved entities
+        self._invite_group_entity = None
+        self._cached_invite_link = None
+        self._handlers_registered = False
+
+        # Device fingerprint must be STABLE across restarts. A real phone does
+        # not change model between app launches; a session whose device keeps
+        # changing is a strong bot signal to Telegram. We derive it
+        # deterministically from the account identity instead of picking at
+        # random on every boot.
+        seed_source = (stealth_phone or session_string or channel_username or "novi-stealth")
+        seed = int(hashlib.sha256(seed_source.encode("utf-8", "ignore")).hexdigest()[:8], 16)
+        self._device = DEVICE_PROFILES[seed % len(DEVICE_PROFILES)]
+
+        # Minimum spacing between two invites, regardless of the daily limit.
+        # Even at a high daily limit, invites stay spread out across the day.
+        self.MIN_SECONDS_BETWEEN_INVITES = 25 * 60
 
     # ═══════════════════════════════════════════════════════════
     #  CONNECTION & LIFECYCLE
@@ -122,6 +145,19 @@ class StealthMarketer:
             return
 
         from telethon.sessions import StringSession
+
+        # Reconnect path — never re-register handlers (would duplicate replies)
+        if self.client is not None and self._handlers_registered:
+            try:
+                if not self.client.is_connected():
+                    await self.client.connect()
+                if await self.client.is_user_authorized():
+                    logger.info("Stealth Marketer reconnected (existing handlers reused).")
+                else:
+                    logger.error("Stealth Marketer session is no longer authorized.")
+            except Exception as e:
+                logger.error(f"Stealth Marketer reconnect failed: {type(e).__name__}: {e}")
+            return
 
         if self.session_string:
             session = StringSession(self.session_string)
@@ -151,6 +187,7 @@ class StealthMarketer:
                 async def handler(event):
                     if self._active and self._reply_active:
                         await self._handle_new_message(event)
+                self._handlers_registered = True
 
             logger.info(
                 f"Stealth Marketer connected as: {me.first_name}. "  # type: ignore
@@ -230,6 +267,54 @@ class StealthMarketer:
         self._invites_today = 0
         logger.info("Emergency stop flag has been manually reset.")
 
+    def set_daily_invite_limit(self, new_limit: int) -> Dict:
+        """
+        Adjusts how many people may be invited per day, from the dashboard/NOVI.
+
+        Clamped to INVITE_HARD_CAP: raising this too high is the fastest way to
+        get the burner number banned, so the ceiling is enforced in code rather
+        than left to the caller.
+        """
+        requested = max(0, int(new_limit))
+        applied = min(requested, self.INVITE_HARD_CAP)
+        old = self._invites_max_per_day
+        self._invites_max_per_day = applied
+
+        capped = applied < requested
+        logger.info(f"Daily invite limit changed: {old} -> {applied}"
+                    + (f" (requested {requested}, capped at {self.INVITE_HARD_CAP})" if capped else ""))
+        return {
+            "old": old,
+            "requested": requested,
+            "applied": applied,
+            "capped": capped,
+            "hard_cap": self.INVITE_HARD_CAP,
+        }
+
+    def reset_daily_counters(self):
+        """Resets the per-day invite counter. Called at midnight PKT."""
+        logger.info(f"Stealth daily reset. Invites sent today: {self._invites_today}")
+        self._invites_today = 0
+        self._invite_day = self._current_day()
+
+    @staticmethod
+    def _current_day():
+        """Current PKT date — the day the invite counter belongs to."""
+        from datetime import timedelta
+        return (datetime.now(timezone.utc) + timedelta(hours=5)).date()
+
+    def _roll_day_if_needed(self):
+        """
+        Self-healing daily rollover. The main loop also resets counters at
+        midnight, but if it is restarted or stalls, this guarantees the limit
+        is never carried across days (or reset more than once a day).
+        """
+        today = self._current_day()
+        if self._invite_day is None:
+            self._invite_day = today
+        elif self._invite_day != today:
+            self.reset_daily_counters()
+
     @property
     def is_active(self) -> bool:
         return self._active
@@ -258,7 +343,7 @@ class StealthMarketer:
         if not self._active or not self._reply_active:
             return
 
-        if self.brain.is_sleeping() or not self.brain.can_reply():
+        if self.brain.is_sleeping or not self.brain.can_reply():
             return
 
         message_text = event.message.message
@@ -361,9 +446,28 @@ Keep it under 3 sentences."""
         if not self._active or not self._scraping_active:
             return
 
+        # Roll the daily counter over if the PKT date changed while we ran
+        self._roll_day_if_needed()
+
+        # Never operate during sleep hours. A burner account that invites
+        # people at 4 AM local time looks exactly like a bot.
+        if self.brain and self.brain.is_sleeping:
+            logger.info("Stealth invite cycle skipped: inside sleep hours.")
+            return
+
         if self._invites_today >= self._invites_max_per_day:
             logger.info("Daily invite limit reached. Sleeping until tomorrow.")
             return
+
+        # Enforce minimum spacing between invites
+        if self._last_invite_time:
+            elapsed = time.time() - self._last_invite_time
+            if elapsed < self.MIN_SECONDS_BETWEEN_INVITES:
+                logger.info(
+                    f"Invite spacing not met ({elapsed / 60:.0f}m of "
+                    f"{self.MIN_SECONDS_BETWEEN_INVITES / 60:.0f}m). Skipping this cycle."
+                )
+                return
 
         logger.info("Starting scrape & invite cycle.")
 
@@ -418,13 +522,25 @@ Keep it under 3 sentences."""
             # Mimic human behavior: scroll through the group for a bit
             await asyncio.sleep(random.uniform(3.0, 8.0))
 
-            participants = await self.client(GetParticipantsRequest(  # type: ignore
-                channel=entity,
-                filter=ChannelParticipantsRecent(),
-                offset=0,
-                limit=50,  # Small batch to avoid suspicion
-                hash=0
-            ))
+            try:
+                participants = await self.client(GetParticipantsRequest(  # type: ignore
+                    channel=entity,
+                    filter=ChannelParticipantsRecent(),
+                    offset=0,
+                    limit=50,  # Small batch to avoid suspicion
+                    hash=0
+                ))
+            except ChatAdminRequiredError:
+                logger.info(f"Need to join {group_username} to scrape members. Joining now...")
+                await self.client(JoinChannelRequest(entity))
+                await asyncio.sleep(random.uniform(5.0, 10.0))
+                participants = await self.client(GetParticipantsRequest(  # type: ignore
+                    channel=entity,
+                    filter=ChannelParticipantsRecent(),
+                    offset=0,
+                    limit=50,
+                    hash=0
+                ))
 
             user_ids = []
             for user in participants.users:  # type: ignore
@@ -432,18 +548,18 @@ Keep it under 3 sentences."""
                     continue
                 user_ids.append(user.id)
 
-            # Store scraped IDs to Supabase ONLY (zero console trace)
-            if self.db:
-                for uid in user_ids:
-                    try:
-                        await self.db.client.table("scraped_users").upsert({
-                            "user_id": uid,
-                            "source_group": group_username,
-                            "scraped_at": datetime.now(timezone.utc).isoformat(),
-                            "invited": False
-                        }).execute()
-                    except Exception:
-                        pass  # Silently skip duplicates
+            # Store scraped IDs to Supabase ONLY (zero console trace).
+            # supabase-py is synchronous, so this must run in a thread — the
+            # previous `await` on it raised TypeError and silently discarded
+            # every scraped user, which is why nobody was ever invited.
+            if self.db and user_ids:
+                rows = [{
+                    "user_id": uid,
+                    "source_group": group_username,
+                    "scraped_at": datetime.now(timezone.utc).isoformat(),
+                    "invited": False,
+                } for uid in user_ids]
+                await self.db.upsert_scraped_users(rows)
 
             return user_ids
 
@@ -459,15 +575,107 @@ Keep it under 3 sentences."""
 
     async def _filter_already_invited(self, user_ids: List[int]) -> List[int]:
         """Filters out users we've already invited using the Supabase database."""
-        if not self.db or not self.db._initialized:
+        if not self.db:
             return user_ids
+        already_invited = await self.db.get_invited_user_ids()
+        return [uid for uid in user_ids if uid not in already_invited]
+
+    async def _get_invite_group(self):
+        """Resolves and caches the destination group entity."""
+        if self._invite_group_entity is not None:
+            return self._invite_group_entity
+        target = self.stealth_invite_group or self.channel_username
+        self._invite_group_entity = await resolve_chat(self.client, target, "stealth invite group")
+        return self._invite_group_entity
+
+    async def _send_invite_link(self, user_entity, group_entity) -> bool:
+        """
+        Sends a personal, opt-in invitation via DM instead of force-adding.
+
+        This is both safer for the account (force-adding strangers is the
+        single fastest way to get a number banned) and respects the user's
+        choice about which groups they join.
+        """
+        try:
+            invite_link = await self._get_invite_link(group_entity)
+            if not invite_link:
+                logger.error("Could not create an invite link. Skipping this user.")
+                return False
+
+            message = await self._compose_invite_message(invite_link)
+
+            # Type realistically before sending the DM
+            try:
+                async with self.client.action(user_entity, 'typing'):  # type: ignore
+                    await asyncio.sleep(min(len(message) / 12.0, 12.0))
+            except Exception:
+                pass
+
+            await self.client.send_message(user_entity, message, link_preview=False)
+            logger.info("Sent 1 opt-in invitation.")
+            return True
+
+        except (UserPrivacyRestrictedError, UserNotMutualContactError):
+            logger.info("User does not accept messages from strangers. Skipping.")
+            return False
+        except PeerFloodError:
+            await self.emergency_kill("PeerFloodError while sending invitation — Telegram flagged the account.")
+            return False
+        except FloodWaitError as e:
+            await self._handle_flood_wait(e, "invite_dm")
+            return False
+        except Exception as e:
+            logger.error(f"Failed to send invitation: {type(e).__name__}")
+            return False
+
+    async def _get_invite_link(self, group_entity) -> Optional[str]:
+        """Fetches (and caches) a shareable invite link for the destination group."""
+        if self._cached_invite_link:
+            return self._cached_invite_link
+
+        username = getattr(group_entity, 'username', None)
+        if username:
+            self._cached_invite_link = f"https://t.me/{username}"
+            return self._cached_invite_link
 
         try:
-            result = self.db.client.table("scraped_users").select("user_id").eq("invited", True).execute()
-            already_invited = {row["user_id"] for row in (result.data or [])}
-            return [uid for uid in user_ids if uid not in already_invited]
+            from telethon.tl.functions.messages import ExportChatInviteRequest
+            result = await self.client(ExportChatInviteRequest(peer=group_entity))  # type: ignore
+            link = getattr(result, 'link', None)
+            if link:
+                self._cached_invite_link = link
+                return link
+        except Exception as e:
+            logger.warning(f"Could not export invite link: {type(e).__name__}")
+
+        return None
+
+    async def _compose_invite_message(self, invite_link: str) -> str:
+        """Builds a short, human invitation message."""
+        fallback = (
+            f"Hey! I run a small group where we share crypto market updates and signals. "
+            f"Thought you might find it useful — no pressure at all, feel free to ignore this.\n\n"
+            f"{invite_link}"
+        )
+        try:
+            text = await self.ai.generate(
+                task="stealth",
+                system_prompt=(
+                    "You write short, friendly, low-pressure Telegram invitation messages. "
+                    "Sound like a real person, not an advertisement. Two sentences maximum. "
+                    "Make it clear the person is free to ignore the message. "
+                    "Do NOT include the link — it will be appended automatically. "
+                    "Output only the message text."
+                ),
+                user_prompt="Write a casual invitation to a crypto market updates group.",
+                max_tokens=100,
+                temperature=0.8
+            )
+            if text:
+                return f"{text.strip()}\n\n{invite_link}"
         except Exception:
-            return user_ids
+            pass
+        return fallback
 
     async def _invite_user(self, user_id: int) -> bool:
         """
@@ -478,9 +686,6 @@ Keep it under 3 sentences."""
             return False
 
         try:
-            # Resolve our channel entity
-            channel = await self.client.get_entity(self.channel_username)
-
             # Random pre-invite delay (30s to 2 min) to mimic human thought
             await asyncio.sleep(random.uniform(30, 120))
 
@@ -488,24 +693,30 @@ Keep it under 3 sentences."""
             if not self._active or not self._scraping_active:
                 return False
 
-            # Attempt the invite
+            # Resolve the destination group (handles the -100 supergroup prefix)
+            my_group = await self._get_invite_group()
+            if my_group is None:
+                logger.error(
+                    f"Invite group '{self.stealth_invite_group}' could not be resolved. "
+                    f"Make sure the burner is a member/admin of that group."
+                )
+                await self.deactivate("Invite group unreachable — check STEALTH_INVITE_GROUP.")
+                return False
+
             user_entity = await self.client.get_entity(user_id)
-            await self.client(InviteToChannelRequest(  # type: ignore
-                channel=channel,
-                users=[user_entity]
-            ))
+
+            # CONSENT-FIRST: never force-add. We send a personal invite link and
+            # let the user choose to join. Forced adding is what gets burner
+            # accounts banned, and it is not something we do.
+            invited = await self._send_invite_link(user_entity, my_group)
+            if not invited:
+                return False
 
             self._last_invite_time = time.time()
 
             # Mark as invited in Supabase (zero console trace)
             if self.db:
-                try:
-                    self.db.client.table("scraped_users").update({
-                        "invited": True,
-                        "invited_at": datetime.now(timezone.utc).isoformat()
-                    }).eq("user_id", user_id).execute()
-                except Exception:
-                    pass
+                await self.db.mark_user_invited(user_id, outcome="sent")
 
             logger.info("Successfully invited 1 user to the channel.")
 
@@ -522,10 +733,7 @@ Keep it under 3 sentences."""
         except UserAlreadyParticipantError:
             logger.info("User is already a member. Skipping.")
             if self.db:
-                try:
-                    self.db.client.table("scraped_users").update({"invited": True}).eq("user_id", user_id).execute()
-                except Exception:
-                    pass
+                await self.db.mark_user_invited(user_id, outcome="already_member")
             return False
 
         except UserPrivacyRestrictedError:

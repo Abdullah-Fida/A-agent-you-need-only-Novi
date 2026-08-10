@@ -2,19 +2,58 @@
 Multi-Key OpenRouter AI Engine with automatic failover, retry, and self-healing.
 Routes different tasks to different free models via a pool of API keys.
 """
+import asyncio
 import logging
+import random
 import re
 from typing import List, Optional, Dict
 from openai import AsyncOpenAI
 
 logger = logging.getLogger("OmniBot.AI")
 
-# Model assignments for different tasks
+# Model assignments for different tasks.
+# "openrouter/free" is an auto-router that picks an available free model.
 MODELS = {
-    "synthesizer": "openrouter/free",
-    "headline":    "openrouter/free",
-    "stealth":     "openrouter/free",
+    "synthesizer":      "openrouter/free",  # social posts (Telegram/X/Reddit)
+    "headline":         "openrouter/free",  # short image headlines
+    "stealth":          "openrouter/free",  # human-sounding group replies
+    "signal_cleansing": "openrouter/free",  # crypto signal rewriting
+    "article":          "openrouter/free",  # long-form website articles
+    "seo":              "openrouter/free",  # meta title/description/keywords
+    "social_caption":   "openrouter/free",  # Facebook / Buffer captions
 }
+
+# Fallback chain used when a model returns 404 / "not a valid model ID".
+# Model availability on OpenRouter's free tier changes over time, so we try
+# several rather than hardcoding one that can silently rot.
+FALLBACK_MODELS = [
+    "openrouter/free",
+    "google/gemma-4-31b-it:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "inclusionai/ling-3.0-tiny:free",
+]
+
+DEFAULT_MODEL = "openrouter/free"
+
+
+def _apply_model_overrides():
+    """
+    Lets any task be pointed at a different model without touching code:
+
+        MODEL_ARTICLE=deepseek/deepseek-r1
+        MODEL_SYNTHESIZER=openai/gpt-4o-mini
+
+    This is the seam for swapping in a dedicated article-writing agent later.
+    """
+    import os
+    for task in list(MODELS):
+        override = os.environ.get(f"MODEL_{task.upper()}", "").strip()
+        if override:
+            MODELS[task] = override
+            logger.info(f"Model override: task '{task}' -> {override}")
+
+
+_apply_model_overrides()
 
 
 class AIEngine:
@@ -24,30 +63,65 @@ class AIEngine:
     If all keys fail, it logs a critical alert to Supabase.
     """
     
-    def __init__(self, api_keys: List[str], db=None):
+    # Known OpenAI-compatible providers. Both OpenRouter and Groq speak the
+    # same wire protocol, so one client class serves either.
+    PROVIDERS = {
+        "openrouter": "https://openrouter.ai/api/v1",
+        "groq":       "https://api.groq.com/openai/v1",
+        "openai":     "https://api.openai.com/v1",
+    }
+
+    def __init__(self, api_keys: List[str], db=None, base_url: str = "",
+                 provider: str = "openrouter", default_model: str = "",
+                 label: str = "AI"):
+        """
+        Args:
+            api_keys:      one or more keys, rotated on failure
+            base_url:      explicit endpoint; overrides `provider`
+            provider:      'openrouter' | 'groq' | 'openai'
+            default_model: model used when a task has no specific mapping
+            label:         name used in logs, e.g. 'ArticleAI'
+        """
         if not api_keys:
-            raise ValueError("At least one OpenRouter API key is required.")
-        
+            raise ValueError(f"{label}: at least one API key is required.")
+
         self.api_keys = api_keys
         self.current_key_index = 0
-        self.db = db  # Reference to SupabaseDB for logging alerts
+        self.db = db
+        self.label = label
+        self.provider = (provider or "openrouter").lower()
+        self.base_url = base_url or self.PROVIDERS.get(self.provider, self.PROVIDERS["openrouter"])
+        self.default_model = default_model or DEFAULT_MODEL
+
         self._build_client()
-        logger.info(f"AI Engine initialized with {len(api_keys)} API key(s).")
-    
+        logger.info(f"{label} initialized — provider={self.provider}, "
+                    f"model={self.default_model}, keys={len(api_keys)}")
+
     def _build_client(self):
         """Builds an AsyncOpenAI client using the current API key."""
         self.client = AsyncOpenAI(
             api_key=self.api_keys[self.current_key_index],
-            base_url="https://openrouter.ai/api/v1"
+            base_url=self.base_url,
         )
-        logger.info(f"Using API key index {self.current_key_index} "
-                     f"({self.api_keys[self.current_key_index][:15]}...)")
+        logger.info(f"{self.label}: using API key index {self.current_key_index} "
+                    f"({self.api_keys[self.current_key_index][:12]}...)")
     
     def _rotate_key(self) -> bool:
-        """Rotates to the next API key. Returns False if all keys exhausted."""
+        """
+        Rotates to the next API key.
+
+        Returns False when we have wrapped back to the first key (i.e. every
+        key has now been tried once). With a single key configured this always
+        returns False, so callers must not treat it as "give up immediately" —
+        the retry budget in generate() governs that instead.
+        """
+        if len(self.api_keys) <= 1:
+            return False
+
         self.current_key_index += 1
         if self.current_key_index >= len(self.api_keys):
             self.current_key_index = 0  # Reset to first key
+            self._build_client()
             return False  # All keys have been tried
         self._build_client()
         logger.warning(f"Rotated to API key index {self.current_key_index}.")
@@ -68,11 +142,20 @@ class AIEngine:
         Returns:
             The generated text, or None if all keys failed.
         """
-        model = MODELS.get(task, "openrouter/free")
-        attempts = 0
-        max_attempts = len(self.api_keys) * 2  # Try each key up to twice
-        
-        while attempts < max_attempts:
+        # A dedicated engine (e.g. the article agent on its own key) uses its
+        # configured model; the shared engine routes per task.
+        if self.default_model != DEFAULT_MODEL:
+            model = self.default_model
+        else:
+            model = MODELS.get(task, self.default_model)
+
+        # Always give at least 3 tries even with a single key, and back off
+        # between them so a transient 429 doesn't kill the whole post.
+        max_attempts = max(3, len(self.api_keys) * 2)
+        tried_models = {model}
+        last_error = ""
+
+        for attempt in range(max_attempts):
             try:
                 response = await self.client.chat.completions.create(
                     model=model,
@@ -83,44 +166,69 @@ class AIEngine:
                     max_tokens=max_tokens,
                     temperature=temperature
                 )
-                
+
                 content = response.choices[0].message.content
                 if not content or not content.strip():
-                    logger.warning(f"AI returned empty content on attempt {attempts + 1}. Retrying...")
-                    attempts += 1
+                    logger.warning(f"AI returned empty content on attempt {attempt + 1}. Retrying...")
                     self._rotate_key()
+                    await self._backoff(attempt)
                     continue
-                
+
+                # Quality gate: reject if AI echoed back instructions.
+                # Only check the opening of the response — these phrases can
+                # legitimately appear inside a long article body.
+                head = content[:200].lower()
+                if "your task is to" in head or "your job is" in head:
+                    logger.warning("AI returned instructions back instead of content. Retrying...")
+                    self._rotate_key()
+                    await self._backoff(attempt)
+                    continue
+
                 return content.strip()
-                
+
             except Exception as e:
-                error_msg = str(e)
-                logger.error(f"AI generation failed (attempt {attempts + 1}): {error_msg}")
-                
-                # Check if it's a rate limit or auth error
-                if "429" in error_msg or "rate" in error_msg.lower():
-                    logger.warning("Rate limited. Rotating API key...")
-                elif "401" in error_msg or "403" in error_msg:
+                last_error = str(e)
+                logger.error(f"AI generation failed (attempt {attempt + 1}/{max_attempts}): {last_error}")
+                lowered = last_error.lower()
+
+                if "429" in last_error or "rate" in lowered:
+                    logger.warning("Rate limited. Rotating key and backing off...")
+                    self._rotate_key()
+                elif "401" in last_error or "403" in last_error:
                     logger.warning("Authentication failed. Rotating API key...")
-                elif "404" in error_msg:
-                    logger.warning(f"Model '{model}' not found. Trying fallback...")
-                    model = "meta-llama/llama-3.1-8b-instruct:free"  # Fallback to a highly reliable model
-                
-                has_more_keys = self._rotate_key()
-                attempts += 1
-                
-                if not has_more_keys and attempts >= len(self.api_keys):
-                    # All keys exhausted, log critical alert
-                    logger.critical("ALL API KEYS EXHAUSTED. Cannot generate content.")
-                    if self.db:
-                        await self.db.log_alert(
-                            level="CRITICAL",
-                            module="AIEngine",
-                            message=f"All {len(self.api_keys)} API keys failed. Last error: {error_msg}"
-                        )
-                    return None
-        
+                    self._rotate_key()
+                elif "404" in last_error or "not a valid model" in lowered or "unavailable" in lowered:
+                    # Walk the fallback chain instead of a single hardcoded model.
+                    # A dedicated engine has no fallback list — its model is the
+                    # whole point — so it just retries.
+                    chain = FALLBACK_MODELS if self.default_model == DEFAULT_MODEL else []
+                    nxt = next((m for m in chain if m not in tried_models), None)
+                    if nxt:
+                        logger.warning(f"Model '{model}' unavailable. Falling back to '{nxt}'.")
+                        model = nxt
+                        tried_models.add(nxt)
+                    else:
+                        logger.error("All fallback models exhausted.")
+                else:
+                    self._rotate_key()
+
+                await self._backoff(attempt)
+
+        logger.critical(f"AI generation failed after {max_attempts} attempts. Last error: {last_error}")
+        if self.db:
+            await self.db.log_alert(
+                level="CRITICAL",
+                module="AIEngine",
+                message=f"AI generation failed after {max_attempts} attempts "
+                        f"across {len(self.api_keys)} key(s). Last error: {last_error[:400]}"
+            )
         return None
+
+    @staticmethod
+    async def _backoff(attempt: int):
+        """Exponential backoff with jitter, capped so we never stall a post slot."""
+        delay = min(2 ** attempt, 20) + random.uniform(0, 1.5)
+        await asyncio.sleep(delay)
     
     async def synthesize_news(self, raw_articles: List[Dict], niche_context: str) -> Optional[Dict]:
         """
@@ -180,7 +288,7 @@ Sources:
             task="synthesizer",
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            max_tokens=800,
+            max_tokens=1200,
             temperature=0.7
         )
         

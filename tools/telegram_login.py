@@ -2,7 +2,7 @@ import os
 import sys
 
 # Optional: Add directory to path to ensure smooth imports if needed
-sys.path.append(os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from telethon.sync import TelegramClient
 from telethon.sessions import StringSession

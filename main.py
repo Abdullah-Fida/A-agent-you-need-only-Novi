@@ -24,9 +24,13 @@ from modules.image_generator import ImageGenerator
 from modules.content_engine import ContentEngine
 from modules.telegram_broadcaster import TelegramBroadcaster
 from modules.stealth_marketer import StealthMarketer
+from modules.signal_copier import SignalCopier
 from modules.reddit_broadcaster import RedditBroadcaster
 from modules.twitter_broadcaster import TwitterBroadcaster
 from modules.notification_manager import NotificationManager
+from modules.growth_engine import GrowthEngine
+from modules.buffer_broadcaster import BufferBroadcaster
+from modules.fanout import Fanout
 import uvicorn
 from core.api_server import app as api_app
 
@@ -54,8 +58,27 @@ async def main():
     db = SupabaseDB(url=config.supabase_url, key=config.supabase_key)
     await db.initialize()
     
-    # 3. Initialize AI Engine (Multi-Key)
-    ai_engine = AIEngine(api_keys=config.openrouter_api_keys, db=db)
+    # 3. Initialize AI Engines
+    # News Agent + everything else share one engine/key pool.
+    ai_engine = AIEngine(api_keys=config.openrouter_api_keys, db=db, label="NewsAI")
+
+    # The Article Agent can run on its OWN provider, key and model (OpenRouter,
+    # Groq, or any OpenAI-compatible endpoint). Falls back to the shared engine
+    # when no dedicated key is configured.
+    if config.article_api_keys:
+        article_ai = AIEngine(
+            api_keys=config.article_api_keys,
+            db=db,
+            provider=config.article_api_provider,
+            base_url=config.article_api_base,
+            default_model=config.article_model,
+            label="ArticleAI",
+        )
+        logger.info(f"Article Agent has a dedicated AI: {config.article_api_provider} "
+                    f"/ {config.article_model or 'provider default'}")
+    else:
+        article_ai = ai_engine
+        logger.info("Article Agent shares the News AI (no ARTICLE_API_KEYS configured).")
     
     # 4. Initialize Modules
     scraper = NewsScraper(db=db)
@@ -68,10 +91,13 @@ async def main():
         ai_engine=ai_engine,
         scraper=scraper,
         image_gen=image_gen,
-        db=db
+        db=db,
+        site_name=config.site_name,
+        site_url=config.site_url,
+        article_ai=article_ai
     )
     
-    # 5. Initialize Notification Manager (must be before Broadcaster & Stealth)
+    # 5. Initialize Notification Manager
     notification_manager = NotificationManager(
         sender_email=config.email_sender,
         app_password=config.email_app_password,
@@ -80,8 +106,19 @@ async def main():
         db=db
     )
     
-    # Telegram Broadcaster is initialized later (step 9) to include the Brain dependency
-    
+    # 6. Initialize The Brain + Growth Engine
+    # (created before the broadcasters so they can enforce Brain-owned limits)
+    brain = BotBrain(db=db, weekly_goal=config.weekly_subscriber_goal,
+                     notification_manager=notification_manager, config=config)
+
+    growth_engine = GrowthEngine(db=db, weekly_goal=config.weekly_subscriber_goal,
+                                 notification_manager=notification_manager)
+    brain.growth_engine = growth_engine
+
+    # Restore dashboard settings saved before the last restart, so a redeploy
+    # no longer silently reverts every toggle and limit to its default.
+    await brain.restore_state()
+
     # 7. Initialize Reddit Broadcaster
     reddit_broadcaster = RedditBroadcaster(
         client_id=config.reddit_client_id,
@@ -91,19 +128,34 @@ async def main():
         user_agent=config.reddit_user_agent,
         db=db
     )
-    
-    # 7.5 Initialize Twitter Broadcaster
+
+    # 7b. Initialize Buffer Broadcaster (Facebook)
+    buffer_broadcaster = BufferBroadcaster(
+        access_token=config.buffer_access_token,
+        organization_id=config.buffer_organization_id,
+        enabled_services=config.buffer_services,
+        site_url=config.site_url,
+        ai_engine=ai_engine,
+        brain=brain,
+        db=db
+    )
+    if config.buffer_access_token:
+        try:
+            await buffer_broadcaster.connect()
+        except Exception as e:
+            logger.error(f"Buffer connect failed: {e}")
+
+    # 8. Initialize Twitter Broadcaster
     twitter_broadcaster = TwitterBroadcaster(
         username=config.twitter_username,
         password=config.twitter_password,
         email=config.twitter_email,
-        db=db
+        telegram_channel=config.channel_username,
+        db=db,
+        brain=brain
     )
-    
-    # 8. Initialize The Brain
-    brain = BotBrain(db=db, weekly_goal=config.weekly_subscriber_goal, notification_manager=notification_manager)
-    
-    # 8. Initialize Stealth Marketer (Inactive initially, controllable by NOVI)
+
+    # 9. Initialize Stealth Marketer (starts INACTIVE — controlled from dashboard)
     stealth_marketer = StealthMarketer(
         api_id=config.telegram_api_id,
         api_hash=config.telegram_api_hash,
@@ -111,14 +163,31 @@ async def main():
         ai_engine=ai_engine,
         brain=brain,
         channel_username=config.channel_username,
+        stealth_invite_group=config.stealth_invite_group,
         target_groups=config.target_stealth_groups,
-        engagement_rate=0.01,  # Start highly restricted
+        engagement_rate=0.01,
         notification_manager=notification_manager,
         db=db,
         session_string=config.stealth_session_string or config.telegram_session_string
     )
-    
-    # 9. Connect Telegram Broadcaster & Stealth Marketer
+    # Apply the configured daily invite cap (respects the safety hard cap)
+    stealth_marketer.set_daily_invite_limit(config.max_daily_invites)
+
+    # 9b. Cross-platform fan-out (Reddit + X + Facebook + website article).
+    # Both the scheduler and NOVI's "post now" go through this, so every
+    # publishing route behaves identically.
+    fanout = Fanout(
+        brain=brain,
+        db=db,
+        growth_engine=growth_engine,
+        reddit=reddit_broadcaster,
+        twitter=twitter_broadcaster,
+        buffer=buffer_broadcaster,
+        article_agent=content_engine.article_agent,
+        notification_manager=notification_manager
+    )
+
+    # 10. Connect Telegram Broadcaster, Stealth Marketer & Signal Copier
     telegram_connected = False
     broadcaster = TelegramBroadcaster(
         api_id=config.telegram_api_id,
@@ -129,121 +198,207 @@ async def main():
         db=db,
         brain=brain
     )
+    
+    # Signal Copier — posts directly to the Whale Tracker VIP group
+    signal_copier = SignalCopier(
+        api_id=config.telegram_api_id,
+        api_hash=config.telegram_api_hash,
+        session_string=config.stealth_session_string or config.telegram_session_string,
+        phone=config.stealth_phone,
+        source_channels=config.source_signal_channels,
+        ai_engine=ai_engine,
+        signal_target_group=config.signal_target_group or config.stealth_invite_group,
+        notification_manager=notification_manager,
+        db=db,
+        channel_username=config.channel_username
+    )
+    signal_copier.set_daily_limit(config.max_daily_signals)
+
     try:
+        # Connect Telegram Broadcaster (for News Agent posting to @Novi_Network)
         await broadcaster.connect()
         if broadcaster.is_ready:
             telegram_connected = True
-            
-            # Get initial subscriber count
             sub_count = await broadcaster.get_subscriber_count()
             brain.week_start_subscribers = sub_count
             brain.current_subscribers = sub_count
             logger.info(f"Initial subscriber count: {sub_count}")
         
-        # Start Stealth Marketer (which uses its own Telethon client in the background)
-        await stealth_marketer.connect()
-        await stealth_marketer.activate()  # Activate by default based on user request
+        # Connect Stealth Marketer (stays INACTIVE until dashboard toggles it)
+        try:
+            await stealth_marketer.connect()
+            # Do NOT activate — dashboard controls activation
+            logger.info("Stealth Marketer connected but INACTIVE (waiting for dashboard toggle).")
+        except Exception as e:
+            logger.error(f"Failed to connect Stealth Marketer: {e}")
+        
+        # Connect Signal Copier (starts ACTIVE by default)
+        await signal_copier.connect()
+        
     except Exception as e:
-        logger.error(f"Failed to connect Telegram Broadcaster: {e}")
-        await brain.handle_error("TelegramBroadcaster", e)
+        logger.error(f"Failed to connect Telegram modules: {e}")
+        await brain.handle_error("TelegramInit", e)
     
-    # 10. Start API Server
-    logger.info("Starting Dashboard API server on port 8000...")
+    # 11. Start API Server
+    logger.info("Starting Dashboard API server...")
     api_app.state.brain = brain
     api_app.state.notification_manager = notification_manager
     api_app.state.stealth_marketer = stealth_marketer
+    api_app.state.signal_copier = signal_copier
     api_app.state.content_engine = content_engine
     api_app.state.telegram_broadcaster = broadcaster
-    api_app.state.config = config  # Pass config for OTP auth endpoints
+    api_app.state.growth_engine = growth_engine
+    api_app.state.reddit_broadcaster = reddit_broadcaster
+    api_app.state.twitter_broadcaster = twitter_broadcaster
+    api_app.state.buffer_broadcaster = buffer_broadcaster
+    api_app.state.fanout = fanout
+    api_app.state.db = db
+    api_app.state.config = config
     
     server_port = int(os.environ.get("PORT", 8000))
     config_uv = uvicorn.Config(app=api_app, host="0.0.0.0", port=server_port, loop="asyncio", log_level="warning")
     server = uvicorn.Server(config_uv)
     api_task = asyncio.create_task(server.serve())
 
-    # 11. Start Keep-Alive Self-Ping (Render Free Tier)
+    # 12. Start Keep-Alive Self-Ping (Render Free Tier)
     async def self_ping_loop():
-        """Pings the /ping endpoint every 10 minutes to prevent Render from sleeping."""
+        """
+        Keeps the Render free-tier instance from idling.
+
+        Render spins a free instance down after ~15 minutes without inbound
+        traffic, which is the real cause of "sometimes it just doesn't work".
+        We ping every 4 minutes (well inside that window) and, critically,
+        ping IMMEDIATELY on startup rather than waiting 10 minutes first.
+
+        A self-ping only helps if it goes through the public URL — pinging
+        localhost never generates the inbound request Render measures.
+        """
         import aiohttp
+
+        render_url = (os.environ.get("RENDER_EXTERNAL_URL") or "").rstrip("/")
+        if render_url:
+            ping_url = f"{render_url}/ping"
+        else:
+            ping_url = f"http://localhost:{server_port}/ping"
+            logger.warning(
+                "RENDER_EXTERNAL_URL is not set — self-ping will hit localhost, which does "
+                "NOT prevent Render from idling. Set RENDER_EXTERNAL_URL to your public URL."
+            )
+
+        consecutive_failures = 0
         while True:
-            await asyncio.sleep(600)  # 10 minutes
             try:
                 async with aiohttp.ClientSession() as session:
-                    render_url = os.environ.get("RENDER_EXTERNAL_URL")
-                    ping_url = f"{render_url}/ping" if render_url else f"http://localhost:{server_port}/ping"
-                    async with session.get(ping_url, timeout=aiohttp.ClientTimeout(total=10)):
-                        pass
-                logger.debug("Keep-alive self-ping successful.")
-            except Exception:
-                logger.warning("Keep-alive self-ping failed (server may be starting up).")
-    
+                    async with session.get(ping_url, timeout=aiohttp.ClientTimeout(total=20)) as r:
+                        if r.status == 200:
+                            consecutive_failures = 0
+                            logger.debug("Keep-alive self-ping successful.")
+                        else:
+                            consecutive_failures += 1
+                            logger.warning(f"Keep-alive ping returned HTTP {r.status}.")
+            except Exception as e:
+                consecutive_failures += 1
+                logger.warning(f"Keep-alive self-ping failed: {type(e).__name__}")
+
+            # Escalate only once, so we don't spam the inbox while Render is down
+            if consecutive_failures == 5:
+                await notification_manager.send_notification(
+                    subject="Keep-Alive Failing — Bot May Be Idling",
+                    message=(
+                        f"The self-ping to {ping_url} has failed 5 times in a row.\n\n"
+                        f"On Render's free tier this usually means the instance is being "
+                        f"spun down, which is why the bot appears to stop working at random."
+                    ),
+                    is_critical=True
+                )
+
+            await asyncio.sleep(240)  # 4 minutes — safely inside Render's ~15 min idle window
+
     asyncio.create_task(self_ping_loop())
-    logger.info("Keep-alive self-ping loop started (every 10 minutes).")
+    logger.info("Keep-alive self-ping loop started (every 4 minutes, pings immediately).")
     
-    # 12. Start Telegram Connection Heartbeat
+    # 13. Heartbeat Monitor
     async def heartbeat_monitor():
-        """Checks Telegram connection every 30 minutes. Emails admin if disconnected."""
-        while True:
-            await asyncio.sleep(1800)  # 30 minutes
+        """
+        Watches every Telegram client and actively RECONNECTS dead ones.
+
+        Previously this only logged and emailed that a module was down, so a
+        dropped connection stayed dropped until someone manually restarted the
+        service — a major reason modules "sometimes don't work" in production.
+        """
+        # Remember what we already alerted on, so a module that stays down
+        # doesn't email every 5 minutes.
+        alerted = set()
+
+        async def check(name: str, module, reconnect):
+            client = getattr(module, "client", None)
+            if client is None:
+                return
             try:
-                # Check main broadcaster
-                if telegram_connected and broadcaster.client:
-                    try:
-                        if broadcaster.client.is_connected():
-                            logger.info("Heartbeat: Telegram Broadcaster connected ✓")
-                        else:
-                            logger.error("Heartbeat: Telegram Broadcaster DISCONNECTED!")
-                            await notification_manager.notify_connection_status(
-                                "Telegram Broadcaster", False, "Connection lost."
-                            )
-                    except Exception as e:
-                        logger.error(f"Heartbeat: Telegram Broadcaster DISCONNECTED! {e}")
+                if client.is_connected():
+                    if name in alerted:
+                        alerted.discard(name)
                         await notification_manager.notify_connection_status(
-                            "Telegram Broadcaster", False, f"Connection lost: {str(e)}"
-                        )
-                
-                # Check stealth marketer
-                if stealth_marketer.client:
-                    try:
-                        if stealth_marketer.client.is_connected():
-                            logger.info("Heartbeat: Stealth Marketer connected ✓")
-                        else:
-                            logger.error("Heartbeat: Stealth Marketer DISCONNECTED!")
-                            await notification_manager.notify_connection_status(
-                                "Stealth Marketer", False, "Client disconnected. Manual reconnection required."
-                            )
-                    except Exception as e:
-                        logger.error(f"Heartbeat: Stealth Marketer error: {e}")
+                            name, True, "Connection restored automatically.")
+                    logger.info(f"Heartbeat: {name} connected ✓")
+                    return
+
+                logger.error(f"Heartbeat: {name} DISCONNECTED — attempting reconnect...")
+                try:
+                    await reconnect()
+                except Exception as e:
+                    logger.error(f"Heartbeat: {name} reconnect attempt raised {type(e).__name__}: {e}")
+
+                client = getattr(module, "client", None)
+                if client is not None and client.is_connected():
+                    logger.info(f"Heartbeat: {name} reconnected successfully ✓")
+                    if name in alerted:
+                        alerted.discard(name)
                         await notification_manager.notify_connection_status(
-                            "Stealth Marketer", False, f"Heartbeat check error: {str(e)}"
-                        )
+                            name, True, "Connection restored automatically.")
+                elif name not in alerted:
+                    alerted.add(name)
+                    await notification_manager.notify_connection_status(
+                        name, False, "Connection lost and automatic reconnect failed.")
+            except Exception as e:
+                logger.error(f"Heartbeat: {name} check error: {type(e).__name__}: {e}")
+
+        while True:
+            await asyncio.sleep(300)  # every 5 minutes — catches drops far sooner than 30
+            try:
+                await check("Telegram Broadcaster", broadcaster, broadcaster.connect)
+                await check("Stealth Marketer", stealth_marketer, stealth_marketer.connect)
+                await check("Signal Copier", signal_copier, signal_copier.connect)
             except Exception as e:
                 logger.error(f"Heartbeat monitor error: {e}")
-    
-    asyncio.create_task(heartbeat_monitor())
-    logger.info("Heartbeat monitor started (checks every 30 minutes).")
 
-    # 13. Start Scrape & Invite Loop for Stealth Marketer
+    asyncio.create_task(heartbeat_monitor())
+    logger.info("Heartbeat monitor started (checks + auto-reconnects every 5 minutes).")
+
+    # 14. Stealth Scrape & Invite Loop (respects dashboard toggles)
     async def stealth_scrape_loop():
-        """Runs the Scrape and Invite cycle continuously."""
         while True:
-            # We wait 1 hour between full cycles
-            await asyncio.sleep(3600)
+            await asyncio.sleep(3600)  # 1 hour between cycles
             try:
-                if stealth_marketer and stealth_marketer.is_active and not brain.is_sleep_time():
+                if (stealth_marketer and stealth_marketer.is_active 
+                    and stealth_marketer._scraping_active
+                    and not brain.is_sleep_time() 
+                    and not brain.master_kill):
                     await stealth_marketer.scrape_and_invite_cycle()
             except Exception as e:
                 logger.error(f"Stealth scrape loop error: {e}")
                 
     asyncio.create_task(stealth_scrape_loop())
-    logger.info("Stealth Scrape & Invite loop started.")
+    logger.info("Stealth Scrape & Invite loop started (dashboard-controlled).")
 
     # ========================================
     #   MAIN EVENT LOOP
     # ========================================
     logger.info("Entering main event loop...")
     
-    last_post_hour = -1  # Track which hour we last posted in
+    # Track which slots we already fired TODAY by unique key, so two slots in
+    # the same hour both run and a restart doesn't re-fire a done slot.
+    fired_slots = set()
     last_midnight_reset = brain._get_pkt_now().day
     
     while True:
@@ -253,78 +408,84 @@ async def main():
             # ---- Midnight Reset ----
             if pkt_now.day != last_midnight_reset:
                 brain.reset_daily_counters()
-                scraper.seen_hashes.clear()  # Allow re-scraping of feeds
+                scraper.seen_hashes.clear()
                 last_midnight_reset = pkt_now.day
-                last_post_hour = -1
+                fired_slots.clear()
+                # Reset daily counters on the sub-modules too
+                if signal_copier:
+                    signal_copier.signals_copied_today = 0
+                if stealth_marketer:
+                    stealth_marketer.reset_daily_counters()
             
-            # ---- Sleep or Pause Cycle Check ----
+            # ---- Master Kill Check ----
+            if brain.master_kill:
+                await asyncio.sleep(60)
+                continue
+            
+            # ---- Sleep or Pause Check ----
             if brain.is_paused:
-                # System is paused due to a critical error, just idle
                 await asyncio.sleep(60)
                 continue
                 
             if brain.is_sleep_time():
-                await asyncio.sleep(300)  # Check again in 5 minutes
+                await asyncio.sleep(300)
                 continue
             
-            # ---- Check Post Slot ----
-            slot = brain.get_next_post_slot()
-            
-            if slot and slot["hour"] != last_post_hour and brain.can_post():
-                last_post_hour = slot["hour"]
-                post_type = slot["type"]
+            # ---- News Agent Post Slot (only if news_module_active) ----
+            if brain.news_module_active:
+                slot = brain.get_next_post_slot()
                 
-                logger.info(f"Post slot triggered: {post_type} at {pkt_now.strftime('%I:%M %p PKT')}")
-                
-                # Add human jitter (wait 0-10 minutes randomly)
-                jitter = random.uniform(0, 600)
-                logger.info(f"Applying human jitter: waiting {jitter:.0f}s before posting...")
-                await asyncio.sleep(jitter)
-                
-                # Produce content
-                try:
-                    if post_type == "morning_brief":
-                        package = await content_engine.produce_morning_brief()
-                    else:
-                        package = await content_engine.produce_content_package()
-                    
-                    if package:
-                        # Broadcast to Telegram
-                        if telegram_connected:
-                            success = await broadcaster.post(package)
-                            if success:
-                                brain.record_post()
-                                logger.info(f"Post #{brain.posts_today} published successfully!")
-                                
-                                # Try Reddit if within daily limits
-                                if brain.posts_today <= brain.max_posts_today // 2: # Keep reddit volume lower
-                                    await reddit_broadcaster.post(package)
-                                
-                                # Broadcast to Twitter
-                                await twitter_broadcaster.post(package)
-                            else:
-                                await brain.handle_error(
-                                    "TelegramBroadcaster",
-                                    Exception("Post returned False"),
-                                    can_auto_fix=True,
-                                    fix_action="Will retry next slot"
-                                )
+                if slot and slot["key"] not in fired_slots and brain.can_post():
+                    fired_slots.add(slot["key"])
+                    post_type = slot["type"]
+
+                    logger.info(f"News Post slot triggered: {post_type} at {pkt_now.strftime('%I:%M %p PKT')}")
+
+                    # Keep the jitter strictly inside the slot window so a post
+                    # can never be jittered past its own deadline.
+                    max_jitter = max(0, (brain.SLOT_WINDOW_MINUTES - 12) * 60)
+                    jitter = random.uniform(0, min(600, max_jitter))
+                    logger.info(f"Applying human jitter: waiting {jitter:.0f}s before posting...")
+                    await asyncio.sleep(jitter)
+
+                    try:
+                        if post_type == "morning_brief":
+                            package = await content_engine.produce_morning_brief()
                         else:
-                            # Dry run mode — just log the content
-                            logger.info(f"[DRY RUN] Would post:\n{package['telegram_text'][:200]}...")
-                            brain.record_post()
-                    else:
-                        logger.warning("Content engine returned empty package.")
-                        await brain.handle_error(
-                            "ContentEngine",
-                            Exception("Empty content package"),
-                            can_auto_fix=True,
-                            fix_action="Will retry next slot"
-                        )
+                            package = await content_engine.produce_content_package()
                         
-                except Exception as e:
-                    logger.error(f"Error during content production: {e}")
-                    await brain.handle_error("ContentEngine", e)
+                        if package:
+                            if telegram_connected:
+                                success = await broadcaster.post(package)
+                                if success:
+                                    brain.record_post(
+                                        category=package.get("category", "general"),
+                                        topic=package.get("original_title", "")
+                                    )
+                                    growth_engine.record_action(
+                                        growth_engine.ACTION_POST,
+                                        {"category": package.get("category")}
+                                    )
+                                    logger.info(f"News Post #{brain.posts_today} published!")
+
+                                    # Cross-post everywhere else (website, Reddit, X, Facebook)
+                                    await fanout.distribute(package, story=package.get("story"))
+                                else:
+                                    await brain.handle_error(
+                                        "TelegramBroadcaster",
+                                        Exception("Post returned False"),
+                                        can_auto_fix=True,
+                                        fix_action="Will retry next slot"
+                                    )
+                            else:
+                                logger.info(f"[DRY RUN] Would post:\n{package['telegram_text'][:200]}...")
+                                brain.record_post()
+                        else:
+                            logger.warning("Content engine returned empty package.")
+                            
+                    except Exception as e:
+                        logger.error(f"Error during news production: {e}")
+                        await brain.handle_error("ContentEngine", e)
             
             # ---- Periodic Metric Ingestion (every 3 hours) ----
             if (brain.last_metric_check is None or 
@@ -333,12 +494,12 @@ async def main():
                 if telegram_connected:
                     sub_count = await broadcaster.get_subscriber_count()
                     await brain.ingest_metrics(sub_count)
-                
-                # Log status report
+                    await growth_engine.record_subscribers(sub_count)
+
                 logger.info(brain.get_status_report())
             
             # ---- Heartbeat ----
-            await asyncio.sleep(60)  # Check every minute
+            await asyncio.sleep(60)
             
         except KeyboardInterrupt:
             logger.info("Keyboard interrupt received. Shutting down...")
@@ -351,6 +512,8 @@ async def main():
     # Cleanup
     if telegram_connected:
         await broadcaster.disconnect()
+    if signal_copier:
+        await signal_copier.disconnect()
     logger.info("Novi News bot shut down gracefully.")
 
 

@@ -40,36 +40,64 @@ class BotBrain:
             {"hour": 19, "minute": 30},  # 7:30 PM
         ],
         "evening_wrap": {"hour": 21, "minute": 0},    # 9:00 PM PKT
-        "sleep_start": 23,  # Reverted back to 11 PM PKT since tests are done
+        "sleep_start": 23,  # 11 PM PKT
         "sleep_end": 7,     # 7 AM PKT
     }
+
+    # How long a post slot stays "open" after its scheduled minute. This must
+    # comfortably exceed the random jitter applied before posting, otherwise a
+    # slot can expire while the bot is still waiting out its jitter.
+    SLOT_WINDOW_MINUTES = 25
     
-    def __init__(self, db: SupabaseDB, weekly_goal: int = 100, notification_manager=None):
+    def __init__(self, db: SupabaseDB, weekly_goal: int = 100, notification_manager=None,
+                 config=None):
         self.db = db
         self.weekly_goal = weekly_goal
         self.notification_manager = notification_manager
+        self.config = config
         self.current_subscribers = 0
         self.week_start_subscribers = 0
-        
+
         # Daily counters (reset every midnight PKT)
         self.posts_today = 0
         self.replies_today = 0
+        self.reddit_posts_today = 0
+        self.x_posts_today = 0
         self.errors_today = 0
         self.auto_fixes_today = 0
-        
+
         # Memory Tracking
         self.posted_categories = []
         self.posted_topics = []
-        
-        # Dynamic throttle limits
-        self.max_posts_today = 6
-        self.max_replies_today = 8
+
+        # Daily caps — sourced from config so the values in .env actually
+        # take effect. Previously these were hardcoded and the configured
+        # MAX_DAILY_* settings did nothing at all.
+        self.max_posts_today = getattr(config, "max_daily_posts", 6)
+        self.max_replies_today = getattr(config, "max_daily_telegram_replies", 8)
+        self.max_reddit_posts_today = getattr(config, "max_daily_reddit_posts", 2)
+        self.max_x_posts_today = getattr(config, "max_daily_x_posts", 5)
+        # Remember the configured defaults so midnight resets restore them
+        self._default_max_replies = self.max_replies_today
+
+        if config is not None:
+            self.SCHEDULE = dict(self.SCHEDULE)
+            self.SCHEDULE["post_slots"] = list(self.SCHEDULE["post_slots"])
+            self.SCHEDULE["sleep_start"] = getattr(config, "sleep_start_hour", 23)
+            self.SCHEDULE["sleep_end"] = getattr(config, "sleep_end_hour", 7)
         
         # State
-        self.is_sleeping = False
         self.is_paused = False
         self.last_post_time = None
         self.last_metric_check = None
+        
+        # Module Control Flags (toggled from Novi Dashboard)
+        self.news_module_active = False     # News Agent starts OFF
+        # Website / auto-blogging starts OFF. While off the Article Agent does
+        # not run at all — no article is written and nothing is published to
+        # the site, even when the News Agent is posting.
+        self.website_module_active = False
+        self.master_kill = False            # Master kill switch
         
         logger.info(f"Brain initialized. Weekly goal: {weekly_goal} subscribers.")
     
@@ -80,30 +108,46 @@ class BotBrain:
     def is_sleep_time(self) -> bool:
         """
         Checks if the bot should be sleeping.
-        Sleep hours: 11 PM to 7 AM PKT.
+
+        Reads the sleep window from SCHEDULE so it can be changed at runtime
+        (via the dashboard / NOVI) without restarting the bot. Handles both
+        overnight windows (23 -> 7) and same-day windows (1 -> 5).
+
+        If sleep_start == sleep_end the bot never sleeps (24/7 operation).
         """
-        pkt_now = self._get_pkt_now()
-        hour = pkt_now.hour
-        
         start = self.SCHEDULE["sleep_start"]
         end = self.SCHEDULE["sleep_end"]
-        
+
+        if start == end:
+            return False  # 24/7 mode
+
+        hour = self._get_pkt_now().hour
         if start > end:
-            is_sleep = hour >= start or hour < end
-        else:
-            is_sleep = hour >= start and hour < end
-            
-        if is_sleep:
-            if not self.is_sleeping:
-                logger.info(f"Entering sleep mode. Current PKT time: {pkt_now.strftime('%I:%M %p')}")
-                self.is_sleeping = True
-            return True
-        
-        if self.is_sleeping:
-            logger.info(f"Waking up! Current PKT time: {pkt_now.strftime('%I:%M %p')}")
-            self.is_sleeping = False
-        
-        return False
+            # Overnight window, e.g. 23:00 -> 07:00
+            return hour >= start or hour < end
+        # Same-day window, e.g. 01:00 -> 05:00
+        return start <= hour < end
+
+    @property
+    def is_sleeping(self) -> bool:
+        """
+        Live sleep state. This is a property (not a stored flag) so the
+        dashboard and the Stealth Marketer always see the real current
+        state instead of a value that was never updated.
+        """
+        return self.is_sleep_time()
+
+    def set_sleep_window(self, start_hour: int, end_hour: int):
+        """
+        Updates the sleep window at runtime. Pass equal values to disable
+        sleeping entirely (24/7 operation).
+        """
+        start_hour = max(0, min(23, int(start_hour)))
+        end_hour = max(0, min(23, int(end_hour)))
+        self.SCHEDULE["sleep_start"] = start_hour
+        self.SCHEDULE["sleep_end"] = end_hour
+        logger.info(f"Sleep window updated: {start_hour}:00 -> {end_hour}:00 PKT "
+                    f"({'24/7 mode — never sleeps' if start_hour == end_hour else 'active'})")
     
     def get_next_post_slot(self) -> Optional[Dict]:
         """
@@ -113,22 +157,29 @@ class BotBrain:
         pkt_now = self._get_pkt_now()
         current_hour = pkt_now.hour
         current_minute = pkt_now.minute
-        
-        # Check morning brief
+
+        # Each slot gets a unique "key" (not just the hour). Two slots in the
+        # same hour — e.g. 13:00 and 13:40 — previously collapsed into one, so
+        # the second one was silently skipped every single day.
+        def in_window(slot) -> bool:
+            return (current_hour == slot["hour"]
+                    and slot["minute"] <= current_minute < slot["minute"] + self.SLOT_WINDOW_MINUTES)
+
         mb = self.SCHEDULE["morning_brief"]
-        if current_hour == mb["hour"] and current_minute >= mb["minute"] and current_minute < mb["minute"] + 15:
-            return {"type": "morning_brief", "hour": mb["hour"]}
-        
-        # Check regular post slots
+        if in_window(mb):
+            return {"type": "morning_brief", "hour": mb["hour"],
+                    "key": f"morning_brief_{mb['hour']}_{mb['minute']}"}
+
         for slot in self.SCHEDULE["post_slots"]:
-            if current_hour == slot["hour"] and current_minute >= slot["minute"] and current_minute < slot["minute"] + 15:
-                return {"type": "regular_post", "hour": slot["hour"]}
-        
-        # Check evening wrap
+            if in_window(slot):
+                return {"type": "regular_post", "hour": slot["hour"],
+                        "key": f"regular_{slot['hour']}_{slot['minute']}"}
+
         ew = self.SCHEDULE["evening_wrap"]
-        if current_hour == ew["hour"] and current_minute >= ew["minute"] and current_minute < ew["minute"] + 15:
-            return {"type": "evening_wrap", "hour": ew["hour"]}
-        
+        if in_window(ew):
+            return {"type": "evening_wrap", "hour": ew["hour"],
+                    "key": f"evening_wrap_{ew['hour']}_{ew['minute']}"}
+
         return None
     
     def can_post(self) -> bool:
@@ -149,10 +200,32 @@ class BotBrain:
     def can_reply(self) -> bool:
         """Checks if we're within daily reply limits (for Stealth Marketer)."""
         return self.replies_today < self.max_replies_today
-    
+
     def record_reply(self):
         """Records that a stealth reply was sent."""
         self.replies_today += 1
+
+    def can_post_reddit(self) -> bool:
+        """Enforces MAX_DAILY_REDDIT_POSTS (previously configured but ignored)."""
+        if self.reddit_posts_today >= self.max_reddit_posts_today:
+            logger.info(f"Reddit daily limit reached "
+                        f"({self.reddit_posts_today}/{self.max_reddit_posts_today}).")
+            return False
+        return True
+
+    def record_reddit_post(self):
+        self.reddit_posts_today += 1
+
+    def can_post_x(self) -> bool:
+        """Enforces MAX_DAILY_X_POSTS (previously configured but ignored)."""
+        if self.x_posts_today >= self.max_x_posts_today:
+            logger.info(f"X/Twitter daily limit reached "
+                        f"({self.x_posts_today}/{self.max_x_posts_today}).")
+            return False
+        return True
+
+    def record_x_post(self):
+        self.x_posts_today += 1
     
     async def ingest_metrics(self, subscriber_count: int):
         """
@@ -255,12 +328,79 @@ class BotBrain:
                      f"Errors={self.errors_today}, AutoFixes={self.auto_fixes_today}")
         self.posts_today = 0
         self.replies_today = 0
+        self.reddit_posts_today = 0
+        self.x_posts_today = 0
         self.errors_today = 0
         self.auto_fixes_today = 0
         self.posted_categories.clear()
         self.posted_topics.clear()
-        self.max_replies_today = 8  # Reset to default
+        # Restore the CONFIGURED default, not a hardcoded 8
+        self.max_replies_today = self._default_max_replies
     
+    # ══════════════════════════════════════════════════════════
+    #  STATE PERSISTENCE — survives restarts and redeploys
+    # ══════════════════════════════════════════════════════════
+
+    def snapshot(self) -> Dict:
+        """The state worth restoring after a restart."""
+        return {
+            "news_module_active": self.news_module_active,
+            "website_module_active": self.website_module_active,
+            "master_kill": self.master_kill,
+            "is_paused": self.is_paused,
+            "max_posts_today": self.max_posts_today,
+            "max_replies_today": self.max_replies_today,
+            "max_reddit_posts_today": self.max_reddit_posts_today,
+            "max_x_posts_today": self.max_x_posts_today,
+            "sleep_start": self.SCHEDULE["sleep_start"],
+            "sleep_end": self.SCHEDULE["sleep_end"],
+        }
+
+    async def save_state(self):
+        """Persists the current configuration to Supabase."""
+        if not self.db:
+            return
+        try:
+            await self.db.save_state("brain", self.snapshot())
+        except Exception as e:
+            logger.warning(f"Could not persist brain state: {type(e).__name__}")
+
+    async def restore_state(self):
+        """
+        Restores settings saved before the last restart.
+
+        Without this, every redeploy silently reverted the news agent to OFF
+        and every limit back to its default, undoing dashboard changes.
+        """
+        if not self.db:
+            return
+        try:
+            saved = await self.db.load_state("brain")
+        except Exception as e:
+            logger.warning(f"Could not load brain state: {type(e).__name__}")
+            return
+
+        if not saved:
+            logger.info("No saved brain state; using configured defaults.")
+            return
+
+        self.news_module_active = bool(saved.get("news_module_active", self.news_module_active))
+        self.website_module_active = bool(saved.get("website_module_active", False))
+        self.master_kill = bool(saved.get("master_kill", False))
+        self.is_paused = bool(saved.get("is_paused", False))
+        self.max_posts_today = int(saved.get("max_posts_today", self.max_posts_today))
+        self.max_replies_today = int(saved.get("max_replies_today", self.max_replies_today))
+        self.max_reddit_posts_today = int(saved.get("max_reddit_posts_today", self.max_reddit_posts_today))
+        self.max_x_posts_today = int(saved.get("max_x_posts_today", self.max_x_posts_today))
+        self.SCHEDULE["sleep_start"] = int(saved.get("sleep_start", self.SCHEDULE["sleep_start"]))
+        self.SCHEDULE["sleep_end"] = int(saved.get("sleep_end", self.SCHEDULE["sleep_end"]))
+
+        logger.info(
+            f"Brain state restored — news={'ON' if self.news_module_active else 'OFF'}, "
+            f"posts/day={self.max_posts_today}, sleep={self.SCHEDULE['sleep_start']}->"
+            f"{self.SCHEDULE['sleep_end']}, master_kill={self.master_kill}"
+        )
+
     def get_status_report(self) -> str:
         """Generates a human-readable status report."""
         pkt_now = self._get_pkt_now()

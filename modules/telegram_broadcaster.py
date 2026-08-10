@@ -38,17 +38,29 @@ class TelegramBroadcaster:
             return
 
         try:
-            self.client = TelegramClient(StringSession(self.session_string), self.api_id, self.api_hash)
-            await self.client.connect()
-            
+            # Reuse the existing client on reconnect instead of building a new
+            # one — rebuilding drops the entity cache and can trip Telegram's
+            # "new login" heuristics.
+            if self.client is None:
+                self.client = TelegramClient(
+                    StringSession(self.session_string), self.api_id, self.api_hash
+                )
+
+            if not self.client.is_connected():
+                await self.client.connect()
+
             if not await self.client.is_user_authorized():
                 logger.error("Session string is invalid or expired. Broadcaster not authorized.")
+                self._initialized = False
                 return
 
             me = await self.client.get_me()
             self._initialized = True
             logger.info(f"Telegram Broadcaster initialized as {me.first_name} (Telethon mode). Target: {self.channel_username}")
         except Exception as e:
+            # Must clear the flag, otherwise post() keeps trying to send on a
+            # dead client and every post silently fails.
+            self._initialized = False
             logger.error(f"Failed to initialize Telegram Client: {e}")
 
     async def post(self, package: Dict) -> bool:
