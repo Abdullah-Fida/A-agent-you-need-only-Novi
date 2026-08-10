@@ -20,6 +20,9 @@ class BotConfig:
     
     # AI — News Agent / everything else (Multi-Key)
     openrouter_api_keys: List[str] = field(default_factory=list)
+    news_api_provider: str = "openrouter"   # openrouter | groq | openai
+    news_api_base: str = ""
+    news_model: str = ""
     bing_cookie: str = ""
 
     # AI — Article Agent (its own provider/key/model, kept separate so the
@@ -86,9 +89,10 @@ def load_config() -> BotConfig:
     """Loads configuration from .env file and returns a BotConfig object."""
     load_dotenv()
     
-    # Parse comma-separated API keys
-    raw_keys = os.getenv("OPENROUTER_API_KEYS", "")
-    api_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
+    # Parse comma-separated API keys.
+    # NEWS_API_KEYS is the provider-neutral name (the news agent can run on
+    # Groq or OpenAI now); OPENROUTER_API_KEYS is kept for compatibility.
+    api_keys = _csv("NEWS_API_KEYS") or _csv("OPENROUTER_API_KEYS")
     
     if not api_keys:
         logger.warning("No OpenRouter API keys found in .env! AI features will not work.")
@@ -99,6 +103,9 @@ def load_config() -> BotConfig:
         supabase_url=os.getenv("SUPABASE_URL", ""),
         supabase_key=os.getenv("SUPABASE_KEY", ""),
         openrouter_api_keys=api_keys,
+        news_api_provider=_clean(os.getenv("NEWS_API_PROVIDER", "")) or "openrouter",
+        news_api_base=_clean(os.getenv("NEWS_API_BASE", "")),
+        news_model=_clean(os.getenv("NEWS_MODEL", "")),
         article_api_keys=_csv("ARTICLE_API_KEYS") or _csv("ARTICLE_API_KEY"),
         article_api_provider=_clean(os.getenv("ARTICLE_API_PROVIDER", "")) or "openrouter",
         article_api_base=_clean(os.getenv("ARTICLE_API_BASE", "")),

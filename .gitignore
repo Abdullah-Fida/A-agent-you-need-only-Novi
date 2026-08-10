@@ -11,3 +11,10 @@ assets/generated_images/
 twitter_auth.json
 twitter_error.png
 *.log
+
+# Website (Next.js) build output
+website/.next/
+website/node_modules/
+website/out/
+website/.env*
+.env.local

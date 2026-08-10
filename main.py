@@ -60,7 +60,13 @@ async def main():
     
     # 3. Initialize AI Engines
     # News Agent + everything else share one engine/key pool.
-    ai_engine = AIEngine(api_keys=config.openrouter_api_keys, db=db, label="NewsAI")
+    ai_engine = AIEngine(
+        api_keys=config.openrouter_api_keys, db=db,
+        provider=config.news_api_provider,
+        base_url=config.news_api_base,
+        default_model=config.news_model,
+        label="NewsAI",
+    )
 
     # The Article Agent can run on its OWN provider, key and model (OpenRouter,
     # Groq, or any OpenAI-compatible endpoint). Falls back to the shared engine
