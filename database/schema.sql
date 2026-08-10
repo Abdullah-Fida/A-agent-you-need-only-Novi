@@ -188,6 +188,36 @@ CREATE POLICY "novi_all" ON social_posts  FOR ALL USING (true) WITH CHECK (true)
 
 
 -- =====================================================================
+--  STORAGE — hero images for website articles
+--  The bot's own disk is wiped on every Render deploy, so generated
+--  article images are uploaded here and served from Supabase's CDN.
+--  Public read; the bot writes with the anon key, hence the open policies.
+-- =====================================================================
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES ('article-images', 'article-images', true, 10485760,
+        ARRAY['image/jpeg','image/png','image/webp'])
+ON CONFLICT (id) DO UPDATE
+  SET public             = true,
+      file_size_limit    = 10485760,
+      allowed_mime_types = ARRAY['image/jpeg','image/png','image/webp'];
+
+DROP POLICY IF EXISTS "novi_images_read"   ON storage.objects;
+DROP POLICY IF EXISTS "novi_images_write"  ON storage.objects;
+DROP POLICY IF EXISTS "novi_images_update" ON storage.objects;
+
+CREATE POLICY "novi_images_read" ON storage.objects
+  FOR SELECT USING (bucket_id = 'article-images');
+
+CREATE POLICY "novi_images_write" ON storage.objects
+  FOR INSERT WITH CHECK (bucket_id = 'article-images');
+
+-- Needed because uploads use upsert
+CREATE POLICY "novi_images_update" ON storage.objects
+  FOR UPDATE USING (bucket_id = 'article-images')
+           WITH CHECK (bucket_id = 'article-images');
+
+
+-- =====================================================================
 --  VERIFY — this should return 8 rows
 -- =====================================================================
 SELECT table_name
@@ -196,3 +226,6 @@ WHERE table_schema = 'public'
   AND table_name IN ('posts','alerts','metrics','error_logs',
                      'articles','scraped_users','bot_state','social_posts')
 ORDER BY table_name;
+
+-- …and this should return one row: article-images, public = true
+SELECT id, public FROM storage.buckets WHERE id = 'article-images';

@@ -38,9 +38,11 @@ class ContentEngine:
         self.scraper = scraper
         self.image_gen = image_gen
         self.db = db
+        self.site_name = site_name
         # The article agent may run on its own provider/key/model
         self.article_agent = ArticleAgent(ai_engine=article_ai or ai_engine, db=db,
-                                          site_name=site_name, site_url=site_url)
+                                          site_name=site_name, site_url=site_url,
+                                          image_gen=image_gen)
         self.posts_generated_today = 0
         logger.info("Content Engine & ArticleAgent initialized.")
     
@@ -149,14 +151,28 @@ class ContentEngine:
         if progress_callback:
             await progress_callback({"step": "image_gen", "message": "Generating cinematic HD AI image..."})
         
-        image_path = self.image_gen.generate(
+        # Awaited, not called synchronously: this reaches out to image
+        # providers, and blocking the loop here stalls the scheduler and the
+        # Telegram connection along with it.
+        image_path = await self.image_gen.generate(
             headline=image_headline,
             category=category,
-            source_credit=source_credits
+            source_credit=source_credits,
+            # Lets the generator fall back to the outlet's own photo before
+            # it drops to a drawn card.
+            story_image_url=best_group[0].get("real_image_url", ""),
         )
-        
+
         if not image_path:
-            logger.warning("Image generation failed. Proceeding without image.")
+            logger.error("Image generation failed at every tier including the local "
+                         "card — this means the disk write failed.")
+            if self.db:
+                await self.db.log_error(
+                    module="ImageGenerator",
+                    error_type="ImageGenerationFailed",
+                    error_message=f"No image produced for '{image_headline[:80]}'",
+                    auto_resolved=False,
+                )
         
         # 6. Build and return content package.
         # The website article is written by Fanout AFTER the Telegram post
@@ -170,6 +186,9 @@ class ContentEngine:
             "reddit_title": reddit_title,
             "reddit_body": reddit_body,
             "image_path": image_path,
+            # Which tier produced it (pollinations / bing / story_image / card),
+            # carried through so the post record and dashboard show it.
+            "image_source": getattr(self.image_gen, "last_source", ""),
             "category": category,
             "source_credits": source_credits,
             "original_title": best_group[0]["title"],
@@ -206,12 +225,12 @@ class ContentEngine:
             stories_text += f"\n{i}. [{article['source']}] {article['title']}\n"
             stories_text += f"   {article['summary'][:150]}\n"
         
-        system_prompt = """You are the editor of "Novi News" morning brief.
+        system_prompt = f"""You are the editor of the "{self.site_name}" morning brief.
 Write a quick morning digest covering the top 3-5 stories.
-Format: Start with "Good morning! Here is your Novi News brief:" followed by a numbered list.
+Format: Start with "Good morning! Here is your {self.site_name} brief:" followed by a numbered list.
 Each item: 1-2 lines max, with Pakistani relevance.
 90% English, 10% Urdu flavor. Use animated emojis like 🔥, 🚀, 📈, 💡, ⚡, 🚨 to make it visual!
-End with "Have a productive day! — Novi News"
+End with "Have a productive day! — {self.site_name}"
 """
         
         user_prompt = f"Write the morning brief from these top stories:\n{stories_text}"
@@ -228,10 +247,10 @@ End with "Have a productive day! — Novi News"
             return None
         
         # Generate a morning brief image
-        image_path = self.image_gen.generate(
-            headline="Morning Brief",
-            category="default",
-            source_credit="Novi News"
+        image_path = await self.image_gen.generate(
+            headline="Your Morning Brief",
+            category="morning_brief",
+            source_credit=self.site_name,
         )
         
         return {

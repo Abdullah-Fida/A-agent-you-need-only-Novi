@@ -15,7 +15,6 @@ logger = logging.getLogger("OmniBot.AI")
 # "openrouter/free" is an auto-router that picks an available free model.
 MODELS = {
     "synthesizer":      "openrouter/free",  # social posts (Telegram/X/Reddit)
-    "headline":         "openrouter/free",  # short image headlines
     "stealth":          "openrouter/free",  # human-sounding group replies
     "signal_cleansing": "openrouter/free",  # crypto signal rewriting
     "article":          "openrouter/free",  # long-form website articles
@@ -342,29 +341,3 @@ Sources:
             "source_credits": credit_line
         }
     
-    async def generate_image_headline(self, telegram_text: str) -> Optional[str]:
-        """Generates a short, punchy 5-8 word headline for the PIL image overlay."""
-        system_prompt = (
-            "You are a headline writer. You output ONLY a short punchy news headline of 5-8 words. "
-            "No quotes, no explanations, no preamble, no questions. Just the headline text itself. "
-            "Example input: 'The Federal Reserve held interest rates today...'"
-            "Example output: Fed Holds Rates Amid Inflation Fears"
-        )
-        user_prompt = f"Write a 5-8 word headline for this news:\n\n{telegram_text[:300]}"
-        
-        result = await self.generate(
-            task="headline",
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            max_tokens=30,
-            temperature=0.5
-        )
-        
-        if result:
-            # Strip any quotes or extra formatting the AI might add
-            result = result.strip('"\'\'\n').strip()
-            # If it's too long (AI went rogue), truncate
-            if len(result.split()) > 12:
-                result = ' '.join(result.split()[:8])
-        
-        return result

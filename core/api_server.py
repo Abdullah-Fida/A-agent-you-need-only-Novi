@@ -660,14 +660,12 @@ async def generate_image_endpoint(req: ImageGenRequest):
     bing_cookie = os.environ.get("BING_COOKIE", "")
     image_gen = ImageGenerator(output_dir=output_dir, channel_name="NoviNews", bing_cookie=bing_cookie)
     
-    # Run synchronously in executor since image_gen.generate is blocking (Pillow + urllib)
-    loop = asyncio.get_event_loop()
     try:
-        path = await loop.run_in_executor(None, lambda: image_gen.generate(
-            headline=req.headline, 
-            category=req.category, 
-            source_credit=req.source_credit
-        ))
+        path = await image_gen.generate(
+            headline=req.headline,
+            category=req.category,
+            source_credit=req.source_credit,
+        )
         if path:
             # Return relative path for web serving
             filename = os.path.basename(path)

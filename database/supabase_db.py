@@ -10,6 +10,7 @@ once instead of failing silently on every single write.
 """
 import asyncio
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -20,6 +21,9 @@ REQUIRED_TABLES = [
     "posts", "alerts", "metrics", "error_logs",
     "articles", "scraped_users", "bot_state", "social_posts",
 ]
+
+# Public storage bucket holding generated article hero images
+IMAGE_BUCKET = "article-images"
 
 
 class SupabaseDB:
@@ -208,6 +212,53 @@ class SupabaseDB:
         if result and result.data:
             return {row["key"]: row["value"] for row in result.data}
         return {}
+
+    # ══════════════════════════════════════════════════════════
+    #  MEDIA (Supabase Storage)
+    # ══════════════════════════════════════════════════════════
+
+    async def upload_image(self, local_path: str, dest_name: str = "") -> str:
+        """
+        Publishes a locally generated image and returns its public URL.
+
+        The bot's own disk is ephemeral — Render wipes it on every deploy — so
+        an article hero has to live somewhere durable and publicly reachable
+        before the website can render it. Returns "" on failure; callers treat
+        that as "no hero image" rather than a hard error.
+        """
+        if not self._initialized or not local_path or not os.path.exists(local_path):
+            return ""
+
+        name = dest_name or os.path.basename(local_path)
+        try:
+            with open(local_path, "rb") as fh:
+                blob = fh.read()
+        except OSError as e:
+            logger.error(f"Could not read image for upload: {e}")
+            return ""
+
+        def _put():
+            storage = self.client.storage.from_(IMAGE_BUCKET)
+            storage.upload(
+                path=name,
+                file=blob,
+                file_options={"content-type": "image/jpeg",
+                              "cache-control": "31536000",
+                              "upsert": "true"},
+            )
+            return storage.get_public_url(name)
+
+        url = await self._run(_put, "upload_image", default="")
+        if url:
+            url = url.rstrip("?")          # supabase-py appends a bare '?' on some versions
+            logger.info(f"Article image uploaded: {url}")
+            return url
+
+        logger.error(
+            f"Image upload failed. Does the public '{IMAGE_BUCKET}' storage bucket exist? "
+            f"Run database/schema.sql, or create it in Supabase → Storage."
+        )
+        return ""
 
     # ══════════════════════════════════════════════════════════
     #  ARTICLES (website / auto-blogging)

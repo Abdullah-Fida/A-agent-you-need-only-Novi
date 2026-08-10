@@ -12,6 +12,8 @@ Run:
 import asyncio
 import os
 import sys
+import tempfile
+import re
 import unittest
 from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -610,6 +612,250 @@ class TestCodebaseInvariants(unittest.TestCase):
         for action in ("post_now", "invite_now", "growth_report", "health",
                        "set_sleep_window", "stealth_invite", "master_kill"):
             self.assertIn(action, src, f"NOVI cannot control: {action}")
+
+
+class TestImageGeneration(unittest.TestCase):
+    """
+    Every published post must carry an image. These lock in the failure modes
+    behind a post that reached the channel without one.
+    """
+
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def setUp(self):
+        from modules.image_generator import ImageGenerator
+        self.tmp = tempfile.mkdtemp()
+        self.gen = ImageGenerator(output_dir=self.tmp, channel_name="Novi News",
+                                  bing_cookie="")
+
+    def test_generate_is_a_coroutine(self):
+        """
+        It reaches out over the network, so calling it synchronously from the
+        event loop froze the scheduler and Telegram keepalives for minutes.
+        """
+        self.assertTrue(asyncio.iscoroutinefunction(self.gen.generate))
+
+    def test_content_engine_awaits_image_generation(self):
+        p = os.path.join(self.ROOT, "modules", "content_engine.py")
+        with open(p, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn("await self.image_gen.generate(", src)
+        self.assertNotIn("= self.image_gen.generate(", src)
+
+    def test_no_blocking_calls_in_image_generator(self):
+        """A blocking sleep or worker thread here stalls every other task."""
+        p = os.path.join(self.ROOT, "modules", "image_generator.py")
+        with open(p, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertNotIn("time.sleep(", src)
+        self.assertNotIn("threading.Thread", src)
+
+    def test_card_fallback_always_produces_a_file(self):
+        """With every network tier dead, a branded card must still be saved."""
+        async def dead(*a, **k):
+            raise RuntimeError("no network")
+        self.gen._from_pollinations = dead
+        path = asyncio.run(self.gen.generate("Some breaking headline", "crypto"))
+        self.assertIsNotNone(path, "generate() returned None though the card tier exists")
+        self.assertTrue(os.path.exists(path))
+        self.assertGreater(os.path.getsize(path), 2048)
+        self.assertEqual(self.gen.last_source, "card")
+
+    def test_card_renders_without_any_installed_font(self):
+        """
+        Render's container may ship no TTF files. Named lookups then fail and
+        Pillow's bundled face has to carry the card.
+        """
+        from PIL import ImageFont
+        real = ImageFont.truetype
+
+        def only_named_fonts_are_missing(font=None, size=10, *a, **kw):
+            # A str/Path is a file on disk; the bundled face is passed as a
+            # file object, and that one must keep working.
+            if isinstance(font, (str, bytes, os.PathLike)):
+                raise OSError("no fonts installed")
+            return real(font, size, *a, **kw)
+
+        with patch("PIL.ImageFont.truetype", side_effect=only_named_fonts_are_missing):
+            img = self.gen._branded_card("A headline that must still render", "world_news")
+        self.assertEqual(img.size, (1280, 720))
+
+    def test_budget_is_bounded(self):
+        """A hung provider must not consume the whole posting slot."""
+        async def hang(*a, **k):
+            await asyncio.sleep(600)
+        self.gen._from_pollinations = hang
+        self.gen.total_budget = 6.0
+
+        async def run():
+            loop = asyncio.get_event_loop()
+            start = loop.time()
+            path = await self.gen.generate("Headline", "tech")
+            return path, loop.time() - start
+
+        path, elapsed = asyncio.run(run())
+        self.assertIsNotNone(path)
+        self.assertLess(elapsed, 30, "image generation ignored its time budget")
+
+    def test_saved_file_is_a_readable_jpeg(self):
+        async def dead(*a, **k):
+            raise RuntimeError("no network")
+        self.gen._from_pollinations = dead
+        path = asyncio.run(self.gen.generate("Headline here", "business"))
+        from PIL import Image
+        with Image.open(path) as im:
+            self.assertEqual(im.size, (1280, 720))
+            self.assertEqual(im.format, "JPEG")
+
+    def test_hosted_prompt_url_is_stable(self):
+        """The website hero fallback must resolve to the same picture each time."""
+        a = self.gen.hosted_prompt_url("Bitcoin rallies", "crypto")
+        b = self.gen.hosted_prompt_url("Bitcoin rallies", "crypto")
+        self.assertEqual(a, b)
+        self.assertTrue(a.startswith("https://"))
+
+
+class TestBroadcasterImageHonesty(unittest.TestCase):
+    """The post record must say whether a photo was really attached."""
+
+    def make(self):
+        from modules.telegram_broadcaster import TelegramBroadcaster
+        b = TelegramBroadcaster(api_id=1, api_hash="h", session_string="s",
+                                channel_username="@c", db=MagicMock(), brain=None,
+                                notification_manager=MagicMock())
+        b._initialized = True
+        b.client = MagicMock()
+        b.db.log_post = AsyncMock()
+        b.db.log_error = AsyncMock()
+        b.nm.send_notification = AsyncMock()
+        b.nm.notify_post_success = AsyncMock()
+        b.get_subscriber_count = AsyncMock(return_value=0)
+        return b
+
+    def test_missing_file_is_not_logged_as_having_an_image(self):
+        """
+        Regression: the intended image path was written to the database on both
+        branches, so a text-only post was indistinguishable from an illustrated
+        one and the failure went unnoticed.
+        """
+        b = self.make()
+        b._send_text_only = AsyncMock()
+        asyncio.run(b.post({"telegram_text": "hello",
+                            "image_path": os.path.join(tempfile.gettempdir(), "nope.jpg")}))
+
+        kwargs = b.db.log_post.call_args.kwargs
+        self.assertEqual(kwargs["image_path"], "")
+        self.assertFalse(kwargs["metadata"]["has_image"])
+        self.assertEqual(kwargs["metadata"]["image_status"], "file_missing")
+
+    def test_posting_without_an_image_raises_an_alert(self):
+        b = self.make()
+        b._send_text_only = AsyncMock()
+        asyncio.run(b.post({"telegram_text": "hello", "image_path": ""}))
+        b.nm.send_notification.assert_awaited()
+        self.assertTrue(b.nm.send_notification.call_args.kwargs["is_critical"])
+        b.db.log_error.assert_awaited()
+
+    def test_delivered_photo_is_recorded(self):
+        b = self.make()
+        fh = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+        fh.write(b"x" * 5000)
+        fh.close()
+        try:
+            b._send_photo_with_caption = AsyncMock(return_value=True)
+            asyncio.run(b.post({"telegram_text": "hello", "image_path": fh.name}))
+            kwargs = b.db.log_post.call_args.kwargs
+            self.assertEqual(kwargs["image_path"], fh.name)
+            self.assertTrue(kwargs["metadata"]["has_image"])
+        finally:
+            os.unlink(fh.name)
+
+    def test_photo_failure_falls_back_to_text_rather_than_losing_the_post(self):
+        b = self.make()
+        fh = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+        fh.write(b"x" * 5000)
+        fh.close()
+        try:
+            b._send_photo_with_caption = AsyncMock(return_value=False)
+            b._send_text_only = AsyncMock()
+            ok = asyncio.run(b.post({"telegram_text": "hello", "image_path": fh.name}))
+            self.assertTrue(ok, "a failed photo upload must not lose the post entirely")
+            b._send_text_only.assert_awaited()
+            self.assertEqual(
+                b.db.log_post.call_args.kwargs["metadata"]["image_status"], "upload_failed")
+        finally:
+            os.unlink(fh.name)
+
+    def test_caption_truncation_keeps_html_valid(self):
+        """
+        A naive slice can cut inside a tag or leave <b> unclosed, and Telegram
+        rejects the whole message when it does — turning a long post into no
+        post at all.
+        """
+        from modules.telegram_broadcaster import TelegramBroadcaster as TB
+        for text, limit in (("<b>" + "word " * 500 + "</b>", 100),
+                            ("<b><i>" + "y" * 400 + "</i></b>", 50),
+                            ("A" * 80 + '<a href="https://x.example/p">link</a>', 90)):
+            out = TB._truncate_html(text, limit)
+            stack = []
+            for m in re.finditer(r"<(/?)([a-zA-Z][a-zA-Z0-9]*)[^>]*>", out):
+                closing, tag = m.group(1), m.group(2).lower()
+                if tag == "br":
+                    continue
+                if closing:
+                    self.assertTrue(stack and stack.pop() == tag,
+                                    f"unbalanced close </{tag}> in {out[:60]!r}")
+                else:
+                    stack.append(tag)
+            self.assertFalse(stack, f"unclosed tags {stack} in {out[:60]!r}")
+            self.assertEqual(out.count("<"), out.count(">"),
+                             f"truncated mid-tag: {out[-40:]!r}")
+
+
+class TestArticleAgentImages(unittest.TestCase):
+    """The article agent must produce and host its own hero image."""
+
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def test_agent_accepts_an_image_generator(self):
+        from modules.article_engine import ArticleAgent
+        import inspect
+        self.assertIn("image_gen", inspect.signature(ArticleAgent.__init__).parameters)
+
+    def test_content_engine_hands_the_generator_to_the_agent(self):
+        p = os.path.join(self.ROOT, "modules", "content_engine.py")
+        with open(p, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn("image_gen=image_gen", src)
+
+    def test_website_hero_is_not_the_outlets_photo(self):
+        """
+        Republishing a wire photograph on our own domain is a licensing problem
+        that the source-credited Telegram post does not have.
+        """
+        p = os.path.join(self.ROOT, "modules", "fanout.py")
+        with open(p, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertNotIn('main_image_url=story.get("real_image_url")', src)
+
+    def test_generated_hero_is_uploaded_not_left_on_disk(self):
+        """Render wipes the disk on deploy, so a local path is not a hero URL."""
+        p = os.path.join(self.ROOT, "modules", "article_engine.py")
+        with open(p, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn("upload_image", src)
+
+    def test_hero_generation_never_blocks_publishing(self):
+        """An article still publishes when every image path fails."""
+        from modules.article_engine import ArticleAgent
+
+        gen = MagicMock()
+        gen.generate = AsyncMock(side_effect=RuntimeError("image service down"))
+        gen.hosted_prompt_url = MagicMock(return_value="")
+        agent = ArticleAgent(ai_engine=MagicMock(), db=None,
+                             site_name="Novi News", image_gen=gen)
+        url = asyncio.run(agent._hero_image("A headline", "crypto"))
+        self.assertEqual(url, "")
 
 
 if __name__ == "__main__":

@@ -54,10 +54,10 @@ class Fanout:
 
         if self.article_agent and story and website_on:
             try:
-                article = await self.article_agent.generate_and_publish_article(
-                    story=story,
-                    main_image_url=story.get("real_image_url") or package.get("image_url", ""),
-                )
+                # No image URL is passed: the agent generates its own hero and
+                # hosts it, rather than hot-linking the outlet's photograph
+                # onto our domain.
+                article = await self.article_agent.generate_and_publish_article(story=story)
                 if article:
                     article_slug = article.get("slug", "")
                     package["article_slug"] = article_slug

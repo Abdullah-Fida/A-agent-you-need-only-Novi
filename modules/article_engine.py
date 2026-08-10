@@ -32,13 +32,15 @@ class ArticleAgent:
     MIN_ACCEPTABLE_WORDS = 250
 
     def __init__(self, ai_engine: AIEngine, db=None, site_name: str = "Novi News",
-                 site_url: str = ""):
+                 site_url: str = "", image_gen=None):
         self.ai = ai_engine
         self.db = db
         self.site_name = site_name
         self.site_url = (site_url or "").rstrip("/")
+        self.image_gen = image_gen
         self.articles_written = 0
-        logger.info("ArticleAgent initialized.")
+        logger.info(f"ArticleAgent initialized "
+                    f"(image generation: {'on' if image_gen else 'OFF — no generator supplied'}).")
 
     # ── slug / text helpers ──────────────────────────────────────
 
@@ -115,7 +117,12 @@ class ArticleAgent:
             logger.warning(f"Article too short ({words} words) for '{title[:50]}'. Skipping.")
             return None
 
-        seo = await self._write_seo(title, summary, body_html, category)
+        # SEO metadata and the hero image are independent of each other, so
+        # they run together rather than adding their latencies up.
+        seo, hero_url = await asyncio.gather(
+            self._write_seo(title, summary, body_html, category),
+            self._hero_image(title, category, main_image_url),
+        )
 
         base_slug = self._slugify(seo.get("slug_hint") or title)
         slug = await self._unique_slug(base_slug)
@@ -125,7 +132,7 @@ class ArticleAgent:
             "slug": slug,
             "content": body_html,
             "summary": (seo.get("summary") or summary or "")[:600],
-            "main_image_url": main_image_url or "",
+            "main_image_url": hero_url,
             "category": category,
             "seo_keywords": seo.get("keywords", [])[:12],
             "meta_title": (seo.get("meta_title") or title)[:70],
@@ -150,6 +157,70 @@ class ArticleAgent:
         logger.info(f"Article published: /{slug} ({words} words, "
                     f"{record['reading_minutes']} min read)")
         return saved or record
+
+    async def _hero_image(self, title: str, category: str,
+                          provided_url: str = "") -> str:
+        """
+        Produces a publicly reachable hero image URL for the article.
+
+        The image is generated rather than borrowed: the outlet's own photo is
+        deliberately not used as the hero, because republishing a wire
+        photograph on our own domain is a licensing problem the Telegram post
+        (which credits its sources inline) does not have.
+
+        A caller-supplied URL still wins, so an editor can pin a specific
+        image. Falls back to the supplied URL, then to nothing — an article
+        without a hero still publishes, it just loses its social preview.
+        """
+        if provided_url and not self.image_gen:
+            return provided_url
+
+        if not self.image_gen:
+            logger.warning("ArticleAgent has no image generator — publishing without a hero image.")
+            return provided_url or ""
+
+        try:
+            # story_image_url is intentionally omitted, so the generator never
+            # falls through to the publisher's photo for a website hero.
+            local_path = await self.image_gen.generate(
+                headline=title,
+                category=self._image_category(category),
+                source_credit=self.site_name,
+            )
+        except Exception as e:
+            logger.error(f"Hero image generation failed: {type(e).__name__}: {e}")
+            local_path = None
+
+        if local_path and self.db:
+            url = await self.db.upload_image(local_path)
+            if url:
+                return url
+
+        # Storage is not set up (or the upload failed). Rather than publish a
+        # heroless article, point at the generator's own stable public URL for
+        # this headline — it renders the same picture on every request.
+        fallback = self.image_gen.hosted_prompt_url(title, self._image_category(category))
+        if fallback:
+            logger.warning("Hero image not self-hosted (run database/schema.sql to create "
+                           "the 'article-images' bucket); using the generator's public URL.")
+            return fallback
+
+        return provided_url or ""
+
+    @staticmethod
+    def _image_category(category: str) -> str:
+        """Maps a website category onto an image-generator palette key."""
+        key = (category or "").strip().lower().replace(" ", "_")
+        aliases = {
+            "world": "world_news",
+            "news": "world_news",
+            "technology": "tech",
+            "ai": "tech_ai",
+            "markets": "business_markets",
+            "finance": "business_markets",
+            "economy": "business",
+        }
+        return aliases.get(key, key)
 
     async def _write_body(self, title: str, summary: str, category: str) -> Optional[str]:
         """Generates the long-form HTML body."""

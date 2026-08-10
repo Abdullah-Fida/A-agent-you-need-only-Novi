@@ -70,12 +70,14 @@ one configured model.
 | # | Task key | Used by | What it produces | Tokens | Temp |
 |---|----------|---------|------------------|--------|------|
 | 1 | `synthesizer` | Content Engine | The Telegram post + tweet + Reddit copy, from 2–3 source articles | 1200 | 0.7 |
-| 2 | `headline` | Image Generator | A 5–8 word headline for the image overlay | 30 | 0.5 |
-| 3 | `article` | Article Agent | The full 800–1200 word website article (HTML) | 3000 | 0.7 |
-| 4 | `seo` | Article Agent | meta title, description, keywords, slug | 700 | 0.3 |
-| 5 | `social_caption` | Buffer Broadcaster | The Facebook caption (longer, hashtagged) | 420 | 0.7 |
-| 6 | `signal_cleansing` | Signal Copier | Rewrites a crypto signal, stripping competitor branding | 500 | 0.2 |
-| 7 | `stealth` | Stealth Marketer | Human-sounding group replies and invitation messages | 150 | 0.8 |
+| 2 | `article` | Article Agent | The full 800–1200 word website article (HTML) | 3000 | 0.7 |
+| 3 | `seo` | Article Agent | meta title, description, keywords, slug | 700 | 0.3 |
+| 4 | `social_caption` | Buffer Broadcaster | The Facebook caption (longer, hashtagged) | 420 | 0.7 |
+| 5 | `signal_cleansing` | Signal Copier | Rewrites a crypto signal, stripping competitor branding | 500 | 0.2 |
+| 6 | `stealth` | Stealth Marketer | Human-sounding group replies and invitation messages | 150 | 0.8 |
+
+Images do **not** use a language model — the picture is generated from the
+story's own headline by the image providers below, so no token budget applies.
 
 **Failover chain.** Each call retries at least 3 times with exponential backoff.
 On a 404 / "model unavailable" it walks a fallback list; on 429/401 it rotates
@@ -235,6 +237,38 @@ Highest-scoring story cluster wins.
 Stories are grouped when their titles overlap >40%, so the AI reads 2–3
 perspectives on the same event before writing.
 
+### 5.1a Images — every post carries one
+
+An image is a hard requirement for the channel, so generation is a chain of
+independent sources rather than one provider. The first that answers wins:
+
+| # | Source | Typical time | Needs | Notes |
+|---|--------|--------------|-------|-------|
+| 1 | **Pollinations (Flux)** | ~5 s | nothing | Keyless, unaffected by datacenter IPs — the workhorse |
+| 2 | **Bing Image Creator (DALL·E 3)** | ~90 s | `BING_COOKIE` | Best quality, but the cookie expires every few weeks and Bing throttles cloud IPs |
+| 3 | **The outlet's own photo** | ~2 s | story has one | Telegram only — never used as a website hero |
+| 4 | **Branded headline card** | instant | nothing | Drawn locally: gradient, category eyebrow, headline, wordmark |
+
+Tier 4 needs no network and no installed fonts, so a post can only ever lose
+its image if the disk write itself fails.
+
+**Guard rails**
+
+- The whole chain is capped at **150 seconds**; a hung provider can never eat
+  a posting slot.
+- Generation is fully async. It used to run synchronously inside the event
+  loop, which froze the scheduler, the dashboard API and Telegram's keepalives
+  for up to six minutes per post.
+- Output is a 1280×720 **JPEG** (~100 KB, down from ~1.1 MB as PNG) and is
+  re-opened and verified before it is attached to anything.
+- If a post *does* go out without a picture, it is recorded in `error_logs`
+  and **emailed to you as a critical alert** — it is treated as an incident,
+  not a log line.
+- `posts.metadata` records `has_image`, `image_status` and `image_source`, so
+  the database says which tier produced each picture and whether it was really
+  delivered. Previously the intended path was stored on both branches, which
+  made a text-only post indistinguishable from an illustrated one.
+
 ### 5.2 Signal Copier (Whale Tracker VIP)
 
 ```
@@ -274,7 +308,8 @@ Every published news story also becomes a full article at `SITE_URL/{slug}`.
 
 ```
 story → AI writes 800-1200 words of HTML
-      → AI writes meta title / description / keywords / slug hint
+      → in parallel:  AI writes meta title / description / keywords / slug hint
+                      image generator draws the hero, uploaded to Supabase Storage
       → slug made unique (adds -2, -3 … if taken)
       → reading time + word count computed
       → saved to Supabase `articles`
@@ -282,6 +317,13 @@ story → AI writes 800-1200 words of HTML
 ```
 
 **Quality gate:** anything under 250 words is rejected rather than published.
+
+**Hero images.** The agent generates and hosts its own picture rather than
+hot-linking the outlet's photograph: republishing a wire photo on our own
+domain is a licensing problem that the source-credited Telegram post does not
+have. Images live in the public `article-images` Supabase Storage bucket,
+created by `database/schema.sql` — until that has been run, articles fall back
+to the generator's own public URL and a warning is logged.
 
 **SEO shipped per article:** canonical URL, OpenGraph + Twitter cards,
 `NewsArticle` JSON-LD, `BreadcrumbList` JSON-LD, keyword meta, and an entry in
