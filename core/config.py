@@ -227,3 +227,18 @@ def _warn_on_problems(cfg: "BotConfig"):
 
     if cfg.sleep_start_hour == cfg.sleep_end_hour:
         logger.info("Sleep window disabled — the bot will run 24/7.")
+
+    # Easy trap: setting the provider/model but forgetting the key means the
+    # Article Agent quietly keeps using the shared news AI instead.
+    if not cfg.article_api_keys and (cfg.article_model or
+                                     cfg.article_api_provider not in ("", "openrouter")):
+        logger.warning(
+            f"ARTICLE_API_PROVIDER='{cfg.article_api_provider}' / "
+            f"ARTICLE_MODEL='{cfg.article_model}' are set, but ARTICLE_API_KEYS is EMPTY. "
+            f"The Article Agent will fall back to the shared news AI (OpenRouter) and "
+            f"will NOT use {cfg.article_api_provider}. Add ARTICLE_API_KEYS to activate it."
+        )
+
+    if not os.environ.get("GROQ_API_KEY", "").strip():
+        logger.warning("GROQ_API_KEY is not set — the NOVI dashboard's voice assistant "
+                       "will not be able to answer.")
