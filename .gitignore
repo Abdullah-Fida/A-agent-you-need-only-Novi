@@ -18,3 +18,5 @@ website/node_modules/
 website/out/
 website/.env*
 .env.local
+render.env
+*.env
