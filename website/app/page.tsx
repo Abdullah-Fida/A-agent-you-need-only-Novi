@@ -85,7 +85,7 @@ export default async function HomePage() {
         </section>
 
         {categories.length > 0 && (
-          <nav className="cat-strip" aria-label="Categories">
+          <nav className="cat-strip" aria-label="Browse by section">
             {categories.map((c) => (
               <Link key={c} href={`/category/${encodeURIComponent(c)}`}>{c}</Link>
             ))}
@@ -94,10 +94,12 @@ export default async function HomePage() {
 
         {remainder.length > 0 && (
           <section>
-            <h2 className="section-title">Latest</h2>
+            <h2 className="section-title">Latest stories</h2>
             <div className="grid">
-              {remainder.map((a: Article) => (
-                <ArticleCard key={a.slug} article={a} />
+              {remainder.map((a: Article, i: number) => (
+                // Images on the first row only — below that the page reads
+                // faster as a headline list, the way a real front page does.
+                <ArticleCard key={a.slug} article={a} showImage={i < 3} />
               ))}
             </div>
           </section>

@@ -3,36 +3,37 @@ import { Article } from '@/lib/supabase';
 
 interface ArticleCardProps {
   article: Article;
+  showImage?: boolean;
 }
 
-export default function ArticleCard({ article }: ArticleCardProps) {
-  const formattedDate = new Date(article.published_at).toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric'
+export default function ArticleCard({ article, showImage = true }: ArticleCardProps) {
+  const date = new Date(article.published_at).toLocaleDateString('en-US', {
+    month: 'short', day: 'numeric', year: 'numeric',
   });
 
   return (
-    <Link href={`/${article.slug}`}>
-      <article className="glass-panel article-card">
-        <div className="card-image-wrap">
-          <img 
-            src={article.main_image_url || '/placeholder-news.jpg'} 
-            alt={article.title} 
-            className="card-image" 
-            loading="lazy"
-          />
-          <span className="card-badge">{article.category || 'News'}</span>
-        </div>
-        <div className="card-body">
-          <h2 className="card-title">{article.title}</h2>
-          <p className="card-summary">{article.summary}</p>
-          <div className="card-footer">
-            <span>By {article.author || 'NOVI Agent'}</span>
-            <time>{formattedDate}</time>
-          </div>
-        </div>
-      </article>
+    <Link href={`/${article.slug}`} className="card">
+      {showImage && article.main_image_url && (
+        /* eslint-disable-next-line @next/next/no-img-element */
+        <img
+          className="card-img"
+          src={article.main_image_url}
+          alt=""
+          loading="lazy"
+        />
+      )}
+      <span className="tag">{article.category || 'News'}</span>
+      <h2>{article.title}</h2>
+      {article.summary && <p>{article.summary}</p>}
+      <div className="byline">
+        <time dateTime={article.published_at}>{date}</time>
+        {article.reading_minutes ? (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>{article.reading_minutes} min read</span>
+          </>
+        ) : null}
+      </div>
     </Link>
   );
 }
