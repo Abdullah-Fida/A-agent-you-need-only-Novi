@@ -5,6 +5,7 @@ Produces ready-to-publish content packages for each platform.
 """
 import logging
 import random
+import re
 from typing import Optional, Dict, List
 from modules.news_scraper import NewsScraper
 from modules.image_generator import ImageGenerator
@@ -173,6 +174,20 @@ class ContentEngine:
                     error_message=f"No image produced for '{image_headline[:80]}'",
                     auto_resolved=False,
                 )
+
+        # Publish it once, here. Telegram uploads the local file, but Facebook
+        # and the website both need a URL they can fetch, and generating a
+        # second picture for them would waste a Bing call and show a different
+        # image for the same story on every platform.
+        image_url = ""
+        if image_path and self.db:
+            image_url = await self.db.upload_image(image_path)
+        if not image_url:
+            # Better a real news photo on Facebook than no picture at all.
+            image_url = best_group[0].get("real_image_url", "")
+            if image_url:
+                logger.info("Generated image is not hosted; social platforms will use "
+                            "the original news photo.")
         
         # 6. Build and return content package.
         # The website article is written by Fanout AFTER the Telegram post
@@ -186,8 +201,10 @@ class ContentEngine:
             "reddit_title": reddit_title,
             "reddit_body": reddit_body,
             "image_path": image_path,
-            # Which tier produced it (pollinations / bing / story_image / card),
-            # carried through so the post record and dashboard show it.
+            # Public URL for the platforms that cannot upload a local file
+            "image_url": image_url,
+            # Which tier produced it (bing / story_image / card), carried
+            # through so the post record and dashboard show it.
             "image_source": getattr(self.image_gen, "last_source", ""),
             "category": category,
             "source_credits": source_credits,
@@ -205,6 +222,53 @@ class ContentEngine:
             
         return package
     
+    # ── morning brief helpers ─────────────────────────────────────────
+
+    @staticmethod
+    def _extract_brief(raw: Optional[str]) -> Optional[str]:
+        """
+        Pulls the actual brief out of a model reply, or returns None.
+
+        Reasoning models narrate before they answer ("We need to produce a
+        morning brief with a numbered list…"), and that narration would
+        otherwise be published to the channel verbatim. Anchoring on the
+        greeting discards it; requiring real numbered items rejects a reply
+        that is *only* narration.
+        """
+        if not raw:
+            return None
+
+        text = raw.strip()
+        text = re.sub(r"^```[a-z]*\s*", "", text, flags=re.I)
+        text = re.sub(r"\s*```$", "", text).strip()
+
+        # Take the LAST greeting: any earlier one belongs to the model
+        # quoting the instructions back to itself.
+        matches = list(re.finditer(r"good morning", text, re.I))
+        if matches:
+            text = text[matches[-1].start():].strip()
+        elif re.search(r"we need to|the user wants|let me |i should |first,? i", text, re.I):
+            return None      # pure narration, no brief in it at all
+
+        items = re.findall(r"^\s*\d+[\.\)]\s+\S", text, re.M)
+        if len(items) < 2:
+            return None
+
+        return text
+
+    def _compose_brief(self, stories: List[Dict]) -> str:
+        """Builds the brief without the AI, from the stories themselves."""
+        icons = ["🔥", "🚀", "📈", "💡", "⚡", "🚨"]
+        lines = [f"☀️ <b>Good morning! Here is your {self.site_name} brief:</b>", ""]
+        for i, story in enumerate(stories[:5], 1):
+            title = (story.get("title") or "").strip().rstrip(".")
+            source = story.get("source") or ""
+            lines.append(f"{icons[(i - 1) % len(icons)]} <b>{i}.</b> {title}")
+            if source:
+                lines.append(f"    <i>via {source}</i>")
+        lines += ["", f"Have a productive day! — {self.site_name}"]
+        return "\n".join(lines)
+
     async def produce_morning_brief(self) -> Optional[Dict]:
         """
         Special routine for the morning digest.
@@ -228,24 +292,46 @@ class ContentEngine:
         system_prompt = f"""You are the editor of the "{self.site_name}" morning brief.
 Write a quick morning digest covering the top 3-5 stories.
 Format: Start with "Good morning! Here is your {self.site_name} brief:" followed by a numbered list.
-Each item: 1-2 lines max, with Pakistani relevance.
-90% English, 10% Urdu flavor. Use animated emojis like 🔥, 🚀, 📈, 💡, ⚡, 🚨 to make it visual!
+Each item: 1-2 lines max, noting why it matters to readers in Pakistan.
+Write strictly in 100% professional, flawless English. Do NOT use Urdu, Roman Urdu
+or any transliterated words — English only, every single word.
+Use emojis like 🔥, 🚀, 📈, 💡, ⚡, 🚨 to make it visual.
 End with "Have a productive day! — {self.site_name}"
 """
         
-        user_prompt = f"Write the morning brief from these top stories:\n{stories_text}"
-        
-        brief_text = await self.ai.generate(
+        user_prompt = (
+            f"Write the morning brief from these top stories:\n{stories_text}\n\n"
+            f"Reply with the brief itself and nothing else. Do not explain your "
+            f"approach or restate these instructions — begin directly with "
+            f'"Good morning!".'
+        )
+
+        raw = await self.ai.generate(
             task="synthesizer",
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            max_tokens=800,
+            # Generous, because a reasoning model spends part of the budget
+            # thinking before it writes anything usable.
+            max_tokens=1400,
             temperature=0.7
         )
-        
+
+        brief_text = self._extract_brief(raw)
         if not brief_text:
-            return None
-        
+            # The free router sometimes lands on a reasoning model that emits
+            # its working out instead of the answer. The brief is just a
+            # formatted list, so compose it directly rather than publishing
+            # the model's monologue to the channel.
+            logger.warning("Morning brief model output unusable — composing it directly.")
+            brief_text = self._compose_brief(top_stories)
+            if self.db:
+                await self.db.log_error(
+                    module="ContentEngine",
+                    error_type="MorningBriefUnusable",
+                    error_message=f"Model returned prose, not a brief: {(raw or '')[:200]}",
+                    auto_resolved=True,
+                )
+
         # Generate a morning brief image
         image_path = await self.image_gen.generate(
             headline="Your Morning Brief",

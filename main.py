@@ -89,10 +89,22 @@ async def main():
     # 4. Initialize Modules
     scraper = NewsScraper(db=db)
     
+    # 5. Notification Manager — built before the image generator, which needs
+    # it to email when the Bing cookie expires.
+    notification_manager = NotificationManager(
+        sender_email=config.email_sender,
+        app_password=config.email_app_password,
+        receiver_email=config.email_receiver,
+        resend_api_key=config.resend_api_key,
+        db=db
+    )
+
     images_dir = os.path.join(os.path.dirname(__file__), "assets", "generated_images")
     channel_name = config.channel_username or "Novi_Network"
-    image_gen = ImageGenerator(output_dir=images_dir, channel_name=channel_name, bing_cookie=config.bing_cookie)
-    
+    image_gen = ImageGenerator(output_dir=images_dir, channel_name=channel_name,
+                               bing_cookie=config.bing_cookie,
+                               notification_manager=notification_manager, db=db)
+
     content_engine = ContentEngine(
         ai_engine=ai_engine,
         scraper=scraper,
@@ -102,16 +114,7 @@ async def main():
         site_url=config.site_url,
         article_ai=article_ai
     )
-    
-    # 5. Initialize Notification Manager
-    notification_manager = NotificationManager(
-        sender_email=config.email_sender,
-        app_password=config.email_app_password,
-        receiver_email=config.email_receiver,
-        resend_api_key=config.resend_api_key,
-        db=db
-    )
-    
+
     # 6. Initialize The Brain + Growth Engine
     # (created before the broadcasters so they can enforce Brain-owned limits)
     brain = BotBrain(db=db, weekly_goal=config.weekly_subscriber_goal,

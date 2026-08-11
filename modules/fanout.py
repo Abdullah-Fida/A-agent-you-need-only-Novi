@@ -54,10 +54,13 @@ class Fanout:
 
         if self.article_agent and story and website_on:
             try:
-                # No image URL is passed: the agent generates its own hero and
-                # hosts it, rather than hot-linking the outlet's photograph
-                # onto our domain.
-                article = await self.article_agent.generate_and_publish_article(story=story)
+                # Reuse the picture already generated and hosted for this post,
+                # so the story looks the same on Telegram, Facebook and the
+                # site — and only one Bing image is spent on it.
+                article = await self.article_agent.generate_and_publish_article(
+                    story=story,
+                    main_image_url=package.get("image_url", ""),
+                )
                 if article:
                     article_slug = article.get("slug", "")
                     package["article_slug"] = article_slug

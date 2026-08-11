@@ -1,22 +1,24 @@
 """
 Image Generator.
 
-Every published post must carry an image, so generation runs as a chain of
-independent sources rather than one provider with a bare gradient behind it:
+Pictures come from Bing Image Creator (DALL-E 3) and nowhere else — no other
+generator is used. When Bing cannot deliver, the chain falls back to real
+photography rather than to a different AI:
 
-    1. Pollinations (Flux)  — ~6s, keyless, works from datacenter IPs
-    2. Bing Image Creator   — ~90s, DALL-E 3 quality, needs a cookie that
-                              expires and is throttled on datacenter IPs
-    3. The publisher's own photo from the scraped story
-    4. A branded headline card drawn locally
+    1. Bing Image Creator  — DALL-E 3, needs a live `_U` cookie
+    2. The photo published with the original news story
+    3. A branded headline card drawn locally
 
-Tier 4 needs no network and no installed fonts, so `generate()` returning
+Tier 3 needs no network and no installed fonts, so `generate()` returning
 None means the disk write itself failed — nothing else can produce it.
 
-Everything here is async. The previous version was synchronous and was
-called from inside the event loop, so a slow Bing request froze the whole
-bot — scheduler, Telegram keepalives and the dashboard API alike — for up
-to six minutes per post.
+The cookie expires every few weeks. When it does, Bing stops redirecting and
+the failure is silent, so a dead cookie raises an email alert asking for a
+replacement instead of quietly degrading every post.
+
+Everything here is async. The original version was synchronous and called
+from inside the event loop, so a slow Bing request froze the whole bot —
+scheduler, Telegram keepalives and the dashboard API alike.
 """
 import asyncio
 import io
@@ -26,7 +28,6 @@ import random
 import re
 import time
 import urllib.parse
-import zlib
 from datetime import datetime
 from typing import Optional, Tuple
 
@@ -53,7 +54,9 @@ BING_JUNK = {
     "https://r.bing.com/rp/TX9QuO3WzcCJz1uaaSwQAz39Kb0.jpg",
 }
 
-POLLINATIONS_URL = "https://image.pollinations.ai/prompt/"
+# Bing serves the create page (HTTP 200) instead of redirecting when the
+# cookie is no longer valid, so these are how a dead cookie announces itself.
+BING_SIGNIN_MARKERS = ("sign in", "signin", "login.live.com", "rewardsstatus")
 
 # ── Look per category ─────────────────────────────────────────────────
 COLOR_PALETTES = {
@@ -122,30 +125,45 @@ class ImageGenerator:
     HEIGHT = 720
     JPEG_QUALITY = 88
 
-    # Per-tier ceilings. Bing is generous because its own polling loop can
-    # legitimately take over a minute; the point is that it cannot run
-    # unbounded and eat the posting slot.
-    POLLINATIONS_TIMEOUT = 45.0
-    BING_TIMEOUT = 80.0
-    STORY_IMAGE_TIMEOUT = 20.0
+    # Bing's own polling loop can legitimately take over a minute, so its
+    # ceiling is generous; the point is only that it cannot run unbounded.
+    BING_TIMEOUT = 110.0
+    BING_ATTEMPTS = 2
+    STORY_IMAGE_TIMEOUT = 25.0
+
+    # How many consecutive Bing failures before we conclude the cookie is dead
+    # rather than the request being unlucky, and how long before we say so again.
+    COOKIE_ALERT_AFTER = 3
+    COOKIE_ALERT_INTERVAL = 6 * 3600
 
     def __init__(self, output_dir: str, channel_name: str = "Novi News",
-                 bing_cookie: str = "", total_budget: float = 150.0):
+                 bing_cookie: str = "", total_budget: float = 300.0,
+                 notification_manager=None, db=None):
         self.output_dir = output_dir
         self.channel_name = channel_name
         self.bing_cookie = (bing_cookie or "").strip()
         self.total_budget = total_budget
+        self.nm = notification_manager
+        self.db = db
         self.width = self.WIDTH
         self.height = self.HEIGHT
 
         # Counters the dashboard reports, so a silent slide onto the
         # last-resort card is visible instead of being discovered in the feed.
-        self.stats = {"pollinations": 0, "bing": 0, "story_image": 0, "card": 0, "failed": 0}
+        self.stats = {"bing": 0, "story_image": 0, "card": 0, "failed": 0}
         self.last_source = ""
+
+        # Cookie health
+        self.consecutive_bing_failures = 0
+        self.cookie_looks_dead = False
+        self._last_cookie_alert = 0.0
 
         os.makedirs(output_dir, exist_ok=True)
         logger.info(f"Image Generator ready. Output: {output_dir} | "
-                    f"Bing cookie: {'present' if self.bing_cookie else 'absent'}")
+                    f"Bing cookie: {'present' if self.bing_cookie else 'ABSENT'}")
+        if not self.bing_cookie:
+            logger.error("BING_COOKIE is not set — every post will fall back to the "
+                         "news photo or a headline card.")
 
     # ── public API ────────────────────────────────────────────────────
 
@@ -167,37 +185,56 @@ class ImageGenerator:
         img: Optional[Image.Image] = None
         tier = "card"
 
-        for name, budget, coro_factory in (
-            ("pollinations", self.POLLINATIONS_TIMEOUT, lambda: self._from_pollinations(prompt)),
-            ("bing", self.BING_TIMEOUT, lambda: self._from_bing(prompt)),
-            ("story_image", self.STORY_IMAGE_TIMEOUT, lambda: self._from_url(story_image_url)),
-        ):
-            if name == "bing" and not self.bing_cookie:
-                continue
-            if name == "story_image" and not story_image_url:
-                continue
+        # Bing is the only generator used. It is retried, because it is the
+        # only thing standing between the post and a fallback photograph.
+        if self.bing_cookie:
+            for attempt in range(1, self.BING_ATTEMPTS + 1):
+                remaining = left()
+                if remaining < 15:
+                    logger.warning("Image budget exhausted before Bing could retry.")
+                    break
+                try:
+                    img = await asyncio.wait_for(
+                        self._from_bing(prompt),
+                        timeout=min(self.BING_TIMEOUT, remaining),
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(f"Bing timed out (attempt {attempt}/{self.BING_ATTEMPTS}).")
+                    img = None
+                except Exception as e:
+                    logger.warning(f"Bing failed (attempt {attempt}/{self.BING_ATTEMPTS}): "
+                                   f"{type(e).__name__}: {e}")
+                    img = None
 
-            remaining = left()
-            if remaining < 5:
-                logger.warning(f"Image budget exhausted before '{name}'; using branded card.")
-                break
+                if img is not None:
+                    tier = "bing"
+                    await self._note_bing_success()
+                    logger.info(f"Image generated by Bing DALL-E 3 (attempt {attempt}).")
+                    break
+                if attempt < self.BING_ATTEMPTS:
+                    await asyncio.sleep(3)
 
+            if img is None:
+                await self._note_bing_failure(headline)
+
+        # Fall back to the photograph the outlet published with the story.
+        # Real reporting imagery beats a synthetic stand-in.
+        if img is None and story_image_url and left() > 5:
             try:
-                img = await asyncio.wait_for(coro_factory(), timeout=min(budget, remaining))
-            except asyncio.TimeoutError:
-                logger.warning(f"Image source '{name}' timed out.")
-                img = None
+                img = await asyncio.wait_for(
+                    self._from_url(story_image_url),
+                    timeout=min(self.STORY_IMAGE_TIMEOUT, left()),
+                )
             except Exception as e:
-                logger.warning(f"Image source '{name}' failed: {type(e).__name__}: {e}")
+                logger.warning(f"News photo unusable: {type(e).__name__}: {e}")
                 img = None
-
             if img is not None:
-                tier = name
-                logger.info(f"Image sourced from '{name}'.")
-                break
+                tier = "story_image"
+                logger.info("Using the photo published with the original news story.")
 
         if img is None:
-            logger.warning("All image sources unavailable — drawing branded headline card.")
+            logger.warning("Bing unavailable and no usable news photo — "
+                           "drawing branded headline card.")
             img = self._branded_card(headline, category, source_credit)
 
         path = self._save(img)
@@ -209,43 +246,72 @@ class ImageGenerator:
             self.last_source = "failed"
         return path
 
-    # ── tier 1: Pollinations ──────────────────────────────────────────
+    # ── cookie health ─────────────────────────────────────────────────
 
-    def _pollinations_url(self, prompt: str, seed: int) -> str:
-        return (
-            POLLINATIONS_URL
-            + urllib.parse.quote(prompt[:900], safe="")
-            + f"?width={self.width}&height={self.height}"
-            f"&model=flux&nologo=true&seed={seed}"
+    async def _note_bing_success(self):
+        if self.cookie_looks_dead:
+            logger.info("Bing is answering again — the cookie is live.")
+            if self.nm:
+                await self.nm.send_notification(
+                    subject="Bing image cookie is working again",
+                    message="Bing Image Creator started responding again. "
+                            "Posts are back on DALL-E 3 images.",
+                    is_critical=False,
+                )
+        self.consecutive_bing_failures = 0
+        self.cookie_looks_dead = False
+
+    async def _note_bing_failure(self, headline: str = ""):
+        """
+        Counts a failed Bing run and, once it is clearly not bad luck, emails
+        asking for a fresh cookie.
+
+        A single failure is not evidence — Bing throttles and times out. Several
+        in a row, however, is what an expired `_U` cookie looks like from here,
+        and it otherwise degrades every post silently.
+        """
+        self.consecutive_bing_failures += 1
+        if self.consecutive_bing_failures < self.COOKIE_ALERT_AFTER:
+            return
+
+        self.cookie_looks_dead = True
+        now = time.time()
+        if now - self._last_cookie_alert < self.COOKIE_ALERT_INTERVAL:
+            return          # already asked recently; don't nag every post
+        self._last_cookie_alert = now
+
+        detail = (
+            f"Bing Image Creator has failed {self.consecutive_bing_failures} times "
+            f"in a row, which is what an expired cookie looks like.\n\n"
+            f"Posts are still going out — they now use the photo from the original "
+            f"news story, or a branded headline card — but they are no longer "
+            f"DALL-E 3 images.\n\n"
+            f"To fix it:\n"
+            f"  1. Open https://www.bing.com/images/create in a signed-in browser\n"
+            f"  2. Open DevTools > Application > Cookies > https://www.bing.com\n"
+            f"  3. Copy the value of the cookie named  _U\n"
+            f"  4. Paste it into BING_COOKIE in Render > Environment, and redeploy\n\n"
+            f"Last headline attempted: {headline[:120] or 'n/a'}"
         )
+        logger.error("BING COOKIE LOOKS EXPIRED — alerting.")
 
-    def hosted_prompt_url(self, headline: str, category: str = "default") -> str:
-        """
-        A public image URL for this headline that needs no hosting of our own.
+        if self.db:
+            await self.db.log_error(
+                module="ImageGenerator",
+                error_type="BingCookieExpired",
+                error_message=f"{self.consecutive_bing_failures} consecutive Bing failures",
+                auto_resolved=False,
+            )
+        if self.nm:
+            await self.nm.send_notification(
+                subject="Action needed: Bing image cookie has expired",
+                message=detail,
+                is_critical=True,
+            )
+        else:
+            logger.error("No notification manager wired — cannot email the cookie alert.")
 
-        Used as the website's hero-image fallback when Supabase Storage is not
-        set up yet, so an article still gets a picture and a social preview.
-        The seed is derived from the headline, so the URL is stable and keeps
-        resolving to the same picture on every request.
-        """
-        seed = zlib.crc32(headline.encode("utf-8", "ignore")) % 10_000_000
-        return self._pollinations_url(self._build_prompt(headline, category), seed)
-
-    async def _from_pollinations(self, prompt: str) -> Optional[Image.Image]:
-        """Keyless Flux endpoint. Fast and unbothered by datacenter IPs."""
-        url = self._pollinations_url(prompt, random.randint(1, 10_000_000))
-        async with httpx.AsyncClient(timeout=self.POLLINATIONS_TIMEOUT,
-                                     follow_redirects=True) as client:
-            r = await client.get(url)
-            if r.status_code != 200:
-                logger.warning(f"Pollinations returned HTTP {r.status_code}.")
-                return None
-            if not r.headers.get("content-type", "").startswith("image/"):
-                logger.warning("Pollinations returned a non-image response.")
-                return None
-            return self._decode(r.content)
-
-    # ── tier 2: Bing Image Creator ────────────────────────────────────
+    # ── tier 1: Bing Image Creator ────────────────────────────────────
 
     async def _from_bing(self, prompt: str) -> Optional[Image.Image]:
         """DALL-E 3 via the Image Creator web flow. Needs a live `_U` cookie."""
@@ -270,6 +336,15 @@ class ImageGenerator:
                     return None
                 if response.status_code == 302:
                     break
+            if response is not None and response.status_code != 302:
+                body = response.text.lower()
+                if any(marker in body for marker in BING_SIGNIN_MARKERS):
+                    # Bing served the signed-out create page: the cookie is gone,
+                    # not merely throttled. Skip straight to the alert threshold.
+                    logger.error("Bing served a signed-out page — the _U cookie is invalid.")
+                    self.consecutive_bing_failures = max(
+                        self.consecutive_bing_failures, self.COOKIE_ALERT_AFTER - 1)
+
             if response is None or response.status_code != 302:
                 # The usual cause is an expired cookie or a throttled IP.
                 logger.warning(

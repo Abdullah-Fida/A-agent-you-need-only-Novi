@@ -650,16 +650,50 @@ class TestImageGeneration(unittest.TestCase):
         self.assertNotIn("time.sleep(", src)
         self.assertNotIn("threading.Thread", src)
 
+    def test_bing_is_the_only_generator(self):
+        """No second image AI may creep back in — Bing or real photography."""
+        p = os.path.join(self.ROOT, "modules", "image_generator.py")
+        with open(p, encoding="utf-8") as fh:
+            src = fh.read().lower()
+        for banned in ("pollinations", "stability.ai", "replicate.com",
+                       "openai.com/v1/images", "dall-e-3\", ", "unsplash.com"):
+            self.assertNotIn(banned, src, f"a non-Bing image source is present: {banned}")
+
     def test_card_fallback_always_produces_a_file(self):
-        """With every network tier dead, a branded card must still be saved."""
+        """With Bing dead and no news photo, a branded card must still be saved."""
+        self.gen.bing_cookie = "cookie"
+
         async def dead(*a, **k):
-            raise RuntimeError("no network")
-        self.gen._from_pollinations = dead
+            raise RuntimeError("bing down")
+        self.gen._from_bing = dead
+
         path = asyncio.run(self.gen.generate("Some breaking headline", "crypto"))
         self.assertIsNotNone(path, "generate() returned None though the card tier exists")
         self.assertTrue(os.path.exists(path))
         self.assertGreater(os.path.getsize(path), 2048)
         self.assertEqual(self.gen.last_source, "card")
+
+    def test_news_photo_is_preferred_over_the_card(self):
+        """
+        When Bing cannot deliver, the photo published with the story is used
+        before falling back to a drawn card.
+        """
+        from PIL import Image as _Image
+        self.gen.bing_cookie = "cookie"
+
+        async def dead(*a, **k):
+            raise RuntimeError("bing down")
+        self.gen._from_bing = dead
+
+        async def photo(url):
+            self.assertTrue(url.startswith("http"))
+            return _Image.new("RGB", (1600, 900), (40, 80, 120))
+        self.gen._from_url = photo
+
+        path = asyncio.run(self.gen.generate(
+            "Headline", "world_news", story_image_url="https://news.example/photo.jpg"))
+        self.assertIsNotNone(path)
+        self.assertEqual(self.gen.last_source, "story_image")
 
     def test_card_renders_without_any_installed_font(self):
         """
@@ -681,10 +715,12 @@ class TestImageGeneration(unittest.TestCase):
         self.assertEqual(img.size, (1280, 720))
 
     def test_budget_is_bounded(self):
-        """A hung provider must not consume the whole posting slot."""
+        """A hung Bing request must not consume the whole posting slot."""
+        self.gen.bing_cookie = "cookie"
+
         async def hang(*a, **k):
             await asyncio.sleep(600)
-        self.gen._from_pollinations = hang
+        self.gen._from_bing = hang
         self.gen.total_budget = 6.0
 
         async def run():
@@ -698,21 +734,73 @@ class TestImageGeneration(unittest.TestCase):
         self.assertLess(elapsed, 30, "image generation ignored its time budget")
 
     def test_saved_file_is_a_readable_jpeg(self):
-        async def dead(*a, **k):
-            raise RuntimeError("no network")
-        self.gen._from_pollinations = dead
         path = asyncio.run(self.gen.generate("Headline here", "business"))
         from PIL import Image
         with Image.open(path) as im:
             self.assertEqual(im.size, (1280, 720))
             self.assertEqual(im.format, "JPEG")
 
-    def test_hosted_prompt_url_is_stable(self):
-        """The website hero fallback must resolve to the same picture each time."""
-        a = self.gen.hosted_prompt_url("Bitcoin rallies", "crypto")
-        b = self.gen.hosted_prompt_url("Bitcoin rallies", "crypto")
-        self.assertEqual(a, b)
-        self.assertTrue(a.startswith("https://"))
+
+class TestBingCookieAlert(unittest.TestCase):
+    """An expired Bing cookie must ask for a replacement, not degrade silently."""
+
+    def make(self):
+        from modules.image_generator import ImageGenerator
+        gen = ImageGenerator(output_dir=tempfile.mkdtemp(), bing_cookie="stale",
+                             notification_manager=MagicMock(), db=MagicMock())
+        gen.nm.send_notification = AsyncMock()
+        gen.db.log_error = AsyncMock()
+        # One attempt per call: the retry back-off is real time, and these
+        # tests are about the alert, not the retry.
+        gen.BING_ATTEMPTS = 1
+
+        async def dead(*a, **k):
+            raise RuntimeError("bing refused")
+        gen._from_bing = dead
+        return gen
+
+    def test_one_failure_does_not_cry_wolf(self):
+        """Bing throttles and times out; a single miss is not an expired cookie."""
+        gen = self.make()
+        asyncio.run(gen.generate("Headline", "tech"))
+        gen.nm.send_notification.assert_not_awaited()
+        self.assertFalse(gen.cookie_looks_dead)
+
+    def test_repeated_failures_email_for_a_new_cookie(self):
+        gen = self.make()
+        for _ in range(gen.COOKIE_ALERT_AFTER):
+            asyncio.run(gen.generate("Headline", "tech"))
+
+        self.assertTrue(gen.cookie_looks_dead)
+        gen.nm.send_notification.assert_awaited()
+        kwargs = gen.nm.send_notification.call_args.kwargs
+        self.assertTrue(kwargs["is_critical"])
+        self.assertIn("_U", kwargs["message"], "the alert must name the cookie to replace")
+        self.assertIn("BING_COOKIE", kwargs["message"])
+        gen.db.log_error.assert_awaited()
+
+    def test_alert_does_not_repeat_on_every_post(self):
+        gen = self.make()
+        for _ in range(gen.COOKIE_ALERT_AFTER + 4):
+            asyncio.run(gen.generate("Headline", "tech"))
+        self.assertEqual(gen.nm.send_notification.await_count, 1,
+                         "a dead cookie must be reported once, not once per post")
+
+    def test_recovery_is_reported_and_resets(self):
+        from PIL import Image as _Image
+        gen = self.make()
+        for _ in range(gen.COOKIE_ALERT_AFTER):
+            asyncio.run(gen.generate("Headline", "tech"))
+        self.assertTrue(gen.cookie_looks_dead)
+
+        async def alive(*a, **k):
+            return _Image.new("RGB", (1280, 720), (10, 10, 10))
+        gen._from_bing = alive
+        asyncio.run(gen.generate("Headline", "tech"))
+
+        self.assertFalse(gen.cookie_looks_dead)
+        self.assertEqual(gen.consecutive_bing_failures, 0)
+        self.assertEqual(gen.stats["bing"], 1)
 
 
 class TestBroadcasterImageHonesty(unittest.TestCase):
@@ -851,11 +939,183 @@ class TestArticleAgentImages(unittest.TestCase):
 
         gen = MagicMock()
         gen.generate = AsyncMock(side_effect=RuntimeError("image service down"))
-        gen.hosted_prompt_url = MagicMock(return_value="")
         agent = ArticleAgent(ai_engine=MagicMock(), db=None,
                              site_name="Novi News", image_gen=gen)
         url = asyncio.run(agent._hero_image("A headline", "crypto"))
         self.assertEqual(url, "")
+
+
+class TestFacebookImageAttachment(unittest.TestCase):
+    """Facebook posts were going out with no picture at all."""
+
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def make(self):
+        from modules.buffer_broadcaster import BufferBroadcaster
+        b = BufferBroadcaster(access_token="t", db=MagicMock(),
+                              site_url="https://example.com")
+        b._connected = True
+        b.db.log_social_post = AsyncMock()
+        b.db.log_post = AsyncMock()
+        b.db.log_error = AsyncMock()
+        return b
+
+    def _capture_post_input(self, broadcaster, image_url):
+        captured = {}
+
+        async def fake_gql(query, variables):
+            captured.update(variables["i"])
+            return {"createPost": {"__typename": "PostActionSuccess",
+                                   "post": {"id": "1", "status": "queued"}}}
+        broadcaster._gql = fake_gql
+        asyncio.run(broadcaster._post_to_channel(
+            {"id": "c1", "name": "Page", "service": "facebook"},
+            "caption text", image_url, "some-slug"))
+        return captured
+
+    def test_image_is_actually_attached(self):
+        """
+        Regression: the URL was computed and logged but `assets` was left
+        empty, so every Facebook post published without its image.
+        """
+        b = self.make()
+        captured = self._capture_post_input(b, "https://cdn.example.com/pic.jpg")
+        assets = captured.get("assets")
+        self.assertTrue(assets, "assets was empty — Facebook gets no image")
+        self.assertEqual(assets[0]["image"]["url"], "https://cdn.example.com/pic.jpg")
+
+    def test_facebook_still_requires_its_post_type(self):
+        b = self.make()
+        captured = self._capture_post_input(b, "https://cdn.example.com/pic.jpg")
+        self.assertEqual(captured["metadata"]["facebook"]["type"], "post")
+
+    def test_no_image_still_posts(self):
+        """A missing picture must not block the post entirely."""
+        b = self.make()
+        captured = self._capture_post_input(b, "")
+        self.assertEqual(captured.get("assets"), [])
+
+    def test_local_paths_are_never_sent_as_urls(self):
+        """Buffer fetches the URL itself, so a disk path would 404."""
+        b = self.make()
+        captured = self._capture_post_input(b, r"C:\assets\generated_images\post.jpg")
+        self.assertEqual(captured.get("assets"), [])
+
+    def test_hosted_image_is_preferred_over_the_outlets_photo(self):
+        from modules.buffer_broadcaster import BufferBroadcaster
+        pick = BufferBroadcaster._pick_image
+        self.assertEqual(
+            pick({"image_url": "https://ours/a.jpg", "real_image_url": "https://theirs/b.jpg"}),
+            "https://ours/a.jpg")
+        self.assertEqual(pick({"real_image_url": "https://theirs/b.jpg"}),
+                         "https://theirs/b.jpg")
+
+    def test_content_engine_publishes_a_url_for_social_platforms(self):
+        """Facebook and the website cannot upload the local file Telegram uses."""
+        p = os.path.join(self.ROOT, "modules", "content_engine.py")
+        with open(p, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn("upload_image(image_path)", src)
+        self.assertIn('"image_url": image_url', src)
+
+
+class TestEnglishOnly(unittest.TestCase):
+    """Everything published must be in English — no Urdu or Roman Urdu."""
+
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def test_no_prompt_asks_for_urdu(self):
+        """
+        Regression: the morning brief asked for "90% English, 10% Urdu
+        flavor", and went out to the channel in Roman Urdu.
+        """
+        offenders = []
+        for folder in ("core", "modules"):
+            base = os.path.join(self.ROOT, folder)
+            for name in os.listdir(base):
+                if not name.endswith(".py"):
+                    continue
+                with open(os.path.join(base, name), encoding="utf-8") as fh:
+                    for lineno, line in enumerate(fh, 1):
+                        low = line.lower()
+                        if ("urdu" in low or "hinglish" in low) and "do not use" not in low:
+                            offenders.append(f"{folder}/{name}:{lineno}: {line.strip()[:70]}")
+        # reddit_broadcaster lists Urdu as a subreddit topic, not a prompt
+        offenders = [o for o in offenders if "reddit_broadcaster" not in o]
+        self.assertFalse(offenders, "prompts still request Urdu:\n" + "\n".join(offenders))
+
+    def test_morning_brief_demands_english(self):
+        p = os.path.join(self.ROOT, "modules", "content_engine.py")
+        with open(p, encoding="utf-8") as fh:
+            src = fh.read()
+        brief = src[src.index("produce_morning_brief"):]
+        self.assertIn("100% professional, flawless English", brief)
+
+
+class TestMorningBrief(unittest.TestCase):
+    """The brief must be a brief — not the model thinking out loud."""
+
+    # Verbatim from a live run: the free router picked a reasoning model and
+    # returned its working out, which would have been posted to the channel.
+    NARRATION = (
+        "We need to produce morning brief with numbered list, 1-5 items, each "
+        "1-2 lines, mention why it matters to readers in Pakistan. Use emojis. "
+        'Must start with "Good morning! Here is your Novi News brief:" then a '
+        "numbered list.\n\nWe need to cover top stories from given sources.\n\nWe need "
+    )
+    GOOD = (
+        "Good morning! Here is your Novi News brief:\n\n"
+        "1. Bitcoin ETFs post record inflows.\n"
+        "2. Rupee steadies after IMF talks.\n\n"
+        "Have a productive day! - Novi News"
+    )
+
+    def setUp(self):
+        from modules.content_engine import ContentEngine
+        self.CE = ContentEngine
+        self.engine = ContentEngine.__new__(ContentEngine)
+        self.engine.site_name = "Novi News"
+
+    def test_reasoning_narration_is_rejected(self):
+        self.assertIsNone(self.CE._extract_brief(self.NARRATION))
+
+    def test_a_real_brief_survives(self):
+        out = self.CE._extract_brief(self.GOOD)
+        self.assertIsNotNone(out)
+        self.assertTrue(out.lower().startswith("good morning"))
+
+    def test_narration_before_the_brief_is_stripped(self):
+        raw = ("The user wants a brief. Let me think about the format.\n\n"
+               "Good morning! Here is your Novi News brief:\n\n"
+               "1. Story one.\n2. Story two.\n\nHave a productive day!")
+        out = self.CE._extract_brief(raw)
+        self.assertTrue(out.lower().startswith("good morning"))
+        self.assertNotIn("Let me think", out)
+
+    def test_greeting_without_items_is_rejected(self):
+        self.assertIsNone(
+            self.CE._extract_brief("Good morning! Here is your brief: nothing today."))
+
+    def test_empty_is_rejected(self):
+        self.assertIsNone(self.CE._extract_brief(None))
+        self.assertIsNone(self.CE._extract_brief(""))
+
+    def test_composed_fallback_is_publishable(self):
+        """When the model is unusable the brief is built from the stories."""
+        text = self.engine._compose_brief([
+            {"title": "Bitcoin ETF inflows hit record", "source": "CoinDesk"},
+            {"title": "Rupee steadies after IMF talks", "source": "Dawn"},
+        ])
+        self.assertIn("Good morning", text)
+        self.assertIn("Bitcoin ETF inflows hit record", text)
+        self.assertIn("CoinDesk", text)
+        self.assertIn("Have a productive day", text)
+        self.assertGreaterEqual(len(re.findall(r"<b>\d+\.</b>", text)), 2)
+
+    def test_composed_fallback_survives_missing_fields(self):
+        text = self.engine._compose_brief([{"title": "Only a title"}, {}])
+        self.assertIn("Only a title", text)
+        self.assertIn("Good morning", text)
 
 
 if __name__ == "__main__":

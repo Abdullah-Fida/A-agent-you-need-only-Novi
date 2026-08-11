@@ -373,10 +373,11 @@ class StealthMarketer:
 
     async def _generate_stealth_reply(self, user_message: str) -> Optional[str]:
         """Uses AI to generate a highly human reply with a subtle channel plug."""
-        system_prompt = f"""You are a regular Pakistani Telegram user hanging out in a group.
+        system_prompt = f"""You are a regular Telegram user hanging out in a group.
 Someone just asked a question. Write a helpful, conversational, and casual response.
-Mix English with a tiny bit of Roman Urdu. Don't sound formal.
-At the very end of your response, subtly mention that you read about this on {self.channel_username} 
+Write in casual everyday English only. Do NOT use Urdu, Roman Urdu or any
+transliterated words — English only, every single word. Don't sound formal.
+At the very end of your response, subtly mention that you read about this on {self.channel_username}
 (e.g., "saw a good breakdown of this on {self.channel_username} btw").
 Keep it under 3 sentences."""
 

@@ -230,6 +230,18 @@ RSS feeds → dedupe → relevance score → group related stories
    → email you a confirmation
 ```
 
+**Language.** Everything published is **100% English**. No prompt asks for
+Urdu, Roman Urdu or transliteration anywhere — the morning brief and the
+stealth replies previously did, and the brief went out to the channel in Roman
+Urdu as a result. A test now fails the build if any prompt reintroduces it.
+
+**Morning brief safety net.** The free model router sometimes lands on a
+reasoning model that narrates ("We need to produce a morning brief with a
+numbered list…") instead of answering, and that narration would be published
+verbatim. The reply is now anchored on the greeting and must contain real
+numbered items; if it does not, the brief is composed directly from the
+stories instead.
+
 **Sources:** 21 feeds across tech/AI, business, world, crypto, Pakistan, sports.
 **Relevance scoring:** South-Asia keywords +10, crypto +8, general interest +3.
 Highest-scoring story cluster wins.
@@ -239,18 +251,30 @@ perspectives on the same event before writing.
 
 ### 5.1a Images — every post carries one
 
-An image is a hard requirement for the channel, so generation is a chain of
-independent sources rather than one provider. The first that answers wins:
+Pictures come from **Bing Image Creator (DALL·E 3) and nowhere else** — no
+other image AI is used. When Bing cannot deliver, the fallback is real
+photography, not a different generator:
 
 | # | Source | Typical time | Needs | Notes |
 |---|--------|--------------|-------|-------|
-| 1 | **Pollinations (Flux)** | ~5 s | nothing | Keyless, unaffected by datacenter IPs — the workhorse |
-| 2 | **Bing Image Creator (DALL·E 3)** | ~90 s | `BING_COOKIE` | Best quality, but the cookie expires every few weeks and Bing throttles cloud IPs |
-| 3 | **The outlet's own photo** | ~2 s | story has one | Telegram only — never used as a website hero |
-| 4 | **Branded headline card** | instant | nothing | Drawn locally: gradient, category eyebrow, headline, wordmark |
+| 1 | **Bing Image Creator (DALL·E 3)** | ~30–90 s | `BING_COOKIE` | The only generator. Retried twice per post |
+| 2 | **The photo published with the story** | ~2 s | story has one | About 3 in 4 scraped stories carry one |
+| 3 | **Branded headline card** | instant | nothing | Drawn locally: gradient, category eyebrow, headline, wordmark |
 
-Tier 4 needs no network and no installed fonts, so a post can only ever lose
+Tier 3 needs no network and no installed fonts, so a post can only ever lose
 its image if the disk write itself fails.
+
+**One image per story.** It is generated once, uploaded once to Supabase
+Storage, and reused by Telegram (local file), Facebook and the website
+article — so the same story looks the same everywhere and costs one Bing
+image, not three.
+
+**When the cookie expires.** The `_U` cookie lasts a few weeks and its death
+is silent — Bing simply stops redirecting and serves the signed-out page. That
+is detected and **emailed to you** with step-by-step replacement instructions.
+The alert is sent once, not once per post, and again only after six hours; when
+Bing starts working again you get a short "back to normal" note. Posts keep
+going out on the fallback tiers in the meantime.
 
 **Guard rails**
 
@@ -318,12 +342,12 @@ story → AI writes 800-1200 words of HTML
 
 **Quality gate:** anything under 250 words is rejected rather than published.
 
-**Hero images.** The agent generates and hosts its own picture rather than
-hot-linking the outlet's photograph: republishing a wire photo on our own
-domain is a licensing problem that the source-credited Telegram post does not
-have. Images live in the public `article-images` Supabase Storage bucket,
-created by `database/schema.sql` — until that has been run, articles fall back
-to the generator's own public URL and a warning is logged.
+**Hero images.** The article reuses the picture already generated and hosted
+for the Telegram post, so one Bing image serves every channel. If there isn't
+one it generates its own, and failing that it uses the photo published with the
+original story. Images live in the public `article-images` Supabase Storage
+bucket created by `database/schema.sql` — until that has been run, uploads fail
+and articles fall back to the outlet's photo, with a warning logged.
 
 **SEO shipped per article:** canonical URL, OpenGraph + Twitter cards,
 `NewsArticle` JSON-LD, `BreadcrumbList` JSON-LD, keyword meta, and an entry in
@@ -348,10 +372,17 @@ Three things worth knowing, all learned by probing the live API:
   `__typename` or failures look like successes.
 - Facebook posts **require** `metadata.facebook.type` (`post` | `reel` | `story`).
   Omitting it fails with "Facebook posts require a type".
+- The image goes in `assets` as `[{ image: { url, thumbnailUrl } }]`, and
+  **Buffer fetches that URL itself** — a local file path is useless here, which
+  is why the picture is uploaded to Supabase Storage first.
 
 Posts are added to your Buffer queue (`addToQueue`), so they respect the posting
 schedule you already configured in Buffer. The caption is rewritten for
 Facebook's format and ends with a link to the full website article.
+
+> Facebook posts previously went out with **no picture**: the image URL was
+> worked out and written to the database, but `assets` was left empty, so
+> nothing was ever attached.
 
 ### 5.6 Growth Engine
 

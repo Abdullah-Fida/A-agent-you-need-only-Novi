@@ -121,7 +121,8 @@ class ArticleAgent:
         # they run together rather than adding their latencies up.
         seo, hero_url = await asyncio.gather(
             self._write_seo(title, summary, body_html, category),
-            self._hero_image(title, category, main_image_url),
+            self._hero_image(title, category, main_image_url,
+                             story_image_url=story.get("real_image_url", "")),
         )
 
         base_slug = self._slugify(seo.get("slug_hint") or title)
@@ -159,53 +160,48 @@ class ArticleAgent:
         return saved or record
 
     async def _hero_image(self, title: str, category: str,
-                          provided_url: str = "") -> str:
+                          provided_url: str = "", story_image_url: str = "") -> str:
         """
-        Produces a publicly reachable hero image URL for the article.
+        Returns a publicly reachable hero image URL for the article.
 
-        The image is generated rather than borrowed: the outlet's own photo is
-        deliberately not used as the hero, because republishing a wire
-        photograph on our own domain is a licensing problem the Telegram post
-        (which credits its sources inline) does not have.
+        `provided_url` is normally the picture already generated and uploaded
+        for the Telegram post, so the usual path costs nothing: one image is
+        made per story and every channel shares it.
 
-        A caller-supplied URL still wins, so an editor can pin a specific
-        image. Falls back to the supplied URL, then to nothing — an article
-        without a hero still publishes, it just loses its social preview.
+        Only when there is no such image does the agent generate its own, and
+        only when that fails does it fall back to the photo published with the
+        original story.
         """
-        if provided_url and not self.image_gen:
+        if provided_url:
             return provided_url
 
-        if not self.image_gen:
-            logger.warning("ArticleAgent has no image generator — publishing without a hero image.")
-            return provided_url or ""
+        if self.image_gen:
+            try:
+                local_path = await self.image_gen.generate(
+                    headline=title,
+                    category=self._image_category(category),
+                    source_credit=self.site_name,
+                    story_image_url=story_image_url,
+                )
+            except Exception as e:
+                logger.error(f"Hero image generation failed: {type(e).__name__}: {e}")
+                local_path = None
 
-        try:
-            # story_image_url is intentionally omitted, so the generator never
-            # falls through to the publisher's photo for a website hero.
-            local_path = await self.image_gen.generate(
-                headline=title,
-                category=self._image_category(category),
-                source_credit=self.site_name,
-            )
-        except Exception as e:
-            logger.error(f"Hero image generation failed: {type(e).__name__}: {e}")
-            local_path = None
+            if local_path and self.db:
+                url = await self.db.upload_image(local_path)
+                if url:
+                    return url
+                logger.warning("Hero image could not be hosted — run database/schema.sql "
+                               "to create the 'article-images' bucket.")
+        else:
+            logger.warning("ArticleAgent has no image generator.")
 
-        if local_path and self.db:
-            url = await self.db.upload_image(local_path)
-            if url:
-                return url
+        # Last resort: the photo the outlet published with the story.
+        if story_image_url:
+            logger.info("Using the original news photo as the article hero.")
+            return story_image_url
 
-        # Storage is not set up (or the upload failed). Rather than publish a
-        # heroless article, point at the generator's own stable public URL for
-        # this headline — it renders the same picture on every request.
-        fallback = self.image_gen.hosted_prompt_url(title, self._image_category(category))
-        if fallback:
-            logger.warning("Hero image not self-hosted (run database/schema.sql to create "
-                           "the 'article-images' bucket); using the generator's public URL.")
-            return fallback
-
-        return provided_url or ""
+        return ""
 
     @staticmethod
     def _image_category(category: str) -> str:

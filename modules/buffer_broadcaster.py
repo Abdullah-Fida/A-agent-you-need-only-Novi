@@ -212,10 +212,18 @@ class BufferBroadcaster:
                                image_url: str, article_slug: str) -> bool:
         service = (channel.get("service") or "").lower()
 
+        # Buffer downloads the picture itself, so this has to be a public URL —
+        # the local file Telegram uploads is no use here. `assets` was
+        # previously left empty, which is why every Facebook post went out
+        # without an image even though one had been generated.
+        assets: List[Dict[str, Any]] = []
+        if image_url and image_url.startswith("http"):
+            assets.append({"image": {"url": image_url, "thumbnailUrl": image_url}})
+
         post_input: Dict[str, Any] = {
             "channelId": channel["id"],
             "text": text,
-            "assets": [],
+            "assets": assets,
             "mode": "addToQueue",          # respects your Buffer schedule
             "schedulingType": "automatic",  # Buffer publishes it for us
             "needsApproval": False,
@@ -228,9 +236,9 @@ class BufferBroadcaster:
         if service in self._TYPED_SERVICES:
             post_input["metadata"] = {service: {"type": self._TYPED_SERVICES[service]}}
 
-        # Attach the article link so Facebook renders a rich preview
-        if image_url and service == "facebook":
-            post_input.setdefault("metadata", {}).setdefault("facebook", {"type": "post"})
+        if not assets:
+            logger.warning(f"Buffer: posting to {service} without an image "
+                           f"(no public URL available for this story).")
 
         data = await self._gql(_CREATE_POST, {"i": post_input})
         result = (data or {}).get("createPost") or {}
@@ -270,7 +278,14 @@ class BufferBroadcaster:
 
     @staticmethod
     def _pick_image(package: Dict) -> str:
-        return package.get("real_image_url") or package.get("image_url") or ""
+        """
+        The picture Buffer should fetch.
+
+        Our own generated-and-hosted image first, since that is what went out
+        on Telegram and keeps the story looking the same everywhere; the
+        outlet's photo only if we have nothing hosted.
+        """
+        return package.get("image_url") or package.get("real_image_url") or ""
 
     def _article_link(self, article_slug: str) -> str:
         # The site serves articles at the root: /{slug}
