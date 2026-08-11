@@ -160,6 +160,13 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
       <Navbar />
 
       <main className="main-container">
+        {/*
+          Two columns on wide screens. The text stays at a reading measure —
+          widening it past ~70 characters measurably hurts comprehension — so
+          the space beside it carries related stories instead of sitting empty,
+          which also keeps readers moving between articles.
+        */}
+        <div className="article-layout">
         <article className="article">
           <nav className="breadcrumb" aria-label="Breadcrumb">
             <Link href="/">Home</Link>
@@ -220,20 +227,23 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
           )}
         </article>
 
-        {related.length > 0 && (
-          <section className="related">
-            <h2>More in {article.category}</h2>
-            <div className="related-grid">
-              {related.map((r) => (
-                <Link key={r.slug} href={`/${r.slug}`} className="related-card">
-                  <span className="tag">{r.category}</span>
-                  <h3>{r.title}</h3>
-                  <time dateTime={r.published_at}>{formatDate(r.published_at)}</time>
-                </Link>
-              ))}
-            </div>
-          </section>
-        )}
+          {related.length > 0 && (
+            <aside className="article-rail" aria-label={`More in ${article.category}`}>
+              <div className="rail-sticky">
+                <h2>More in {article.category}</h2>
+                <div className="rail-list">
+                  {related.map((r) => (
+                    <Link key={r.slug} href={`/${r.slug}`} className="rail-card">
+                      <span className="tag">{r.category}</span>
+                      <h3>{r.title}</h3>
+                      <time dateTime={r.published_at}>{formatDate(r.published_at)}</time>
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            </aside>
+          )}
+        </div>
       </main>
 
       <Footer />

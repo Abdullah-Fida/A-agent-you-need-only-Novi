@@ -192,6 +192,22 @@ img {
 }
 .btn-follow:hover { background: var(--accent); }
 
+.masthead-actions { display: inline-flex; align-items: center; gap: 10px; }
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px; height: 34px;
+  border: 1px solid var(--rule-2);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ink-3);
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+.theme-toggle:hover { color: var(--ink); border-color: var(--ink-3); }
+
 .nav-toggle { display: none; }
 
 @media (max-width: 860px) {
@@ -412,10 +428,29 @@ img {
 .card .byline { margin-top: 11px; font-size: .77rem; }
 
 /* ── Article page ─────────────────────────────────────────── */
+/* Reading column plus rail. Widening the text past ~70 characters measurably
+   hurts comprehension, so the space beside it carries related stories rather
+   than sitting empty. */
+.article-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 40px;
+  justify-content: center;
+}
+@media (min-width: 1060px) {
+  .article-layout {
+    grid-template-columns: minmax(0, 720px) minmax(230px, 290px);
+    gap: 56px;
+    align-items: start;
+  }
+}
+
 .article {
   max-width: 720px;
+  width: 100%;
   margin: 0 auto;
   padding: 30px 0 20px;
+  min-width: 0;
 }
 
 .breadcrumb {
@@ -565,39 +600,48 @@ img {
 }
 .source a { color: var(--accent-deep); text-decoration: underline; text-underline-offset: 2px; }
 
-/* ── Related ──────────────────────────────────────────────── */
-.related {
-  max-width: 720px;
-  margin: 0 auto 70px;
-  padding-top: 8px;
-}
-.related h2 {
+/* ── Related rail (sits beside the article on wide screens) ── */
+.article-rail { padding-top: 30px; min-width: 0; }
+.rail-sticky { position: sticky; top: 104px; }
+.article-rail h2 {
   font-family: var(--font-ui);
-  font-size: .82rem;
+  font-size: .78rem;
   font-weight: 700;
   letter-spacing: .11em;
   text-transform: uppercase;
   color: var(--ink-3);
-  margin: 0 0 18px;
   padding-bottom: 10px;
+  border-bottom: 2px solid var(--ink);
+  margin-bottom: 4px;
+}
+.rail-list { display: flex; flex-direction: column; }
+.rail-card {
+  display: block;
+  padding: 16px 0;
   border-bottom: 1px solid var(--rule);
 }
-.related-grid {
-  display: grid;
-  gap: 26px;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-}
-.related-card { display: block; }
-.related-card h3 {
+.rail-card:last-child { border-bottom: 0; }
+.rail-card h3 {
   font-family: var(--font-display);
-  font-size: 1.03rem;
+  font-size: 1.02rem;
   font-weight: 600;
   line-height: 1.3;
-  margin: 7px 0 7px;
+  margin: 7px 0;
   text-wrap: balance;
 }
-.related-card:hover h3 { color: var(--accent-deep); }
-.related-card time { font-size: .76rem; color: var(--ink-4); }
+.rail-card:hover h3 { color: var(--accent-deep); }
+.rail-card time { font-size: .76rem; color: var(--ink-4); }
+
+@media (max-width: 1059px) {
+  /* Below the two-column breakpoint the rail becomes a footer block. */
+  .article-rail { padding-top: 0; margin-bottom: 60px; }
+  .rail-sticky { position: static; }
+  .rail-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: 0 26px;
+  }
+}
 
 /* ── Empty state ──────────────────────────────────────────── */
 .empty {
