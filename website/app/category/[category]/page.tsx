@@ -4,15 +4,13 @@ import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import ArticleCard from '@/components/ArticleCard';
 import { getArticles, getCategories, Article } from '@/lib/supabase';
+import { SITE_URL, SITE_NAME } from '@/lib/site';
 
 interface CategoryPageProps {
   params: Promise<{ category: string }>;
 }
 
 export const revalidate = 60;
-
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://novinews.pk';
-const SITE_NAME = process.env.NEXT_PUBLIC_SITE_NAME || 'Novi News';
 
 /** Pre-render a page for every category that has articles. */
 export async function generateStaticParams() {

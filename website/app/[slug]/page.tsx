@@ -5,15 +5,13 @@ import Image from 'next/image';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import { supabase, Article } from '@/lib/supabase';
+import { SITE_URL, SITE_NAME } from '@/lib/site';
 
 interface ArticlePageProps {
   params: Promise<{ slug: string }>;
 }
 
 export const revalidate = 60;
-
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://novinews.pk';
-const SITE_NAME = process.env.NEXT_PUBLIC_SITE_NAME || 'Novi News';
 
 async function getArticleBySlug(slug: string): Promise<Article | null> {
   if (!supabase) return null;

@@ -2,9 +2,8 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
+import { SITE_URL, SITE_NAME } from '@/lib/site';
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://novinews.pk';
-const SITE_NAME = process.env.NEXT_PUBLIC_SITE_NAME || 'Novi News';
 const TELEGRAM = process.env.NEXT_PUBLIC_TELEGRAM_URL || 'https://t.me/Novi_Network';
 
 export const metadata: Metadata = {

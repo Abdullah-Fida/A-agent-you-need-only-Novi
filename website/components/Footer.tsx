@@ -1,7 +1,5 @@
 import Link from 'next/link';
-
-const SITE_NAME = process.env.NEXT_PUBLIC_SITE_NAME || 'Novi News';
-const TELEGRAM = process.env.NEXT_PUBLIC_TELEGRAM_URL || 'https://t.me/Novi_Network';
+import { SITE_NAME, TELEGRAM_URL as TELEGRAM } from '@/lib/site';
 
 export default function Footer() {
   return (

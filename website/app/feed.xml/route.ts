@@ -1,9 +1,7 @@
 import { getArticles } from '@/lib/supabase';
+import { SITE_URL, SITE_NAME } from '@/lib/site';
 
 export const revalidate = 300;
-
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://novinews.pk';
-const SITE_NAME = process.env.NEXT_PUBLIC_SITE_NAME || 'Novi News';
 
 function escapeXml(unsafe: string): string {
   return (unsafe || '')

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Newsreader, Public_Sans } from "next/font/google";
 import "./globals.css";
+import { SITE_URL, SITE_NAME } from '@/lib/site';
 
 /*
  * Fonts are loaded through next/font, not a CSS @import.
@@ -28,8 +29,6 @@ const publicSans = Public_Sans({
   variable: "--font-ui",
 });
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://novinews.pk";
-const SITE_NAME = process.env.NEXT_PUBLIC_SITE_NAME || "Novi News";
 const DESCRIPTION =
   "Independent coverage of world affairs, crypto and Web3, technology, business " +
   "and South Asia — published continuously, with the context behind each story.";

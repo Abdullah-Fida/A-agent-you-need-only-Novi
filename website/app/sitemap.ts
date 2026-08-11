@@ -1,7 +1,6 @@
 import { MetadataRoute } from 'next';
 import { getArticles, getCategories } from '@/lib/supabase';
-
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || 'https://novinews.pk';
+import { SITE_URL } from '@/lib/site';
 
 export const revalidate = 3600;
 
