@@ -102,7 +102,15 @@ body {
 }
 
 a { color: inherit; text-decoration: none; }
-img { max-width: 100%; display: block; }
+img {
+  max-width: 100%;
+  /* next/image emits width and height attributes. Any rule that scales
+     the width must release the height, or the browser keeps the
+     intrinsic height and stretches the picture. Set globally so a new
+     image class cannot reintroduce the distortion. */
+  height: auto;
+  display: block;
+}
 
 :focus-visible {
   outline: 2px solid var(--accent);
@@ -236,6 +244,11 @@ img { max-width: 100%; display: block; }
 .lead { display: block; }
 .lead-img {
   width: 100%;
+  /* Required alongside aspect-ratio. next/image emits width and height
+     attributes, and with both dimensions resolved the browser ignores
+     aspect-ratio entirely and stretches the picture to the intrinsic
+     height — which is what distorted the lead photo on the homepage. */
+  height: auto;
   aspect-ratio: 16 / 9;
   object-fit: cover;
   border-radius: 3px;
@@ -289,13 +302,24 @@ img { max-width: 100%; display: block; }
 
 /* ── Shared bits ──────────────────────────────────────────── */
 .tag {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   font-family: var(--font-ui);
   font-size: .69rem;
   font-weight: 700;
   letter-spacing: .11em;
   text-transform: uppercase;
   color: var(--accent);
+}
+/* A short rule before the label: it reads as a section marker rather than a
+   stray coloured word, and gives each card a point of colour. */
+.tag::before {
+  content: '';
+  width: 16px;
+  height: 2px;
+  background: var(--accent);
+  flex: none;
 }
 
 .byline {
@@ -349,9 +373,12 @@ img { max-width: 100%; display: block; }
 /* ── Article card ─────────────────────────────────────────── */
 .card {
   display: block;
-  border-top: 1px solid var(--rule);
+  border-top: 2px solid var(--ink);
   padding-top: 16px;
+  transition: border-color .15s;
 }
+.card:hover { border-top-color: var(--accent); }
+.card:hover h2 { color: var(--accent-deep); }
 .card-img {
   width: 100%;
   height: auto;
