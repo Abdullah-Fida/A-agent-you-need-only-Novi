@@ -1292,5 +1292,121 @@ class TestNoviIntentGuards(unittest.TestCase):
         self.assertIn("JSON.stringify({ active: response.desired })", self.src)
 
 
+class TestSourceImageExtraction(unittest.TestCase):
+    """
+    The publisher's own photo is the fallback when Bing cannot deliver, so it
+    has to be found wherever a feed happens to put it. Only <enclosure> and
+    <media:content> were checked, which is why Geo News and Dawn stories fell
+    through to a drawn card.
+    """
+
+    def parse(self, item_xml: str):
+        import xml.etree.ElementTree as ET
+        from modules.news_scraper import NewsScraper
+        ns = ('xmlns:media="http://search.yahoo.com/mrss/" '
+              'xmlns:content="http://purl.org/rss/1.0/modules/content/"')
+        root = ET.fromstring(f"<rss {ns}><channel>{item_xml}</channel></rss>")
+        return NewsScraper._extract_image(root.find(".//item"))
+
+    def test_enclosure(self):
+        self.assertEqual(
+            self.parse('<item><enclosure url="https://x.test/a.jpg" type="image/jpeg"/></item>'),
+            "https://x.test/a.jpg")
+
+    def test_media_content(self):
+        self.assertEqual(
+            self.parse('<item><media:content url="https://x.test/b.jpg" medium="image"/></item>'),
+            "https://x.test/b.jpg")
+
+    def test_media_content_without_medium_attribute(self):
+        """Some feeds give only a url; the extension is the only signal."""
+        self.assertEqual(
+            self.parse('<item><media:content url="https://x.test/c.jpg"/></item>'),
+            "https://x.test/c.jpg")
+
+    def test_media_thumbnail(self):
+        self.assertEqual(
+            self.parse('<item><media:thumbnail url="https://x.test/d.jpg"/></item>'),
+            "https://x.test/d.jpg")
+
+    def test_img_inside_description(self):
+        """The most common pattern of all, and it was ignored entirely."""
+        self.assertEqual(
+            self.parse('<item><description>'
+                       '&lt;img src="https://x.test/e.jpg" /&gt;Story text'
+                       '</description></item>'),
+            "https://x.test/e.jpg")
+
+    def test_img_inside_content_encoded(self):
+        self.assertEqual(
+            self.parse('<item><content:encoded>'
+                       '&lt;p&gt;&lt;img src="https://x.test/f.jpg"&gt;&lt;/p&gt;'
+                       '</content:encoded></item>'),
+            "https://x.test/f.jpg")
+
+    def test_protocol_relative_url_is_made_absolute(self):
+        self.assertEqual(
+            self.parse('<item><description>&lt;img src="//x.test/g.jpg"&gt;</description></item>'),
+            "https://x.test/g.jpg")
+
+    def test_non_image_enclosure_is_ignored(self):
+        self.assertEqual(
+            self.parse('<item><enclosure url="https://x.test/pod.mp3" type="audio/mpeg"/></item>'),
+            "")
+
+    def test_no_image_returns_empty(self):
+        self.assertEqual(self.parse('<item><title>No art</title></item>'), "")
+
+    def test_content_engine_asks_for_the_publisher_photo(self):
+        """A feed with no artwork must still try the article page's og:image."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "modules", "content_engine.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn("resolve_story_image", src)
+
+
+class TestWebsiteImageRendering(unittest.TestCase):
+    """Images must not be distorted by the page CSS."""
+
+    CSS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "website", "app", "globals.css")
+
+    def setUp(self):
+        with open(self.CSS, encoding="utf-8") as fh:
+            self.css = fh.read()
+
+    def _block(self, selector: str) -> str:
+        start = self.css.index(selector + " {")
+        return self.css[start:self.css.index("}", start)]
+
+    def test_hero_releases_the_intrinsic_height(self):
+        """
+        Regression: next/image emits width/height attributes; scaling width to
+        100% without height:auto keeps the intrinsic height and squashes the
+        picture — a 16:9 image rendered closer to 3:2.
+        """
+        hero = self._block(".hero")
+        self.assertIn("height: auto", hero)
+        self.assertIn("object-fit: cover", hero)
+
+    def test_card_thumbnails_match_the_generated_ratio(self):
+        card = self._block(".card-img")
+        self.assertIn("height: auto", card)
+        self.assertIn("aspect-ratio: 16 / 9", card)
+
+    def test_no_hardcoded_foreign_domain_remains(self):
+        root = os.path.dirname(self.CSS.rsplit("website", 1)[0])
+        hits = []
+        for folder, _, files in os.walk(os.path.join(root, "omni_channel_bot", "website", "app")):
+            if "node_modules" in folder:
+                continue
+            for name in files:
+                if name.endswith((".ts", ".tsx")):
+                    with open(os.path.join(folder, name), encoding="utf-8") as fh:
+                        if "novinews.pk" in fh.read():
+                            hits.append(name)
+        self.assertFalse(hits, f"hardcoded placeholder domain still in: {hits}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

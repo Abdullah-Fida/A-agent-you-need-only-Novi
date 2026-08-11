@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════
    Novi News — editorial design system
 
-   Paper-and-ink, not glass-and-gradient. One accent (deep pine),
+   Paper-and-ink, not glass-and-gradient. One accent (editorial blue),
    used sparingly. Hierarchy comes from type and space, not colour.
 
    Fonts arrive via next/font in layout.tsx, which self-hosts them and
@@ -25,10 +25,14 @@
   --rule:         #E4E1D9;
   --rule-2:       #CFCBC0;
 
-  /* Accent — deep pine. Used for links, active states, the masthead mark. */
-  --accent:       #0F6B4F;
-  --accent-deep:  #0A4C38;
-  --accent-wash:  #E8F1ED;
+  /* Accent — editorial blue. Used for links, active states, the masthead mark.
+     Blue is the colour readers associate with reported news and it carries
+     the trust signal a young publication needs; the previous pine green read
+     as lifestyle, and fought the blue-and-gold cast of crypto and tech
+     photography that fills the page. */
+  --accent:       #12508C;
+  --accent-deep:  #0D3A66;
+  --accent-wash:  #E9F0F8;
 
   /* Editorial highlight, for breaking/live only */
   --flag:         #B3261E;
@@ -54,9 +58,9 @@
     --ink-4:      #6B727B;
     --rule:       #24272C;
     --rule-2:     #343941;
-    --accent:     #4FBF92;
-    --accent-deep:#7FD3B0;
-    --accent-wash:#10231C;
+    --accent:     #6BA8E8;
+    --accent-deep:#9CC6F0;
+    --accent-wash:#0E1D2E;
     --flag:       #E8695F;
     --shadow:     0 1px 2px rgba(0,0,0,.4);
   }
@@ -72,9 +76,9 @@
   --ink-4:      #6B727B;
   --rule:       #24272C;
   --rule-2:     #343941;
-  --accent:     #4FBF92;
-  --accent-deep:#7FD3B0;
-  --accent-wash:#10231C;
+  --accent:     #6BA8E8;
+  --accent-deep:#9CC6F0;
+  --accent-wash:#0E1D2E;
   --flag:       #E8695F;
   --shadow:     0 1px 2px rgba(0,0,0,.4);
 }
@@ -350,7 +354,10 @@ img { max-width: 100%; display: block; }
 }
 .card-img {
   width: 100%;
-  aspect-ratio: 3 / 2;
+  height: auto;
+  /* Same 16:9 the generator produces, so cards crop nothing and every
+     thumbnail on the page lines up. */
+  aspect-ratio: 16 / 9;
   object-fit: cover;
   border-radius: 3px;
   margin-bottom: 14px;
@@ -417,6 +424,13 @@ img { max-width: 100%; display: block; }
 
 .hero {
   width: 100%;
+  /* next/image emits width/height attributes for aspect-ratio reservation.
+     Scaling the width without releasing the height leaves the intrinsic
+     height applied, which squashes the picture — the images arrive 16:9 and
+     were rendering closer to 3:2. */
+  height: auto;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
   border-radius: 3px;
   margin: 30px 0 10px;
   background: var(--paper-2);
@@ -432,7 +446,11 @@ img { max-width: 100%; display: block; }
 }
 .prose > *:first-child { margin-top: 0; }
 
-.prose p { margin: 0 0 1.4em; }
+.prose p {
+  margin: 0 0 1.4em;
+  /* Avoids a single word stranded on the final line of a paragraph. */
+  text-wrap: pretty;
+}
 
 /* Opening paragraph gets a subtle lift, as in print */
 .prose > p:first-of-type {

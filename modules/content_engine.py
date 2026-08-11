@@ -155,13 +155,18 @@ class ContentEngine:
         # Awaited, not called synchronously: this reaches out to image
         # providers, and blocking the loop here stalls the scheduler and the
         # Telegram connection along with it.
+        # If the feed carried no artwork, read the article page's og:image —
+        # one request, for the single story being published. Without this a
+        # photo-less feed goes straight to a drawn card.
+        story_image_url = await self.scraper.resolve_story_image(best_group[0])
+
         image_path = await self.image_gen.generate(
             headline=image_headline,
             category=category,
             source_credit=source_credits,
             # Lets the generator fall back to the outlet's own photo before
             # it drops to a drawn card.
-            story_image_url=best_group[0].get("real_image_url", ""),
+            story_image_url=story_image_url,
         )
 
         if not image_path:

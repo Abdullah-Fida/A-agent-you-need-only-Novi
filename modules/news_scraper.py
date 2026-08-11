@@ -6,6 +6,7 @@ Groups similar stories together for multi-source synthesis.
 import logging
 import asyncio
 import hashlib
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional
@@ -117,18 +118,7 @@ class NewsScraper:
                 if link_elem is not None:
                     link = link_elem.text or link_elem.get('href', '')
                 
-                # Get real image url from enclosure or media:content
-                real_image_url = ""
-                enclosure = item.find('enclosure')
-                if enclosure is not None and enclosure.get('type', '').startswith('image'):
-                    real_image_url = enclosure.get('url', '')
-                else:
-                    # Try media:content (requires namespace usually, but we can do a hacky find)
-                    media_content = item.find('.//{http://search.yahoo.com/mrss/}content')
-                    if media_content is not None and media_content.get('medium') == 'image':
-                        real_image_url = media_content.get('url', '')
-                    elif media_content is not None and media_content.get('type', '').startswith('image'):
-                        real_image_url = media_content.get('url', '')
+                real_image_url = self._extract_image(item)
                 
                 if not title:
                     continue
@@ -151,6 +141,113 @@ class NewsScraper:
         
         return articles
     
+    # Namespaces publishers actually use for item artwork
+    _MRSS = "{http://search.yahoo.com/mrss/}"
+    _ITUNES = "{http://www.itunes.com/dtds/podcast-1.0.dtd}"
+
+    @classmethod
+    def _extract_image(cls, item) -> str:
+        """
+        The article's own photograph, from wherever this feed happens to put it.
+
+        Only <enclosure> and <media:content> used to be checked, so feeds that
+        publish artwork any other way — Geo News and Dawn among them — looked
+        image-less and their stories fell back to a drawn card.
+        """
+        # 1. <enclosure type="image/...">
+        for enc in item.findall("enclosure"):
+            if enc.get("type", "").startswith("image") and enc.get("url"):
+                return enc.get("url", "").strip()
+
+        # 2. <media:content> — medium="image", an image type, or a bare url
+        for media in item.findall(f".//{cls._MRSS}content"):
+            url = (media.get("url") or "").strip()
+            if not url:
+                continue
+            if (media.get("medium") == "image"
+                    or media.get("type", "").startswith("image")
+                    or cls._looks_like_image(url)):
+                return url
+
+        # 3. <media:thumbnail>
+        for thumb in item.findall(f".//{cls._MRSS}thumbnail"):
+            if thumb.get("url"):
+                return thumb.get("url", "").strip()
+
+        # 4. <itunes:image href="...">
+        itunes = item.find(f".//{cls._ITUNES}image")
+        if itunes is not None and itunes.get("href"):
+            return itunes.get("href", "").strip()
+
+        # 5. The first <img> inside the description or full content. This is
+        # how most publishers ship artwork, and it was being ignored entirely.
+        for tag in ("description", "{http://purl.org/rss/1.0/modules/content/}encoded",
+                    "{http://www.w3.org/2005/Atom}summary",
+                    "{http://www.w3.org/2005/Atom}content"):
+            node = item.find(tag)
+            if node is None or not node.text:
+                continue
+            found = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', node.text, re.I)
+            if found:
+                url = found.group(1).strip()
+                if url.startswith("//"):
+                    url = "https:" + url
+                if url.startswith("http"):
+                    return url
+        return ""
+
+    @staticmethod
+    def _looks_like_image(url: str) -> bool:
+        return bool(re.search(r"\.(jpe?g|png|webp|avif)(\?|$)", url or "", re.I))
+
+    async def resolve_story_image(self, story: Dict) -> str:
+        """
+        Falls back to the article page's own social preview image.
+
+        Some feeds carry no artwork at all, but essentially every news page
+        sets og:image — that is the picture the publisher chose to represent
+        the story. Called for the single story being published, so it costs
+        one request per post rather than one per scraped headline.
+        """
+        existing = (story.get("real_image_url") or "").strip()
+        if existing:
+            return existing
+
+        link = (story.get("link") or "").strip()
+        if not link.startswith("http"):
+            return ""
+
+        def _fetch() -> str:
+            req = Request(link, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36"
+            })
+            with urlopen(req, timeout=12) as resp:
+                html = resp.read(400_000).decode("utf-8", errors="replace")
+            for pattern in (
+                r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)',
+                r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
+                r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)',
+            ):
+                m = re.search(pattern, html, re.I)
+                if m:
+                    url = m.group(1).strip()
+                    if url.startswith("//"):
+                        url = "https:" + url
+                    if url.startswith("http"):
+                        return url
+            return ""
+
+        try:
+            url = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+            if url:
+                logger.info(f"Recovered the publisher's photo from og:image: {url[:80]}")
+                story["real_image_url"] = url
+            return url
+        except Exception as e:
+            logger.warning(f"Could not read og:image from {link[:60]}: {type(e).__name__}")
+            return ""
+
     async def _fetch_feed(self, feed_url: str, source_name: str) -> List[Dict]:
         """Fetches and parses a single RSS feed."""
         try:
