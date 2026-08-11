@@ -53,14 +53,11 @@ TRIGGER_KEYWORDS = [
     "ai", "chatgpt", "tech", "layoff", "market", "economy", "tax"
 ]
 
-# Realistic device fingerprints to cycle through
-DEVICE_PROFILES = [
-    {"model": "Samsung SM-S928B",    "system": "Android 14",  "app": "10.14.5", "lang": "en"},
-    {"model": "Google Pixel 8 Pro",  "system": "Android 14",  "app": "10.14.5", "lang": "en"},
-    {"model": "OnePlus 12",          "system": "Android 14",  "app": "10.14.5", "lang": "en"},
-    {"model": "Xiaomi 14 Ultra",     "system": "Android 14",  "app": "10.14.5", "lang": "en"},
-    {"model": "Samsung SM-A546B",    "system": "Android 13",  "app": "10.12.0", "lang": "en"},
-]
+# Device identity lives in utils.telegram_utils so that tools/stealth_login.py
+# creates the session as the exact same device this module later connects as.
+# When the two disagree, Telegram treats the reused auth key as hijacked and
+# revokes it — the session then "connects once and never reconnects".
+from utils.telegram_utils import DEVICE_PROFILES, device_profile, device_kwargs
 
 
 class StealthMarketer:
@@ -126,9 +123,11 @@ class StealthMarketer:
         # changing is a strong bot signal to Telegram. We derive it
         # deterministically from the account identity instead of picking at
         # random on every boot.
-        seed_source = (stealth_phone or session_string or channel_username or "novi-stealth")
-        seed = int(hashlib.sha256(seed_source.encode("utf-8", "ignore")).hexdigest()[:8], 16)
-        self._device = DEVICE_PROFILES[seed % len(DEVICE_PROFILES)]
+        # Seeded on the phone number, which is also what stealth_login.py uses,
+        # so the login tool and this module land on the same handset.
+        self._device_seed = (stealth_phone or session_string or channel_username
+                             or "novi-stealth")
+        self._device = device_profile(self._device_seed)
 
         # Minimum spacing between two invites, regardless of the daily limit.
         # Even at a high daily limit, invites stay spread out across the day.

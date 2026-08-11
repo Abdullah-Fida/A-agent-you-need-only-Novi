@@ -36,6 +36,24 @@ from telethon.errors import (
     PhoneCodeExpiredError, FloodWaitError,
 )
 
+from utils.telegram_utils import device_kwargs
+
+
+def client_kwargs(account: str, phone: str) -> dict:
+    """
+    Device parameters the finished session must be created with.
+
+    Telegram binds the auth key to the device that created it. The stealth
+    marketer connects as a specific Android handset, so the session has to be
+    born as that same handset — otherwise the running bot looks like a
+    different device reusing a stolen key, and Telegram revokes it. That is
+    the "connects once, then never reconnects" failure.
+
+    The main account's broadcaster passes no device parameters, so its login
+    must not either.
+    """
+    return device_kwargs(phone) if account == "stealth" else {}
+
 STATE = os.path.join(tempfile.gettempdir(), "novi_login_state.json")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV_PATH = os.path.join(ROOT, ".env")
@@ -81,7 +99,13 @@ def cmd_send(account: str):
     if not phone:
         sys.exit(f"{phone_var} is not set in .env")
 
-    client = TelegramClient(StringSession(), api_id, api_hash)
+    dev = client_kwargs(account, phone)
+    if dev:
+        print(f"Creating session as: {dev['device_model']} / {dev['system_version']} "
+              f"(app {dev['app_version']})")
+        print("The bot connects as this same device — they must match.\n")
+
+    client = TelegramClient(StringSession(), api_id, api_hash, **dev)
     client.connect()
 
     if client.is_user_authorized():
@@ -125,7 +149,10 @@ def cmd_code(code: str, password: str = ""):
         st = json.load(fh)
 
     api_id, api_hash = load_env()
-    client = TelegramClient(StringSession(st["session"]), api_id, api_hash)
+    # Same device identity as the 'send' step, or the sign-in completes as a
+    # different device than the one the code was requested from.
+    client = TelegramClient(StringSession(st["session"]), api_id, api_hash,
+                            **client_kwargs(st.get("account", "stealth"), st["phone"]))
     client.connect()
 
     try:
