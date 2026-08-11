@@ -198,17 +198,45 @@ class TestArticleAgent(unittest.TestCase):
         body = "<h2>H</h2><p>" + ("Real analysis sentence here now. " * 60) + "</p>"
         agent._write_body = AsyncMock(return_value=body)
         agent.ai.generate = AsyncMock(return_value=(
-            '{"meta_title":"MT","meta_description":"MD",'
-            '"keywords":["a","b"],"summary":"S","slug_hint":"bitcoin rally today"}'))
+            '{"meta_title":"Bitcoin Rally Extends As Institutional Buyers Return",'
+            '"meta_description":"Bitcoin extended its rally for a fourth session '
+            'as institutional buyers returned to spot markets, lifting volume to '
+            'a quarterly high.",'
+            '"keywords":["bitcoin rally","institutional buyers","spot bitcoin"],'
+            '"summary":"S","slug_hint":"bitcoin rally today"}'))
 
         rec = asyncio.run(agent.generate_and_publish_article(
             {"title": "Bitcoin rally", "summary": "s", "category": "crypto"}))
 
-        self.assertEqual(rec["meta_title"], "MT")
-        self.assertEqual(rec["seo_keywords"], ["a", "b"])
+        self.assertEqual(rec["meta_title"],
+                         "Bitcoin Rally Extends As Institutional Buyers Return")
+        self.assertIn("bitcoin rally", rec["seo_keywords"])
         self.assertEqual(rec["slug"], "bitcoin-rally-today")
         self.assertGreater(rec["word_count"], 250)
         self.assertGreaterEqual(rec["reading_minutes"], 1)
+        self.assertEqual(rec["category"], "Crypto", "must be filed under a real section")
+
+    def test_placeholder_seo_never_reaches_the_record(self):
+        """
+        The quality gate must reject metadata too thin to rank — a two-letter
+        title and a one-line description are what a weak model actually
+        returns, and they shipped to production once.
+        """
+        agent = self._agent()
+        body = "<h2>H</h2><p>" + ("Bitcoin extended its rally again today. " * 60) + "</p>"
+        agent._write_body = AsyncMock(return_value=body)
+        agent.ai.generate = AsyncMock(return_value=(
+            '{"meta_title":"MT","meta_description":"MD",'
+            '"keywords":["news","market"],"summary":"S","slug_hint":"bitcoin rally today"}'))
+
+        rec = asyncio.run(agent.generate_and_publish_article(
+            {"title": "Bitcoin rally extends into a fourth session",
+             "summary": "", "category": "crypto"}))
+
+        self.assertNotEqual(rec["meta_title"], "MT")
+        self.assertGreaterEqual(len(rec["meta_description"]), 90)
+        self.assertNotIn("news", rec["seo_keywords"])
+        self.assertNotIn("market", rec["seo_keywords"])
 
 
 # ═══════════════════════════════════════════════════════════════

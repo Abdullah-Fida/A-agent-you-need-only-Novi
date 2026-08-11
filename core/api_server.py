@@ -362,15 +362,40 @@ async def modules_status(request: Request):
         "signal_copier_status": sc.status if sc else {},
     }
 
+async def _desired_state(request: Request, current: bool) -> bool:
+    """
+    What the caller wants a module set to.
+
+    A body of {"active": true} sets it ON, {"active": false} sets it OFF, and
+    an absent/blank body falls back to inverting the current value.
+
+    This exists because a blind invert is genuinely unsafe here: NOVI decides
+    which action to run from natural language, and it once read "give me the
+    report of the news agent" as a toggle and switched the News Agent off. A
+    misread intent should at worst do nothing, never the opposite of what was
+    asked — so "turn it on" can no longer turn anything off.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return not current
+    if isinstance(body, dict) and body.get("active") is not None:
+        value = body["active"]
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on", "active")
+        return bool(value)
+    return not current
+
+
 @app.post("/api/news/toggle")
 async def toggle_news(request: Request):
-    """Toggles the News Agent ON or OFF."""
+    """Sets the News Agent ON or OFF (see `_desired_state`)."""
     brain = getattr(request.app.state, 'brain', None)
     nm = getattr(request.app.state, 'notification_manager', None)
     if not brain:
         raise HTTPException(status_code=500, detail="Brain not wired.")
-    
-    brain.news_module_active = not brain.news_module_active
+
+    brain.news_module_active = await _desired_state(request, brain.news_module_active)
     status = "ACTIVE" if brain.news_module_active else "DEACTIVATED"
     
     if nm:
@@ -398,7 +423,7 @@ async def toggle_website(request: Request):
     if not brain:
         raise HTTPException(status_code=500, detail="Brain not wired.")
 
-    brain.website_module_active = not brain.website_module_active
+    brain.website_module_active = await _desired_state(request, brain.website_module_active)
     status = "ACTIVE" if brain.website_module_active else "DEACTIVATED"
 
     if nm:
@@ -424,13 +449,12 @@ async def toggle_signal_copier(request: Request):
     sc = getattr(request.app.state, 'signal_copier', None)
     if not sc:
         raise HTTPException(status_code=500, detail="Signal Copier not wired.")
-    
-    if sc.is_active:
-        await sc.deactivate()
-        return {"success": True, "active": False, "message": "Signal Copier (Whale Tracker VIP) has been DEACTIVATED."}
-    else:
+
+    if await _desired_state(request, sc.is_active):
         await sc.activate()
         return {"success": True, "active": True, "message": "Signal Copier (Whale Tracker VIP) has been ACTIVATED."}
+    await sc.deactivate()
+    return {"success": True, "active": False, "message": "Signal Copier (Whale Tracker VIP) has been DEACTIVATED."}
 
 @app.post("/api/stealth/toggle_reply")
 async def toggle_stealth_reply(request: Request):
@@ -440,7 +464,7 @@ async def toggle_stealth_reply(request: Request):
     if not sm:
         raise HTTPException(status_code=500, detail="Stealth Marketer not wired.")
     
-    sm._reply_active = not sm._reply_active
+    sm._reply_active = await _desired_state(request, sm._reply_active)
     status = "ACTIVE" if sm._reply_active else "DEACTIVATED"
     
     if nm:
@@ -461,7 +485,7 @@ async def toggle_stealth_invite(request: Request):
     if not sm:
         raise HTTPException(status_code=500, detail="Stealth Marketer not wired.")
     
-    sm._scraping_active = not sm._scraping_active
+    sm._scraping_active = await _desired_state(request, sm._scraping_active)
     status = "ACTIVE" if sm._scraping_active else "DEACTIVATED"
     
     if nm:

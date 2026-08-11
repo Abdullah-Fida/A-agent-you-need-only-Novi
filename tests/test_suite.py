@@ -1118,5 +1118,179 @@ class TestMorningBrief(unittest.TestCase):
         self.assertIn("Good morning", text)
 
 
+class TestSeoQualityGate(unittest.TestCase):
+    """Thin metadata must never reach the site, whichever model produced it."""
+
+    BODY = ("<p>Bitcoin and Ethereum moved sharply on Tuesday after the "
+            "regulator confirmed new custody rules, with trading volume "
+            "reaching its highest level this quarter and analysts pointing to "
+            "renewed institutional demand across digital asset markets.</p>")
+
+    def setUp(self):
+        from modules.article_engine import ArticleAgent
+        self.agent = ArticleAgent.__new__(ArticleAgent)
+        self.agent.site_name = "Novi News"
+
+    def repair(self, seo, title="Crypto markets swing after new custody rules",
+               summary=""):
+        return self.agent._repair_seo(dict(seo), title, summary, self.BODY, "crypto")
+
+    def test_generic_meta_title_is_replaced_by_the_headline(self):
+        """
+        Regression: Groq returned "crypto market news and updates" as the
+        title for a specific story — a section label, not a headline.
+        """
+        out = self.repair({"meta_title": "crypto market news and updates",
+                           "meta_description": "x" * 120, "keywords": ["bitcoin price"]})
+        self.assertEqual(out["meta_title"], "Crypto markets swing after new custody rules")
+
+    def test_a_good_title_is_left_alone(self):
+        good = "Crypto Markets Swing After New Custody Rules Confirmed"
+        out = self.repair({"meta_title": good, "meta_description": "y" * 120,
+                           "keywords": ["bitcoin price"]})
+        self.assertEqual(out["meta_title"], good)
+
+    def test_thin_description_is_rebuilt_from_the_article(self):
+        """Regression: a 44-character description shipped to production."""
+        out = self.repair({"meta_title": "Crypto markets swing after custody rules",
+                           "meta_description": "latest crypto news",
+                           "keywords": ["bitcoin price"]})
+        self.assertGreaterEqual(len(out["meta_description"]), 90)
+        self.assertLessEqual(len(out["meta_description"]), 160)
+        self.assertIn("Bitcoin", out["meta_description"])
+
+    def test_description_never_exceeds_google_limit(self):
+        out = self.repair({"meta_title": "Crypto markets swing after custody rules",
+                           "meta_description": "", "keywords": []})
+        self.assertLessEqual(len(out["meta_description"]), 160)
+
+    def test_generic_single_word_keywords_are_dropped(self):
+        out = self.repair({"meta_title": "Crypto markets swing after custody rules",
+                           "meta_description": "z" * 120,
+                           "keywords": ["news", "market", "crypto", "update",
+                                        "bitcoin price", "custody rules"]})
+        self.assertNotIn("news", out["keywords"])
+        self.assertNotIn("market", out["keywords"])
+        self.assertIn("bitcoin price", out["keywords"])
+
+    def test_keywords_are_topped_up_when_too_few_survive(self):
+        out = self.repair({"meta_title": "Crypto markets swing after custody rules",
+                           "meta_description": "z" * 120,
+                           "keywords": ["news", "market"]})
+        self.assertGreaterEqual(len(out["keywords"]), 4)
+
+    def test_trim_stops_on_a_sentence_boundary(self):
+        from modules.article_engine import ArticleAgent
+        text = "First sentence here. Second sentence runs on and on and on and on."
+        out = ArticleAgent._trim_to_sentence(text, 40)
+        self.assertTrue(out.endswith(".") or out.endswith("…"))
+        self.assertLessEqual(len(out), 41)
+
+
+class TestArticleCategory(unittest.TestCase):
+    """A crypto story must be filed under Crypto and illustrated as crypto."""
+
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def test_pipeline_key_maps_to_a_readable_section(self):
+        from modules.article_engine import ArticleAgent as A
+        self.assertEqual(A._DISPLAY_CATEGORIES["crypto"], "Crypto")
+        self.assertEqual(A._DISPLAY_CATEGORIES["business_markets"], "Business")
+        self.assertEqual(A._DISPLAY_CATEGORIES["world_news"], "World")
+
+    def test_image_palette_matches_the_pipeline_key(self):
+        from modules.article_engine import ArticleAgent as A
+        self.assertEqual(A._image_category("crypto"), "crypto")
+        self.assertEqual(A._image_category("tech_ai"), "tech_ai")
+
+    def test_fanout_passes_the_chosen_category(self):
+        """
+        Regression: the article only saw the story's generic "News", so every
+        article was filed under News and crypto stories got the world-news
+        illustration.
+        """
+        p = os.path.join(self.ROOT, "modules", "fanout.py")
+        with open(p, encoding="utf-8") as fh:
+            src = fh.read()
+        self.assertIn('category=package.get("category"', src)
+
+
+class TestToggleSafety(unittest.TestCase):
+    """A misread question must never flip a module to the opposite state."""
+
+    class Req:
+        def __init__(self, body):
+            self._body = body
+
+        async def json(self):
+            if self._body is None:
+                raise ValueError("no body")
+            return self._body
+
+    def desired(self, body, current):
+        from core.api_server import _desired_state
+        return asyncio.run(_desired_state(self.Req(body), current))
+
+    def test_turning_on_something_already_on_keeps_it_on(self):
+        """
+        Regression: "give me the report of the news agent" was read as a
+        toggle, and because the endpoint blindly inverted, it switched the
+        News Agent off.
+        """
+        self.assertTrue(self.desired({"active": True}, True))
+
+    def test_turning_off_something_already_off_keeps_it_off(self):
+        self.assertFalse(self.desired({"active": False}, False))
+
+    def test_explicit_state_is_honoured(self):
+        self.assertFalse(self.desired({"active": False}, True))
+        self.assertTrue(self.desired({"active": True}, False))
+
+    def test_string_forms_are_accepted(self):
+        self.assertTrue(self.desired({"active": "true"}, False))
+        self.assertTrue(self.desired({"active": "on"}, False))
+        self.assertFalse(self.desired({"active": "false"}, True))
+
+    def test_bare_toggle_still_flips(self):
+        self.assertFalse(self.desired(None, True))
+        self.assertTrue(self.desired(None, False))
+
+    def test_every_toggle_endpoint_uses_the_helper(self):
+        p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "core", "api_server.py")
+        with open(p, encoding="utf-8") as fh:
+            src = fh.read()
+        for flag in ("brain.news_module_active", "brain.website_module_active",
+                     "sm._reply_active", "sm._scraping_active"):
+            self.assertNotIn(f"{flag} = not {flag}", src,
+                             f"{flag} still blindly inverts")
+        self.assertGreaterEqual(src.count("await _desired_state("), 5)
+
+
+class TestNoviIntentGuards(unittest.TestCase):
+    """NOVI's prompt must not let a question trigger a toggle."""
+
+    APP = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "novi-dashboard", "src", "App.jsx")
+
+    def setUp(self):
+        with open(self.APP, encoding="utf-8") as fh:
+            self.src = fh.read()
+
+    def test_prompt_forbids_toggling_to_answer_questions(self):
+        self.assertIn("NEVER TOGGLE ANYTHING TO ANSWER A QUESTION", self.src)
+
+    def test_report_of_the_news_agent_is_called_out_explicitly(self):
+        self.assertIn("report of the news agent", self.src.lower())
+
+    def test_health_action_covers_single_module_questions(self):
+        health = self.src[self.src.index('45. "health"'):]
+        self.assertIn("READ-ONLY", health[:400])
+
+    def test_dashboard_sends_the_desired_state(self):
+        self.assertIn("response.desired", self.src)
+        self.assertIn("JSON.stringify({ active: response.desired })", self.src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -93,15 +93,37 @@ class ArticleAgent:
 
     # ── generation ───────────────────────────────────────────────
 
+    # Internal pipeline keys -> the section name readers and Google see.
+    _DISPLAY_CATEGORIES = {
+        "tech_ai": "Tech",
+        "tech": "Tech",
+        "business_markets": "Business",
+        "business": "Business",
+        "world_news": "World",
+        "crypto": "Crypto",
+        "pakistan": "Pakistan",
+        "politics": "Politics",
+        "sports": "Sport",
+    }
+
     async def generate_and_publish_article(self, story: Dict,
-                                           main_image_url: str = "") -> Optional[Dict]:
+                                           main_image_url: str = "",
+                                           category: str = "") -> Optional[Dict]:
         """
         Full pipeline: write → SEO metadata → unique slug → save to Supabase.
         Returns the saved article record, or None on failure.
+
+        `category` is the section the content engine actually picked. Without
+        it the story's own field is used, which is often the generic "News" —
+        that filed every article under one section and picked the world-news
+        illustration for crypto stories.
         """
         title = (story.get("title") or "").strip() or "Breaking News Update"
         summary = (story.get("summary") or "").strip()
-        category = story.get("category") or "News"
+        pipeline_category = (category or story.get("category") or "").strip()
+        category = self._DISPLAY_CATEGORIES.get(
+            pipeline_category.lower().replace(" ", "_"),
+            pipeline_category.title() if pipeline_category else "News")
         source_name = story.get("source") or ""
         source_url = story.get("link") or ""
 
@@ -121,7 +143,9 @@ class ArticleAgent:
         # they run together rather than adding their latencies up.
         seo, hero_url = await asyncio.gather(
             self._write_seo(title, summary, body_html, category),
-            self._hero_image(title, category, main_image_url,
+            # The pipeline key drives the illustration, because that is what
+            # the image palettes are keyed on.
+            self._hero_image(title, pipeline_category or category, main_image_url,
                              story_image_url=story.get("real_image_url", "")),
         )
 
@@ -265,16 +289,31 @@ broader implications instead."""
         # reasoning model to respect an exact character limit makes it count
         # letters out loud and burn the whole token budget before emitting any
         # JSON. Lengths are enforced by slicing in code instead (see below).
+        # Lengths are stated in WORDS, not characters. Asking for an exact
+        # character count makes reasoning models count letters aloud and burn
+        # the whole token budget before emitting any JSON; word targets are
+        # followed reliably and the exact limits are enforced in code below.
         system_prompt = (
-            "You output SEO metadata as a single JSON object and nothing else.\n"
+            "You write SEO metadata for a news publisher. You output a single "
+            "JSON object and nothing else.\n"
             "Begin your reply with { and end it with }. No explanation, no "
-            "reasoning, no code fences.\n"
-            "Keys: meta_title, meta_description, keywords (array of lowercase "
-            "terms), summary, slug_hint (short lowercase phrase)."
+            "reasoning, no code fences.\n\n"
+            "Keys and what each must contain:\n"
+            "- meta_title: 8-12 words. Must name the actual subject of THIS "
+            "story, taken from the headline. Never a generic section label.\n"
+            "- meta_description: 22-28 words, one or two full sentences, "
+            "stating what specifically happened and why it matters.\n"
+            "- keywords: 6-8 entries. Each MUST be a two-to-four word phrase "
+            "someone would type into Google. Single generic words such as "
+            "'news', 'market', 'crypto', 'business', 'update' are forbidden.\n"
+            "- summary: 2 sentences describing this specific story.\n"
+            "- slug_hint: 4-7 lowercase words naming the specific event."
         )
         user_prompt = (
             f"HEADLINE: {title}\nCATEGORY: {category}\n\nARTICLE:\n{excerpt}\n\n"
-            f"Respond with the JSON object only."
+            f"Write metadata about THIS story specifically — a reader must be "
+            f"able to tell from the title and description what happened, "
+            f"without opening the page. Respond with the JSON object only."
         )
 
         raw = await self.ai.generate(
@@ -287,23 +326,98 @@ broader implications instead."""
             keywords = parsed.get("keywords") or []
             if isinstance(keywords, str):
                 keywords = [k.strip() for k in keywords.split(",") if k.strip()]
-            return {
+            return self._repair_seo({
                 "meta_title": str(parsed.get("meta_title") or title)[:70],
                 "meta_description": str(parsed.get("meta_description") or summary)[:160],
                 "keywords": [str(k).lower().strip() for k in keywords if str(k).strip()],
                 "summary": str(parsed.get("summary") or summary)[:300],
                 "slug_hint": str(parsed.get("slug_hint") or title),
-            }
+            }, title, summary, body_html, category)
 
         # Fallback — never block publishing because SEO generation failed
         logger.info("SEO model output unusable; using derived metadata.")
-        return {
+        return self._repair_seo({
             "meta_title": title[:70],
-            "meta_description": (summary or self._strip_html(body_html))[:160],
+            "meta_description": "",
             "keywords": self._derive_keywords(f"{title} {summary}", category),
-            "summary": (summary or self._strip_html(body_html))[:300],
+            "summary": "",
             "slug_hint": title,
-        }
+        }, title, summary, body_html, category)
+
+    # Words too generic to earn a ranking on their own.
+    _WEAK_KEYWORDS = {
+        "news", "market", "markets", "crypto", "business", "update", "updates",
+        "today", "latest", "world", "tech", "technology", "finance", "report",
+        "article", "story", "trends", "information",
+    }
+
+    def _repair_seo(self, seo: Dict, title: str, summary: str,
+                    body_html: str, category: str) -> Dict:
+        """
+        Replaces metadata that is too thin to rank.
+
+        Smaller models answer this task with section labels rather than
+        headlines — "crypto market news and updates" as a meta title, and a
+        44-character description. Google treats that as thin content and it
+        describes every article on the site identically, so anything that
+        weak is rebuilt from the article's own text.
+        """
+        plain = re.sub(r"\s+", " ", self._strip_html(body_html)).strip()
+
+        # ── meta_title: must be substantial and about THIS story ──
+        mt = (seo.get("meta_title") or "").strip()
+        title_words = {w for w in re.findall(r"[a-z]{4,}", title.lower())}
+        mt_words = {w for w in re.findall(r"[a-z]{4,}", mt.lower())}
+        # A section label ("crypto market news and updates") still shares the
+        # topic word with the headline, so presence of *any* shared word is too
+        # weak a test. Require it to carry a real share of the headline: a
+        # genuine rewrite keeps most of the distinctive words, a label keeps one.
+        overlap = (len(title_words & mt_words) / len(title_words)) if title_words else 1.0
+        if len(mt) < 30 or overlap < 0.4:
+            logger.info(f"SEO meta_title was generic ({overlap:.0%} headline overlap); "
+                        f"using the headline instead.")
+            mt = title
+        seo["meta_title"] = mt[:70].strip()
+
+        # ── meta_description: aim for 120-160 chars ──
+        md = (seo.get("meta_description") or "").strip()
+        if len(md) < 90:
+            candidate = (summary or "").strip()
+            if len(candidate) < 90:
+                candidate = plain
+            if candidate:
+                logger.info(f"SEO meta_description was thin ({len(md)} chars); "
+                            f"rebuilding from the article.")
+                md = self._trim_to_sentence(candidate, 158)
+        seo["meta_description"] = md[:160].strip()
+
+        # ── keywords: drop bare generic words, top up from the article ──
+        kws = [k for k in (seo.get("keywords") or [])
+               if k and k.lower() not in self._WEAK_KEYWORDS]
+        if len(kws) < 4:
+            for extra in self._derive_keywords(f"{title} {summary}", category):
+                if extra not in kws and extra not in self._WEAK_KEYWORDS:
+                    kws.append(extra)
+                if len(kws) >= 6:
+                    break
+        seo["keywords"] = kws[:12]
+
+        if not (seo.get("summary") or "").strip():
+            seo["summary"] = self._trim_to_sentence(summary or plain, 300)
+        return seo
+
+    @staticmethod
+    def _trim_to_sentence(text: str, limit: int) -> str:
+        """Cuts at a sentence boundary where possible, so it doesn't end mid-word."""
+        text = re.sub(r"\s+", " ", text or "").strip()
+        if len(text) <= limit:
+            return text
+        cut = text[:limit]
+        stop = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+        if stop > limit * 0.55:
+            return cut[:stop + 1].strip()
+        space = cut.rfind(" ")
+        return (cut[:space] if space > 0 else cut).strip().rstrip(",;:") + "…"
 
     @classmethod
     def _parse_json(cls, raw: Optional[str]) -> Optional[Dict]:

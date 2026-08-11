@@ -60,6 +60,9 @@ class Fanout:
                 article = await self.article_agent.generate_and_publish_article(
                     story=story,
                     main_image_url=package.get("image_url", ""),
+                    # The section the content engine actually chose, so the
+                    # article is filed correctly and illustrated to match.
+                    category=package.get("category", ""),
                 )
                 if article:
                     article_slug = article.get("slug", "")
