@@ -1,24 +1,23 @@
-Route short tasks to the small model instead of pinning one model
+Stop truncating metadata mid-word; make fallback keywords searchable
 
-Setting NEWS_MODEL bypassed per-task routing entirely, so every task on the
-News AI — including one-line trading signals, Facebook captions and SEO
-metadata — ran on gpt-oss-120b. Groq allows 8000 tokens per minute per key,
-so spending the large model on a six-line signal takes headroom the news post
-and the article need, and signals are the one output where latency matters.
+Quality-tested the article pipeline against live stories. The body is strong
+— 827 words, four sections, clean HTML, no narration — but the metadata had
+two defects that only show up in search results.
 
-Tasks now carry a tier. Long-form work (the channel post, the article) keeps
-the quality model; short structured work (signal cleansing, captions, SEO,
-stealth replies) uses the provider's small model. A configured NEWS_MODEL or
-ARTICLE_MODEL still sets the quality tier, so explicit configuration is
-honoured without pinning everything to it.
+Keywords, when the model's SEO call failed, came from splitting the headline
+into single words: "notches", "best", "since", "week". Those rank for
+nothing. The fallback now builds two-word search phrases, stepping past each
+consumed word so "bitcoin short squeeze" yields one phrase rather than three
+overlapping ones, and filters a much wider set of words that carry no search
+intent.
 
-Checked against the live API with the real signal prompt before switching:
-both models keep a valid signal 3 out of 3 times, and the small model still
-rejects locked teasers, adverts and partial signals correctly, with the
-footer intact and the competitor's handle removed. An earlier false rejection
-came from a shortened test prompt, not from the model.
+Titles and descriptions were cut with a hard slice, so a 182-character
+description ended "underscoring its sensiti" and a 74-character title ended
+"Bitcoin Short Squeez". Google renders that truncation exactly as written.
+Both now trim at a sentence or word boundary.
 
-News and article agents remain on separate Groq keys, so their rate limits
-stay independent.
+When the SEO model does answer it is already good — 'xrp price surge',
+'bitcoin short squeeze', 'bitcoin liquidation cascade' from the same story —
+so this only governs the fallback path and the final length enforcement.
 
-274 tests pass.
+281 tests pass.

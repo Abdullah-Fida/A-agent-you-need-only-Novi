@@ -1645,5 +1645,59 @@ class TestTaskModelRouting(unittest.TestCase):
         self.assertFalse(missing, f"tasks with no tier assigned: {missing}")
 
 
+class TestSeoMetadataQuality(unittest.TestCase):
+    """
+    Metadata is what Google shows. A truncated title, or a keyword list of
+    "notches, best, since", is worse than none.
+    """
+
+    def setUp(self):
+        from modules.article_engine import ArticleAgent
+        self.A = ArticleAgent
+
+    def test_keywords_are_search_phrases_not_stray_words(self):
+        """Regression: the fallback returned single words split off the title."""
+        kws = self.A._derive_keywords(
+            "XRP Notches Best Week Since 2024 Election Pump on Bitcoin Short Squeeze",
+            "Crypto")
+        for junk in ("notches", "best", "since", "week"):
+            self.assertNotIn(junk, kws, f"{junk!r} carries no search intent")
+        self.assertTrue(any(" " in k for k in kws), "no multi-word phrase produced")
+
+    def test_keywords_do_not_overlap_each_other(self):
+        """A sliding window produced 'bitcoin short' and 'short squeeze' together."""
+        kws = [k for k in self.A._derive_keywords(
+            "Bitcoin short squeeze liquidations cascade", "Crypto") if " " in k]
+        seen = set()
+        for phrase in kws:
+            words = set(phrase.split())
+            self.assertFalse(words & seen, f"{phrase!r} repeats an earlier word")
+            seen |= words
+
+    def test_section_is_included(self):
+        self.assertIn("crypto news",
+                      self.A._derive_keywords("Bitcoin rallies hard", "Crypto"))
+
+    def test_title_is_not_cut_mid_word(self):
+        long_title = ("XRP Notches Best Week Since 2024 Election Pump on "
+                      "Bitcoin Short Squeeze Rally")
+        out = self.A._trim_to_sentence(long_title, 70)
+        self.assertLessEqual(len(out), 71)
+        self.assertFalse(out.rstrip("\u2026").endswith("Squeez"),
+                         "title was cut in the middle of a word")
+
+    def test_description_is_not_cut_mid_word(self):
+        desc = ("XRP surged to its strongest weekly gain since the 2024 election, "
+                "fueled by a Bitcoin short squeeze that triggered massive "
+                "liquidations, underscoring its sensitivity to market stress.")
+        out = self.A._trim_to_sentence(desc, 160)
+        self.assertLessEqual(len(out), 161)
+        self.assertFalse(out.rstrip("\u2026").endswith("sensiti"))
+
+    def test_short_text_is_returned_untouched(self):
+        self.assertEqual(self.A._trim_to_sentence("Short and fine.", 160),
+                         "Short and fine.")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

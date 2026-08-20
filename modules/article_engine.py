@@ -160,8 +160,9 @@ class ArticleAgent:
             "main_image_url": hero_url,
             "category": category,
             "seo_keywords": seo.get("keywords", [])[:12],
-            "meta_title": (seo.get("meta_title") or title)[:70],
-            "meta_description": (seo.get("meta_description") or summary or "")[:160],
+            "meta_title": self._trim_to_sentence(seo.get("meta_title") or title, 70),
+            "meta_description": self._trim_to_sentence(
+                seo.get("meta_description") or summary or "", 160),
             "reading_minutes": max(1, round(words / 220)),
             "word_count": words,
             "source_url": source_url,
@@ -377,7 +378,8 @@ broader implications instead."""
             logger.info(f"SEO meta_title was generic ({overlap:.0%} headline overlap); "
                         f"using the headline instead.")
             mt = title
-        seo["meta_title"] = mt[:70].strip()
+        # Never cut a title mid-word; Google shows the truncation as-is.
+        seo["meta_title"] = self._trim_to_sentence(mt, 70)
 
         # ── meta_description: aim for 120-160 chars ──
         md = (seo.get("meta_description") or "").strip()
@@ -389,7 +391,9 @@ broader implications instead."""
                 logger.info(f"SEO meta_description was thin ({len(md)} chars); "
                             f"rebuilding from the article.")
                 md = self._trim_to_sentence(candidate, 158)
-        seo["meta_description"] = md[:160].strip()
+        # Trim at a word boundary: Google renders the cut as written, and
+        # a description ending "underscoring its sensiti" looks broken.
+        seo["meta_description"] = self._trim_to_sentence(md, 160)
 
         # ── keywords: drop bare generic words, top up from the article ──
         kws = [k for k in (seo.get("keywords") or [])
@@ -513,12 +517,61 @@ broader implications instead."""
         out += "}" * max(0, depth_obj)
         return out
 
-    @staticmethod
-    def _derive_keywords(text: str, category: str) -> List[str]:
-        words = re.findall(r"[a-z]{4,}", (text or "").lower())
-        freq: Dict[str, int] = {}
-        for w in words:
-            if w not in STOPWORDS:
-                freq[w] = freq.get(w, 0) + 1
-        top = sorted(freq, key=freq.get, reverse=True)[:8]
-        return list(dict.fromkeys([category.lower().replace("_", " ")] + top))
+    # Words that carry no search intent on their own. Kept deliberately broad,
+    # because the fallback previously returned things like "notches", "best"
+    # and "since" as keywords, which rank for nothing.
+    _KEYWORD_NOISE = {
+        "about", "after", "again", "against", "amid", "another", "back", "because",
+        "been", "before", "being", "best", "better", "between", "both", "could",
+        "current", "does", "down", "during", "each", "early", "else", "even",
+        "every", "first", "from", "gets", "going", "have", "here", "high", "hits",
+        "into", "just", "keep", "known", "last", "late", "less", "like", "long",
+        "look", "made", "make", "many", "more", "most", "much", "must", "near",
+        "need", "next", "notch", "notches", "only", "over", "past", "post",
+        "puts", "reveals", "россия", "said", "says", "sees", "several", "shows",
+        "since", "some", "soon", "still", "such", "take", "takes", "than", "that",
+        "their", "them", "then", "there", "these", "they", "this", "those",
+        "through", "time", "told", "took", "under", "until", "very", "want",
+        "week", "well", "were", "what", "when", "where", "which", "while",
+        "will", "with", "within", "would", "year", "your",
+    }
+
+    @classmethod
+    def _derive_keywords(cls, text: str, category: str) -> List[str]:
+        """
+        Search phrases for an article, used when the model gives none.
+
+        Two-word phrases, not single words: "bitcoin short squeeze" is
+        something a person types into Google, "notches" is not. Phrases are
+        taken in the order they appear so the strongest — which in a headline
+        come first — lead.
+        """
+        raw = (text or "").lower()
+        tokens = re.findall(r"[a-z][a-z0-9]{2,}", raw)
+
+        def useful(word: str) -> bool:
+            return word not in STOPWORDS and word not in cls._KEYWORD_NOISE
+
+        # Non-overlapping pairs. A sliding window over "bitcoin short squeeze"
+        # yields "bitcoin short" and "short squeeze" and "squeeze bitcoin",
+        # which reads as noise; stepping past a consumed word keeps the
+        # phrases distinct.
+        phrases: List[str] = []
+        i = 0
+        while i < len(tokens) - 1:
+            first, second = tokens[i], tokens[i + 1]
+            if useful(first) and useful(second):
+                phrase = f"{first} {second}"
+                if phrase not in phrases:
+                    phrases.append(phrase)
+                i += 2
+            else:
+                i += 1
+
+        # Single words only fill the gaps, and only content-bearing ones.
+        singles = [w for w in dict.fromkeys(tokens) if useful(w) and len(w) > 3]
+
+        section = category.lower().replace("_", " ").strip()
+        out = ([f"{section} news"] if section else []) + phrases[:5] + singles[:3]
+        return list(dict.fromkeys(out))[:8]
+
