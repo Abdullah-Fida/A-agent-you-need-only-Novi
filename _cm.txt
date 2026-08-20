@@ -1,37 +1,24 @@
-Heal from retired models automatically; move the News AI to Groq
+Route short tasks to the small model instead of pinning one model
 
-Answering "why does this break every day": the cause is not a bad key. Two
-providers were failing in different ways at the same time.
+Setting NEWS_MODEL bypassed per-task routing entirely, so every task on the
+News AI — including one-line trading signals, Facebook captions and SEO
+metadata — ran on gpt-oss-120b. Groq allows 8000 tokens per minute per key,
+so spending the large model on a six-line signal takes headroom the news post
+and the article need, and signals are the one output where latency matters.
 
-OpenRouter's free tier is exhausted — every call returns 429 with "Rate limit
-exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model
-requests per day". The News AI ran on it, and the News AI produces every post,
-signal, caption and stealth reply.
+Tasks now carry a tier. Long-form work (the channel post, the article) keeps
+the quality model; short structured work (signal cleansing, captions, SEO,
+stealth replies) uses the provider's small model. A configured NEWS_MODEL or
+ARTICLE_MODEL still sets the quality tier, so explicit configuration is
+honoured without pinning everything to it.
 
-Groq is fine: the key authenticates and offers 1000 requests a day. The bot
-needs about 53. What broke there was the model names — Groq retired the whole
-Llama family, so llama-3.1-8b-instant (NOVI) and llama-3.3-70b-versatile
-(articles) both 404.
+Checked against the live API with the real signal prompt before switching:
+both models keep a valid signal 3 out of 3 times, and the small model still
+rejects locked teasers, adverts and partial signals correctly, with the
+footer intact and the competitor's handle removed. An earlier false rejection
+came from a shortened test prompt, not from the model.
 
-- AIEngine reads the provider's live model catalogue and substitutes a working
-  model when the configured one is gone, preferring a known-good list and
-  falling back to any chat model. Confirmed against the live API: asking for
-  llama-3.3-70b-versatile now resolves to openai/gpt-oss-120b and generates
-  normally. A retirement is reported once by email as informational, since
-  nothing is broken and nothing needs doing immediately.
-- The News AI moves to Groq, which has the headroom.
-- NEWS_API_PROVIDER and the key list were independent, so pointing the News AI
-  at Groq would have kept sending an OpenRouter key and failed authentication.
-  The provider now selects its own keys.
+News and article agents remain on separate Groq keys, so their rate limits
+stay independent.
 
-Signals retry harder before being dropped: six attempts across different
-models rather than three. They stay immediate rather than deferred — a signal
-re-sent half an hour later quotes prices that have moved, which is worse than
-not sending it.
-
-Render still holds its own copy of these values and must be updated:
-  NEWS_API_PROVIDER=groq
-  NEWS_MODEL=openai/gpt-oss-120b
-  ARTICLE_MODEL=openai/gpt-oss-120b
-
-267 tests pass.
+274 tests pass.

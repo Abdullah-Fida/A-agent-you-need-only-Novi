@@ -1594,5 +1594,56 @@ class TestLiveModelsExist(unittest.TestCase):
         self.assertFalse(hits, "retired Groq models still referenced: " + ", ".join(hits))
 
 
+class TestTaskModelRouting(unittest.TestCase):
+    """
+    Short tasks must not run on the large model. Groq allows 8000 tokens a
+    minute per key, so a 120b call for a six-line trading signal spends
+    headroom the news post and article need.
+    """
+
+    def engine(self, provider="groq", default_model="openai/gpt-oss-120b"):
+        e = AIEngine.__new__(AIEngine)
+        e.provider = provider
+        e.default_model = default_model
+        return e
+
+    def test_long_form_uses_the_quality_model(self):
+        e = self.engine()
+        self.assertEqual(e._model_for_task("synthesizer"), "openai/gpt-oss-120b")
+        self.assertEqual(e._model_for_task("article"), "openai/gpt-oss-120b")
+
+    def test_short_tasks_use_the_fast_model(self):
+        e = self.engine()
+        for task in ("signal_cleansing", "social_caption", "seo", "stealth"):
+            self.assertEqual(e._model_for_task(task), "openai/gpt-oss-20b",
+                             f"{task} should not run on the large model")
+
+    def test_a_configured_model_does_not_pin_every_task(self):
+        """
+        Regression: setting NEWS_MODEL bypassed per-task routing entirely and
+        put every task, including one-line signals, on the large model.
+        """
+        e = self.engine(default_model="openai/gpt-oss-120b")
+        self.assertNotEqual(e._model_for_task("signal_cleansing"),
+                            e._model_for_task("synthesizer"))
+
+    def test_configured_model_still_wins_for_quality_tasks(self):
+        e = self.engine(default_model="some/custom-model")
+        self.assertEqual(e._model_for_task("synthesizer"), "some/custom-model")
+
+    def test_unknown_task_defaults_to_quality(self):
+        e = self.engine()
+        self.assertEqual(e._model_for_task("something_new"), "openai/gpt-oss-120b")
+
+    def test_unknown_provider_falls_back_to_the_configured_model(self):
+        e = self.engine(provider="somethingelse", default_model="x/y")
+        self.assertEqual(e._model_for_task("signal_cleansing"), "x/y")
+
+    def test_every_task_in_the_models_map_has_a_tier(self):
+        from core.ai_engine import MODELS, TASK_TIER
+        missing = [t for t in MODELS if t not in TASK_TIER]
+        self.assertFalse(missing, f"tasks with no tier assigned: {missing}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

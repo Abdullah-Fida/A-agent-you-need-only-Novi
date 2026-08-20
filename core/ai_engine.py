@@ -32,6 +32,37 @@ FALLBACK_MODELS = [
     "inclusionai/ling-3.0-tiny:free",
 ]
 
+# Which tasks need a large model and which do not.
+#
+# Groq allows 8000 tokens per MINUTE per key, so spending a 120b call on a
+# six-line trading signal eats headroom that a news post or article needs.
+# Signals are also time-sensitive, and the small model answers faster.
+TASK_TIER = {
+    "synthesizer":      "quality",   # the channel post — the main product
+    "article":          "quality",   # long-form, needs the better writer
+    "signal_cleansing": "fast",      # short, structured, must be quick
+    "social_caption":   "fast",      # a few lines
+    "seo":              "fast",      # short metadata
+    "stealth":          "fast",      # one casual sentence
+    "headline":         "fast",
+}
+
+# The actual model per provider for each tier.
+TIER_MODELS = {
+    "groq": {
+        "quality": "openai/gpt-oss-120b",
+        "fast":    "openai/gpt-oss-20b",
+    },
+    "openrouter": {
+        "quality": "openrouter/free",
+        "fast":    "openrouter/free",
+    },
+    "openai": {
+        "quality": "gpt-4o",
+        "fast":    "gpt-4o-mini",
+    },
+}
+
 DEFAULT_MODEL = "openrouter/free"
 
 
@@ -344,6 +375,27 @@ class AIEngine:
         self._rotate_key()
         return current
 
+    def _model_for_task(self, task: str) -> str:
+        """
+        The model this task should run on.
+
+        A configured model (NEWS_MODEL / ARTICLE_MODEL) sets the quality tier;
+        short tasks still drop to the provider's smaller model. Pinning one
+        model for everything is what a bare default_model used to do, and it
+        spent a 120b call on every six-line trading signal.
+        """
+        tier = TASK_TIER.get(task, "quality")
+        tier_models = TIER_MODELS.get(self.provider, {})
+
+        if tier == "quality":
+            return self.default_model or tier_models.get("quality") or DEFAULT_MODEL
+
+        fast = tier_models.get("fast")
+        if fast:
+            return fast
+        # Unknown provider: the configured model is the only thing we can trust.
+        return self.default_model or DEFAULT_MODEL
+
     async def generate(self, task: str, system_prompt: str, user_prompt: str,
                        max_tokens: int = 500, temperature: float = 0.7,
                        validator=None, min_attempts: int = 3) -> Optional[str]:
@@ -368,12 +420,7 @@ class AIEngine:
         "Here's a thinking process:"), and that narration was reaching
         Telegram, the signal group and Facebook verbatim.
         """
-        # A dedicated engine (e.g. the article agent on its own key) uses its
-        # configured model; the shared engine routes per task.
-        if self.default_model != DEFAULT_MODEL:
-            model = self.default_model
-        else:
-            model = MODELS.get(task, self.default_model)
+        model = self._model_for_task(task)
 
         # Always give at least 3 tries even with a single key, and back off
         # between them so a transient 429 doesn't kill the whole post.
