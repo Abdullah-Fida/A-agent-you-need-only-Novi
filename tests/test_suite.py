@@ -1408,5 +1408,191 @@ class TestWebsiteImageRendering(unittest.TestCase):
         self.assertFalse(hits, f"hardcoded placeholder domain still in: {hits}")
 
 
+class TestNarrationNeverPublished(unittest.TestCase):
+    """
+    27 of 191 published posts were the model thinking out loud. The samples
+    below are verbatim from the database.
+    """
+
+    REAL_LEAKS = [
+        "Here's a thinking process:\n\n1.  **Analyze the User's Request:**\n   - **Role:** Signal Editor",
+        "We need to adapt the given text into a Facebook caption: keep every fact identical",
+        "We need to determine if it's a locked VIP teaser. It has #XAG/USDT, Target Tuch 1",
+        "Here in andells, let me analyze the raw signal to determine if it's a locked teaser",
+        "Looking at the raw signal:\n#IMX/USDT\nLet me check the criteria:",
+        "The instruction says extract core trading data: Coin pair, Direction, Leverage",
+    ]
+
+    REAL_GOOD = [
+        "Bitcoin ETF inflows hit a record this week as institutional demand accelerated.",
+        "#BTC/USDT LONG 20x\nEntry: 64000\nTP1: 66000\nSL: 62000\n\nPowered by @Novi_Network",
+        "REJECT",
+        "Good morning! Here is your Novi News brief:\n\n1. Markets rallied.\n2. Rupee steadied.",
+        "Indian bond prices fell as the RBI hinted at rate hikes, rattling emerging markets.",
+    ]
+
+    def test_every_real_leak_is_detected(self):
+        for sample in self.REAL_LEAKS:
+            cleaned = AIEngine._strip_reasoning(sample)
+            self.assertTrue(AIEngine.looks_like_narration(cleaned),
+                            f"narration not detected: {sample[:60]!r}")
+
+    def test_real_posts_are_not_flagged(self):
+        for sample in self.REAL_GOOD:
+            cleaned = AIEngine._strip_reasoning(sample)
+            self.assertFalse(AIEngine.looks_like_narration(cleaned),
+                             f"good copy wrongly rejected: {sample[:60]!r}")
+
+    def test_think_tags_are_removed(self):
+        out = AIEngine._strip_reasoning("<think>weighing it up</think>#BTC LONG 20x")
+        self.assertEqual(out, "#BTC LONG 20x")
+
+    def test_unclosed_think_tag_is_removed(self):
+        """A token cut-off can leave the tag open."""
+        self.assertEqual(AIEngine._strip_reasoning("answer here<think>cut off mid"), "answer here")
+
+    def test_final_answer_label_keeps_only_the_answer(self):
+        out = AIEngine._strip_reasoning("We need to do X.\n\nFinal answer: #ETH SHORT 10x")
+        self.assertEqual(out, "#ETH SHORT 10x")
+
+    def test_article_prose_using_these_words_later_is_safe(self):
+        """"let me" mid-article must not trip the detector."""
+        body = ("The central bank raised rates on Tuesday. " * 6 +
+                "Officials said, let me be clear, that more may follow.")
+        self.assertFalse(AIEngine.looks_like_narration(body))
+
+
+class TestSignalValidator(unittest.TestCase):
+    """The signal group took the worst of it - 19 of 80 posts were narration."""
+
+    def setUp(self):
+        from modules.signal_copier import SignalCopier
+        self.valid = SignalCopier._is_valid_signal_output
+
+    def test_real_signal_passes(self):
+        self.assertTrue(self.valid(
+            "#BTC/USDT LONG 20x\nEntry: 64000-64500\nTP1: 66000\nSL: 62000\n\n"
+            "Powered by @Novi_Network"))
+
+    def test_bare_reject_passes(self):
+        self.assertTrue(self.valid("REJECT"))
+        self.assertTrue(self.valid("  reject.  "))
+
+    def test_narration_is_rejected(self):
+        self.assertFalse(self.valid(
+            "We need to determine if it's a locked VIP teaser. It has #XAG/USDT, Target Tuch 1"))
+
+    def test_narrated_reject_is_rejected(self):
+        """Explaining a rejection is not the same as returning REJECT."""
+        self.assertFalse(self.valid(
+            "Looking at this signal, there are lock emojis and no real numbers, "
+            "so the correct action here is to REJECT it entirely."))
+
+    def test_missing_footer_is_rejected(self):
+        self.assertFalse(self.valid("#BTC/USDT LONG 20x Entry 64000 TP 66000"))
+
+    def test_essay_length_is_rejected(self):
+        self.assertFalse(self.valid("#BTC/USDT entry target " + "word " * 400 + "Powered by @x"))
+
+    def test_empty_is_rejected(self):
+        self.assertFalse(self.valid(""))
+        self.assertFalse(self.valid(None))
+
+
+class TestPostingSchedule(unittest.TestCase):
+    """Six posts a day, and a failed post is retried rather than lost."""
+
+    def test_six_slots_all_reachable(self):
+        slots = BotBrain.SCHEDULE["post_slots"]
+        start = BotBrain.SCHEDULE["sleep_start"]
+        end = BotBrain.SCHEDULE["sleep_end"]
+        self.assertEqual(len(slots), 6)
+        unreachable = [s for s in slots if s["hour"] >= start or s["hour"] < end]
+        self.assertFalse(unreachable,
+                         f"slots inside the sleep window never fire: {unreachable}")
+
+    def test_slots_are_spread_out(self):
+        """Two posts 40 minutes apart read as a burst, not a schedule."""
+        mins = sorted(s["hour"] * 60 + s["minute"] for s in BotBrain.SCHEDULE["post_slots"])
+        gaps = [b - a for a, b in zip(mins, mins[1:])]
+        self.assertTrue(all(g >= 120 for g in gaps), f"gaps too small: {gaps}")
+
+    def test_failed_post_is_requeued(self):
+        b = make_brain()
+        self.assertTrue(b.queue_retry("regular_9_0", "regular", 0, "no real image"))
+        self.assertEqual(len(b.pending_retries), 1)
+
+    def test_retry_is_not_due_immediately(self):
+        b = make_brain()
+        b.queue_retry("regular_9_0", "regular", 0, "no real image")
+        self.assertIsNone(b.due_retry(), "a retry must wait for its delay")
+
+    def test_overdue_retry_is_returned_once(self):
+        b = make_brain()
+        past = (b._get_pkt_now() - timedelta(minutes=1)).isoformat()
+        b.pending_retries = [{"key": "k", "type": "regular", "attempts": 1,
+                              "due_at": past, "reason": "x"}]
+        self.assertIsNotNone(b.due_retry())
+        self.assertEqual(b.pending_retries, [], "a returned retry must leave the queue")
+        self.assertIsNone(b.due_retry())
+
+    def test_attempts_are_capped(self):
+        """The slot is eventually published rather than retried forever."""
+        b = make_brain()
+        self.assertFalse(b.queue_retry("k", "regular", b.MAX_POST_ATTEMPTS, "still failing"))
+
+    def test_retry_delay_is_thirty_minutes(self):
+        self.assertEqual(BotBrain.RETRY_DELAY_MINUTES, 30)
+
+
+class TestHotNewsRanking(unittest.TestCase):
+    """Major world events must outrank filler."""
+
+    def setUp(self):
+        from modules.news_scraper import NewsScraper
+        self.score = NewsScraper(db=None)._calculate_relevance_score
+
+    def s(self, title):
+        return self.score({"title": title, "summary": ""})
+
+    def test_world_event_beats_routine_tech(self):
+        self.assertGreater(self.s("Fed holds interest rates as inflation cools"),
+                           self.s("New smartphone launched with better camera"))
+
+    def test_roundups_are_penalised(self):
+        """This exact headline produced a vague, contentless article."""
+        self.assertLess(self.s("Here's what happened in crypto today"), 0)
+
+    def test_filler_is_penalised(self):
+        self.assertLess(self.s("Best deals on laptops this week"), 0)
+
+    def test_real_event_still_scores_positive(self):
+        self.assertGreater(self.s("Pakistan floods force mass evacuation in Sindh"), 0)
+
+
+class TestLiveModelsExist(unittest.TestCase):
+    """Groq retired the Llama family, which silently broke NOVI and articles."""
+
+    def test_no_retired_llama_model_is_referenced(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        dead = ("llama-3.1-8b-instant", "llama-3.3-70b-versatile", "llama3-8b-8192")
+        hits = []
+        for folder in ("core", "modules"):
+            base = os.path.join(root, folder)
+            for name in os.listdir(base):
+                if not name.endswith(".py"):
+                    continue
+                with open(os.path.join(base, name), encoding="utf-8") as fh:
+                    body = fh.read()
+                # Strip comments: the fix is documented by naming the dead
+                # model, and that explanation must not fail its own test.
+                code = chr(10).join(line.split("#")[0]
+                                    for line in body.splitlines())
+                for model in dead:
+                    if model in code:
+                        hits.append(f"{folder}/{name}: {model}")
+        self.assertFalse(hits, "retired Groq models still referenced: " + ", ".join(hits))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

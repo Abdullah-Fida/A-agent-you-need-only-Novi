@@ -126,8 +126,124 @@ class AIEngine:
         logger.warning(f"Rotated to API key index {self.current_key_index}.")
         return True
     
-    async def generate(self, task: str, system_prompt: str, user_prompt: str, 
-                       max_tokens: int = 500, temperature: float = 0.7) -> Optional[str]:
+    # ── output sanitising ────────────────────────────────────────────
+    #
+    # Openings that mean the model started thinking out loud instead of
+    # answering. Matched only at the very start of the reply, so an article
+    # that legitimately contains "let me explain" mid-paragraph is untouched.
+    _NARRATION_OPENERS = re.compile(
+        r"^\s*(?:"
+        r"here(?:'|\u2019)?s?\s+(?:a\s+)?(?:my\s+)?thinking|"
+        r"here(?:'|\u2019)?s?\s+how\s+i\b|"
+        r"we\s+(?:need|must|should|have)\s+to\b|"
+        r"we\s+are\s+(?:asked|given)\b|"
+        r"the\s+user\s+(?:wants|asked|is\s+asking)|"
+        r"the\s+(?:instruction|prompt|task|request)s?\b|"
+        r"let(?:'|\u2019)?s\s+|let\s+me\b|"
+        r"i\s+(?:need|should|must|will|am\s+asked)\b|"
+        r"first,?\s+i\b|"
+        r"okay,?\s+so\b|alright,?\s+so\b|"
+        r"to\s+(?:answer|solve|do)\s+this\b|"
+        r"analy[sz]ing\s+the\b|"
+        r"looking\s+at\s+the\s+(?:raw|given|provided)\b|"
+        r"your\s+(?:job|task)\b|"
+        r"as\s+an\s+ai\b|"
+        r"step\s*1\s*[:.]|"
+        r"\*\*(?:analyz|understand|step|thinking)"
+        r")",
+        re.I,
+    )
+
+    # Unambiguous narration, wherever it appears in the opening.
+    _NARRATION_PHRASES = (
+        "let me analyz", "let me check", "let me think", "let me look",
+        "let me first", "let me start", "let's analyz", "let's check",
+        "thinking process", "we need to", "the user wants", "the user asked",
+        "looking at the raw", "to determine if it", "i need to determine",
+        "step 1:", "my task is", "the task is to", "as an ai",
+    )
+
+    # Whole-reply tells: the model quoting its own instructions back.
+    _ECHO_MARKERS = (
+        "output only", "do not add any", "respond with only",
+        "system prompt", "you are a professional", "your job:",
+    )
+
+    @classmethod
+    def _strip_reasoning(cls, content: str) -> str:
+        """
+        Removes a model's visible chain-of-thought, returning only the answer.
+
+        Reasoning models wrap thinking in <think> tags, or separate it from
+        the answer with a "Final answer:" style label. Whatever follows the
+        last such marker is the real output.
+        """
+        if not content:
+            return ""
+        text = content.strip()
+
+        # Tagged thinking, closed or left open by a token cut-off
+        text = re.sub(r"<(think|thinking|reasoning|scratchpad)>.*?</\1>", "",
+                      text, flags=re.S | re.I)
+        text = re.sub(r"^.*?</(?:think|thinking|reasoning|scratchpad)>", "",
+                      text, flags=re.S | re.I).strip()
+        text = re.sub(r"<(?:think|thinking|reasoning|scratchpad)>.*$", "",
+                      text, flags=re.S | re.I).strip()
+
+        # An explicit answer label — take everything after the last one
+        label = list(re.finditer(
+            r"^\s*(?:\*\*|##\s*)?(?:final\s+(?:answer|output|response)|"
+            r"here\s+is\s+the\s+(?:final\s+)?(?:answer|output|post|signal|caption)|"
+            r"output)\s*(?:\*\*)?\s*[:\-]\s*",
+            text, re.I | re.M))
+        if label:
+            text = text[label[-1].end():].strip()
+
+        # A whole reply wrapped in one code fence
+        fenced = re.fullmatch(r"```[a-z]*\s*\n(.*?)\n?```", text, re.S | re.I)
+        if fenced:
+            text = fenced.group(1).strip()
+
+        return text.strip()
+
+    @classmethod
+    def looks_like_narration(cls, text: str) -> bool:
+        """True when the reply is the model talking about the task, not doing it."""
+        if not text:
+            return True
+        stripped = text.strip()
+        if cls._NARRATION_OPENERS.match(stripped):
+            return True
+        # A tell can sit just behind a few junk words ("Here in andells, let me
+        # analyze the raw signal..."). _NARRATION_OPENERS is ^-anchored, so a
+        # separate unanchored list scans the opening. Kept to phrases that
+        # published copy would not contain, and limited to the first 200
+        # characters, so a real article discussing a topic is unaffected.
+        opening = stripped[:200].lower()
+        if any(phrase in opening for phrase in cls._NARRATION_PHRASES):
+            return True
+        head = stripped[:400].lower()
+        return any(marker in head for marker in cls._ECHO_MARKERS)
+
+    def _next_model(self, current: str, tried: set) -> str:
+        """
+        Picks a different model after a bad answer.
+
+        Retrying the same free-router model tends to reproduce the same
+        narration, so a rejected answer moves to the next fallback and only
+        rotates keys once the list is exhausted.
+        """
+        for candidate in FALLBACK_MODELS:
+            if candidate not in tried:
+                tried.add(candidate)
+                logger.info(f"Switching model to {candidate}.")
+                return candidate
+        self._rotate_key()
+        return current
+
+    async def generate(self, task: str, system_prompt: str, user_prompt: str,
+                       max_tokens: int = 500, temperature: float = 0.7,
+                       validator=None) -> Optional[str]:
         """
         Generates AI text with automatic key rotation on failure.
         
@@ -137,9 +253,17 @@ class AIEngine:
             user_prompt: The user-facing prompt
             max_tokens: Maximum response length
             temperature: Creativity level (0.0 = factual, 1.0 = creative)
+            validator: Optional callable taking the cleaned text, returning
+                True if it is publishable. A rejected answer is retried on
+                a different model rather than returned.
         
         Returns:
-            The generated text, or None if all keys failed.
+            The generated text, or None if nothing publishable was produced.
+
+        Never returns the model's thinking. The free router regularly serves
+        reasoning models that narrate before answering ("We need to...",
+        "Here's a thinking process:"), and that narration was reaching
+        Telegram, the signal group and Facebook verbatim.
         """
         # A dedicated engine (e.g. the article agent on its own key) uses its
         # configured model; the shared engine routes per task.
@@ -173,22 +297,43 @@ class AIEngine:
                     await self._backoff(attempt)
                     continue
 
-                # Quality gate: reject if AI echoed back instructions.
-                # Only check the opening of the response — these phrases can
-                # legitimately appear inside a long article body.
-                head = content[:200].lower()
-                if "your task is to" in head or "your job is" in head:
-                    logger.warning("AI returned instructions back instead of content. Retrying...")
-                    self._rotate_key()
+                content = self._strip_reasoning(content)
+                if not content:
+                    logger.warning(f"Only reasoning came back on attempt {attempt + 1}. Retrying...")
+                    model = self._next_model(model, tried_models)
                     await self._backoff(attempt)
                     continue
 
-                return content.strip()
+                if self.looks_like_narration(content):
+                    logger.warning(f"Model narrated instead of answering on attempt "
+                                   f"{attempt + 1} ({model}). Retrying on another model.")
+                    model = self._next_model(model, tried_models)
+                    await self._backoff(attempt)
+                    continue
+
+                if validator is not None and not validator(content):
+                    logger.warning(f"Output failed the '{task}' validator on "
+                                   f"attempt {attempt + 1}. Retrying.")
+                    model = self._next_model(model, tried_models)
+                    await self._backoff(attempt)
+                    continue
+
+                return content
 
             except Exception as e:
                 last_error = str(e)
                 logger.error(f"AI generation failed (attempt {attempt + 1}/{max_attempts}): {last_error}")
                 lowered = last_error.lower()
+
+                # A retired or unavailable model never recovers by retrying,
+                # so move to the next candidate immediately. Groq removing the
+                # Llama family silently broke every call using it.
+                if ("does not exist" in lowered or "not exist or you do not have" in lowered
+                        or "model_not_found" in lowered or "decommissioned" in lowered):
+                    logger.error(f"Model '{model}' is unavailable — switching.")
+                    model = self._next_model(model, tried_models)
+                    await self._backoff(attempt)
+                    continue
 
                 if "429" in last_error or "rate" in lowered:
                     logger.warning("Rate limited. Rotating key and backing off...")

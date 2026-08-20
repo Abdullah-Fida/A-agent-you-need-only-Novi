@@ -321,8 +321,15 @@ class BufferBroadcaster:
                     max_tokens=420,
                     temperature=0.7,
                 )
-                if rewritten and len(rewritten.strip()) > 40:
+                # Only accept a rewrite that is actually a caption. The
+                # engine already rejects narration, but the Telegram copy is a
+                # perfectly good caption, so anything doubtful falls back to it
+                # rather than risking the model's deliberation on the page.
+                if rewritten and 40 < len(rewritten.strip()) < 2200:
                     caption = rewritten.strip()
+                elif rewritten:
+                    logger.warning("Caption rewrite was not usable; keeping the "
+                                   "original post text.")
             except Exception as e:
                 logger.warning(f"Caption rewrite failed, using original: {type(e).__name__}")
 

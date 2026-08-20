@@ -443,26 +443,62 @@ async def main():
             # ---- News Agent Post Slot (only if news_module_active) ----
             if brain.news_module_active:
                 slot = brain.get_next_post_slot()
-                
-                if slot and slot["key"] not in fired_slots and brain.can_post():
+
+                # A post deferred earlier (usually because no real photograph
+                # could be produced) takes priority once its delay elapses.
+                # due_retry() pops the entry, so it is only called when the
+                # post can actually be attempted — otherwise the deferred post
+                # would be dropped by the very check meant to protect it.
+                retry = brain.due_retry() if brain.can_post() else None
+                if retry:
+                    slot = {"key": retry["key"], "type": retry["type"]}
+                    attempt_no = retry["attempts"] + 1
+                    logger.info(f"Retrying deferred post {retry['key']} "
+                                f"(attempt {attempt_no + 1}) — was: {retry['reason']}")
+                elif slot and slot["key"] not in fired_slots and brain.can_post():
+                    attempt_no = 0
+                else:
+                    slot = None
+
+                if slot:
                     fired_slots.add(slot["key"])
                     post_type = slot["type"]
 
                     logger.info(f"News Post slot triggered: {post_type} at {pkt_now.strftime('%I:%M %p PKT')}")
 
                     # Keep the jitter strictly inside the slot window so a post
-                    # can never be jittered past its own deadline.
-                    max_jitter = max(0, (brain.SLOT_WINDOW_MINUTES - 12) * 60)
-                    jitter = random.uniform(0, min(600, max_jitter))
-                    logger.info(f"Applying human jitter: waiting {jitter:.0f}s before posting...")
-                    await asyncio.sleep(jitter)
+                    # can never be jittered past its own deadline. A retry is
+                    # already late, so it goes out without further delay.
+                    if attempt_no == 0:
+                        max_jitter = max(0, (brain.SLOT_WINDOW_MINUTES - 12) * 60)
+                        jitter = random.uniform(0, min(600, max_jitter))
+                        logger.info(f"Applying human jitter: waiting {jitter:.0f}s before posting...")
+                        await asyncio.sleep(jitter)
 
                     try:
                         if post_type == "morning_brief":
                             package = await content_engine.produce_morning_brief()
                         else:
                             package = await content_engine.produce_content_package()
-                        
+
+                        # Every post must carry a real picture. The generator
+                        # falls back to a drawn card when Bing fails and the
+                        # story has no photograph of its own; rather than
+                        # publish that, the post is deferred and tried again
+                        # with fresh stories. The card is only accepted once
+                        # the attempt budget is spent, so a slot is never lost.
+                        deferred = False
+                        if package and package.get("image_source") == "card":
+                            if brain.queue_retry(slot["key"], post_type, attempt_no,
+                                                 "no real image — only a fallback card"):
+                                fired_slots.discard(slot["key"])
+                                package = None
+                                deferred = True
+                            else:
+                                logger.warning("Publishing with the branded card: "
+                                               "retries exhausted and the slot would "
+                                               "otherwise be lost.")
+
                         if package:
                             if telegram_connected:
                                 success = await broadcaster.post(package)
@@ -480,21 +516,30 @@ async def main():
                                     # Cross-post everywhere else (website, Reddit, X, Facebook)
                                     await fanout.distribute(package, story=package.get("story"))
                                 else:
+                                    if brain.queue_retry(slot["key"], post_type, attempt_no,
+                                                         "Telegram rejected the post"):
+                                        fired_slots.discard(slot["key"])
                                     await brain.handle_error(
                                         "TelegramBroadcaster",
                                         Exception("Post returned False"),
                                         can_auto_fix=True,
-                                        fix_action="Will retry next slot"
+                                        fix_action=f"Retrying in {brain.RETRY_DELAY_MINUTES} min"
                                     )
                             else:
                                 logger.info(f"[DRY RUN] Would post:\n{package['telegram_text'][:200]}...")
                                 brain.record_post()
-                        else:
+                        elif not deferred:
                             logger.warning("Content engine returned empty package.")
-                            
+                            if brain.queue_retry(slot["key"], post_type, attempt_no,
+                                                 "content engine produced nothing"):
+                                fired_slots.discard(slot["key"])
+
                     except Exception as e:
                         logger.error(f"Error during news production: {e}")
+                        if brain.queue_retry(slot["key"], post_type, attempt_no, str(e)[:80]):
+                            fired_slots.discard(slot["key"])
                         await brain.handle_error("ContentEngine", e)
+
             
             # ---- Periodic Metric Ingestion (every 3 hours) ----
             if (brain.last_metric_check is None or 

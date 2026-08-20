@@ -6,6 +6,7 @@ using AI (removing branding/links), and forwards them to the target group.
 import asyncio
 import hashlib
 import logging
+import re
 import random
 import os
 import tempfile
@@ -356,6 +357,46 @@ class SignalCopier:
         )
         return self._target_entity
 
+    # A cleansed signal must look like a signal. The model is asked for one or
+    # the single word REJECT, but a reasoning model would otherwise return its
+    # deliberation and it went straight to the group — 19 of 80 signal posts
+    # were the model thinking out loud.
+    _PAIR = re.compile(r"#?\b[A-Z]{2,10}\s*/\s*(?:USDT|USD|BTC|ETH|BUSD|PERP)\b", re.I)
+    _TRADE_WORDS = ("entry", "target", "tp", "take profit", "stop", "sl",
+                    "long", "short", "leverage", "profit")
+
+    @classmethod
+    def _is_valid_signal_output(cls, text: str) -> bool:
+        """
+        True if this is publishable: either a clean REJECT, or something that
+        actually reads as a trading signal.
+        """
+        if not text:
+            return False
+        stripped = text.strip()
+
+        # A bare REJECT is the expected answer for teasers and adverts.
+        if stripped.upper().strip(" .!*_`") == "REJECT":
+            return True
+
+        # A reply that merely mentions rejecting, rather than being it, is the
+        # model narrating its decision.
+        if len(stripped) > 40 and re.search(r"\bREJECT\b", stripped):
+            return False
+
+        if len(stripped) > 1200:
+            return False        # signals are short; an essay is deliberation
+
+        low = stripped.lower()
+        if not cls._PAIR.search(stripped):
+            return False
+        if sum(1 for w in cls._TRADE_WORDS if w in low) < 2:
+            return False
+
+        # The footer is mandatory in the prompt, so its absence means the model
+        # wandered off the format.
+        return "powered by" in low
+
     async def _cleanse_signal(self, raw_text: str) -> Optional[str]:
         """Uses AI to strip competitor links/branding and format it for our brand."""
         system_prompt = f"""You are a professional Crypto Signal Editor for the Whale Tracker VIP group.
@@ -388,8 +429,23 @@ Do not add any conversational filler. Just output the final signal text (or REJE
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 max_tokens=500,
-                temperature=0.2
+                temperature=0.2,
+                validator=self._is_valid_signal_output,
             )
+            if not cleansed:
+                # Every attempt failed validation. Dropping the signal is the
+                # only safe outcome — posting unvalidated model output is what
+                # put its private deliberation in the group.
+                logger.error("Signal could not be cleansed into a publishable "
+                             "form; dropping it rather than posting raw output.")
+                if self.db:
+                    await self.db.log_error(
+                        module="SignalCopier",
+                        error_type="CleansingFailed",
+                        error_message=f"No valid signal produced for: {raw_text[:160]}",
+                        auto_resolved=True,
+                    )
+                return None
             return cleansed
         except Exception as e:
             logger.error(f"AI cleansing failed: {e}")

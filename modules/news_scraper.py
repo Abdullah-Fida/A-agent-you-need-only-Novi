@@ -67,6 +67,31 @@ CRYPTO_KEYWORDS = [
 ]
 
 
+# Events of genuine international consequence. These are what a reader expects
+# a news channel to lead with, and they scored nothing before — a routine
+# gadget story could outrank a war or an election purely on keyword count.
+GLOBAL_HEADLINE_KEYWORDS = [
+    "war", "ceasefire", "invasion", "airstrike", "missile", "troops",
+    "election", "elected", "president", "prime minister", "parliament",
+    "coup", "protest", "sanctions", "treaty", "summit", "united nations",
+    "nato", "g7", "g20", "opec",
+    "earthquake", "hurricane", "typhoon", "flood", "wildfire", "tsunami",
+    "outbreak", "pandemic", "evacuation", "state of emergency",
+    "assassination", "resigns", "impeach", "verdict", "indicted",
+    "central bank", "interest rate", "inflation", "recession", "default",
+    "oil price", "opec+", "market crash", "record high", "bailout",
+    "nuclear", "space launch", "breakthrough",
+]
+
+# Words that mark a story as a roundup or filler rather than an event.
+LOW_VALUE_TITLE_MARKERS = [
+    "what happened in", "here's what", "roundup", "recap", "digest",
+    "week in review", "things to know", "what to watch", "live updates",
+    "best deals", "deal of the day", "coupon", "discount", "sponsored",
+    "opinion", "editorial", "horoscope", "quiz",
+]
+
+
 class NewsScraper:
     """
     Scrapes RSS feeds, deduplicates stories, and groups similar articles
@@ -300,7 +325,21 @@ class NewsScraper:
                         "dollar", "stock market", "recession", "breaking", "urgent"]:
             if keyword in text:
                 score += 3  # Moderate boost for general interest
-        
+
+        # Major world events. Weighted above the topic keywords so a war,
+        # an election or a rate decision leads ahead of a routine tech story.
+        for keyword in GLOBAL_HEADLINE_KEYWORDS:
+            if keyword in text:
+                score += 12
+
+        # Roundups and filler make weak posts and weaker articles: the title
+        # names no event, so the synthesised copy has nothing concrete to say.
+        title = (article.get("title") or "").lower()
+        for marker in LOW_VALUE_TITLE_MARKERS:
+            if marker in title:
+                score -= 25
+                break
+
         return score
     
     async def fetch_latest_news(self, category: str = "all", force: bool = False) -> List[Dict]:

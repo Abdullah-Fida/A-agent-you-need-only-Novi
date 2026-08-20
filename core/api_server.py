@@ -812,7 +812,9 @@ async def chat_proxy(req: ChatProxyRequest):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": os.environ.get("NOVI_CHAT_MODEL", "llama-3.1-8b-instant").strip(),
+        # Groq retired every Llama model on this account; llama-3.1-8b-instant
+        # now 404s, which is what stopped NOVI from answering at all.
+        "model": os.environ.get("NOVI_CHAT_MODEL", "openai/gpt-oss-20b").strip(),
         "messages": [
             {"role": "system", "content": req.systemPrompt},
             {"role": "user", "content": req.input}

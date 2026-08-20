@@ -7,7 +7,7 @@ import logging
 import asyncio
 import random
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from database.supabase_db import SupabaseDB
 
 logger = logging.getLogger("OmniBot.Brain")
@@ -31,13 +31,18 @@ class BotBrain:
     # Default daily schedule (PKT times)
     SCHEDULE = {
         "morning_brief": {"hour": 8, "minute": 0},   # 8:00 AM PKT
+        # Six slots, evenly spread across waking hours. Two of the previous
+        # six could never produce a post: 00:40 sat inside the sleep window so
+        # it was skipped every night, and 13:40 was a leftover makeup slot 40
+        # minutes after 13:00 — which is why the channel saw four or five
+        # posts a day rather than six.
         "post_slots": [
-            {"hour": 0, "minute": 40},   # 12:40 AM PKT (Test Post)
-            {"hour": 10, "minute": 30},  # 10:30 AM
-            {"hour": 13, "minute": 0},   # 1:00 PM
-            {"hour": 13, "minute": 40},  # 1:40 PM (Makeup post for today)
-            {"hour": 16, "minute": 0},   # 4:00 PM
-            {"hour": 19, "minute": 30},  # 7:30 PM
+            {"hour": 9,  "minute": 0},   # 9:00 AM PKT
+            {"hour": 11, "minute": 30},  # 11:30 AM
+            {"hour": 14, "minute": 0},   # 2:00 PM
+            {"hour": 16, "minute": 30},  # 4:30 PM
+            {"hour": 19, "minute": 0},   # 7:00 PM
+            {"hour": 22, "minute": 0},   # 10:00 PM
         ],
         "evening_wrap": {"hour": 21, "minute": 0},    # 9:00 PM PKT
         "sleep_start": 23,  # 11 PM PKT
@@ -60,6 +65,7 @@ class BotBrain:
 
         # Daily counters (reset every midnight PKT)
         self.posts_today = 0
+        self.pending_retries: List[Dict] = []
         self.replies_today = 0
         self.reddit_posts_today = 0
         self.x_posts_today = 0
@@ -149,6 +155,57 @@ class BotBrain:
         logger.info(f"Sleep window updated: {start_hour}:00 -> {end_hour}:00 PKT "
                     f"({'24/7 mode — never sleeps' if start_hour == end_hour else 'active'})")
     
+    # ── deferred posts ────────────────────────────────────────────────
+    #
+    # A slot used to be marked fired before the post was attempted, so any
+    # failure — no image, AI unavailable, Telegram hiccup — silently cost a
+    # post for the day. Failures are now re-queued instead.
+    RETRY_DELAY_MINUTES = 30
+    MAX_POST_ATTEMPTS = 3          # the original try plus two retries
+
+    def queue_retry(self, key: str, post_type: str, attempts: int,
+                    reason: str = "") -> bool:
+        """
+        Schedules another attempt at a post that could not be published.
+
+        Returns False once the attempt budget is spent, which tells the caller
+        to publish whatever it has rather than lose the slot entirely.
+        """
+        if attempts >= self.MAX_POST_ATTEMPTS:
+            logger.warning(f"Slot {key} exhausted its {self.MAX_POST_ATTEMPTS} "
+                           f"attempts; not retrying again.")
+            return False
+
+        due = self._get_pkt_now() + timedelta(minutes=self.RETRY_DELAY_MINUTES)
+        self.pending_retries = [r for r in self.pending_retries if r["key"] != key]
+        self.pending_retries.append({
+            "key": key,
+            "type": post_type,
+            "attempts": attempts,
+            "due_at": due.isoformat(),
+            "reason": reason,
+        })
+        logger.info(f"Post for slot {key} deferred {self.RETRY_DELAY_MINUTES} min "
+                    f"(attempt {attempts + 1}/{self.MAX_POST_ATTEMPTS}) — {reason}")
+        return True
+
+    def due_retry(self) -> Optional[Dict]:
+        """The next deferred post whose delay has elapsed, if any."""
+        now = self._get_pkt_now()
+        for retry in list(self.pending_retries):
+            try:
+                due = datetime.fromisoformat(retry["due_at"])
+            except (ValueError, KeyError):
+                self.pending_retries.remove(retry)
+                continue
+            if now >= due:
+                self.pending_retries.remove(retry)
+                return retry
+        return None
+
+    def clear_retries(self):
+        self.pending_retries = []
+
     def get_next_post_slot(self) -> Optional[Dict]:
         """
         Determines the next scheduled post slot.

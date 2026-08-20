@@ -61,8 +61,21 @@ keys = {f"regular_{s['hour']}_{s['minute']}" for s in slots}
 check("every post slot has a unique key (13:00 and 13:40 no longer collide)",
       len(keys) == len(slots), f"{len(keys)} keys for {len(slots)} slots")
 
-same_hour = [s for s in slots if s["hour"] == 13]
-check("two slots exist in hour 13 (the previously-skipped case)", len(same_hour) >= 2)
+# The original bug was two slots in one hour sharing a key, so the second
+# never fired. Test the property directly rather than pinning it to the old
+# 13:00/13:40 pair, which has since been replaced by an even spread.
+synthetic = [{"hour": 13, "minute": 0}, {"hour": 13, "minute": 40}]
+synthetic_keys = {f"regular_{s['hour']}_{s['minute']}" for s in synthetic}
+check("two slots in the same hour still get distinct keys",
+      len(synthetic_keys) == 2)
+
+check("six post slots are configured", len(slots) == 6, f"{len(slots)} slots")
+
+start, end = BotBrain.SCHEDULE["sleep_start"], BotBrain.SCHEDULE["sleep_end"]
+asleep = [f"{s['hour']:02d}:{s['minute']:02d}" for s in slots
+          if s["hour"] >= start or s["hour"] < end]
+check("no slot is scheduled inside the sleep window",
+      not asleep, ", ".join(asleep) + " unreachable" if asleep else "")
 
 check("slot window exceeds max jitter",
       BotBrain.SLOT_WINDOW_MINUTES * 60 > 600, f"{BotBrain.SLOT_WINDOW_MINUTES}m window")
