@@ -85,6 +85,30 @@ class BotConfig:
     email_receiver: str = ""
     resend_api_key: str = ""
 
+def _news_keys(openrouter_keys):
+    """
+    The keys that match the provider the News AI is pointed at.
+
+    NEWS_API_PROVIDER and the key list were independent, so switching the
+    provider to groq kept sending an OpenRouter key and every call failed
+    authentication. The provider now decides which key is used.
+    """
+    provider = (_clean(os.getenv("NEWS_API_PROVIDER", "")) or "openrouter").lower()
+    if provider == "groq":
+        groq = _csv("NEWS_API_KEYS") or _csv("GROQ_API_KEY")
+        if groq:
+            logger.info(f"News AI uses {len(groq)} Groq key(s).")
+            return groq
+        logger.error("NEWS_API_PROVIDER=groq but no GROQ_API_KEY is set; "
+                     "falling back to the OpenRouter keys, which will not "
+                     "authenticate against Groq.")
+    elif provider == "openai":
+        openai_keys = _csv("NEWS_API_KEYS") or _csv("OPENAI_API_KEY")
+        if openai_keys:
+            return openai_keys
+    return _csv("NEWS_API_KEYS") or openrouter_keys
+
+
 def load_config() -> BotConfig:
     """Loads configuration from .env file and returns a BotConfig object."""
     load_dotenv()
@@ -102,7 +126,7 @@ def load_config() -> BotConfig:
     config = BotConfig(
         supabase_url=os.getenv("SUPABASE_URL", ""),
         supabase_key=os.getenv("SUPABASE_KEY", ""),
-        openrouter_api_keys=api_keys,
+        openrouter_api_keys=_news_keys(api_keys),
         news_api_provider=_clean(os.getenv("NEWS_API_PROVIDER", "")) or "openrouter",
         news_api_base=_clean(os.getenv("NEWS_API_BASE", "")),
         news_model=_clean(os.getenv("NEWS_MODEL", "")),

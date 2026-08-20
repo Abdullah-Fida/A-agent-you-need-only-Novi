@@ -99,6 +99,10 @@ async def main():
         db=db
     )
 
+    # Let the engines report a retired model by email instead of failing quietly.
+    ai_engine.notification_manager = notification_manager
+    article_ai.notification_manager = notification_manager
+
     images_dir = os.path.join(os.path.dirname(__file__), "assets", "generated_images")
     channel_name = config.channel_username or "Novi_Network"
     image_gen = ImageGenerator(output_dir=images_dir, channel_name=channel_name,

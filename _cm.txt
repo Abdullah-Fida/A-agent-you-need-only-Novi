@@ -1,54 +1,37 @@
-Stop publishing the model's thinking; guarantee an image; six posts a day
+Heal from retired models automatically; move the News AI to Groq
 
-A week of live output showed 27 of 191 published posts were the model
-narrating instead of answering — "We need to adapt the given text into a
-Facebook caption...", "Here's a thinking process:". The signal group was
-worst hit at 19 of 80. All of it went out verbatim.
+Answering "why does this break every day": the cause is not a bad key. Two
+providers were failing in different ways at the same time.
 
-Cause: every task routes through openrouter/free, which regularly serves a
-reasoning model, and the only guard was two phrases checked in the first 200
-characters. Nothing else inspected the output before publishing.
+OpenRouter's free tier is exhausted — every call returns 429 with "Rate limit
+exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model
+requests per day". The News AI ran on it, and the News AI produces every post,
+signal, caption and stealth reply.
 
-- AIEngine now strips visible chain-of-thought (<think> tags closed or cut
-  off, "Final answer:" labels, whole-reply code fences) and rejects a reply
-  that is still narration, retrying on a different model rather than the same
-  one. Verified against all 191 real posts: 27 of 27 leaks caught, zero false
-  positives on the 164 good ones.
-- generate() takes an optional validator so a caller can require output that
-  is actually publishable.
-- Signal copier supplies one: a real coin pair, trade fields and the footer,
-  or a bare REJECT. Narrated rejections no longer count. If nothing valid
-  survives the retries the signal is dropped, because posting unvalidated
-  output is what put the model's deliberation in the group.
-- Facebook captions fall back to the Telegram copy when a rewrite is doubtful.
+Groq is fine: the key authenticates and offers 1000 requests a day. The bot
+needs about 53. What broke there was the model names — Groq retired the whole
+Llama family, so llama-3.1-8b-instant (NOVI) and llama-3.3-70b-versatile
+(articles) both 404.
 
-Images
-- A post whose picture is only the fallback card is deferred 30 minutes and
-  retried with fresh stories, up to three attempts, then published anyway so
-  the slot is never silently lost. Failed and errored posts requeue the same
-  way; previously a slot was marked fired before the attempt, so any failure
-  cost a post for the day.
+- AIEngine reads the provider's live model catalogue and substitutes a working
+  model when the configured one is gone, preferring a known-good list and
+  falling back to any chat model. Confirmed against the live API: asking for
+  llama-3.3-70b-versatile now resolves to openai/gpt-oss-120b and generates
+  normally. A retirement is reported once by email as informational, since
+  nothing is broken and nothing needs doing immediately.
+- The News AI moves to Groq, which has the headroom.
+- NEWS_API_PROVIDER and the key list were independent, so pointing the News AI
+  at Groq would have kept sending an OpenRouter key and failed authentication.
+  The provider now selects its own keys.
 
-Six posts a day
-- Two of the six slots could never fire: 00:40 sat inside the 23:00-07:00
-  sleep window, and 13:40 was a leftover makeup slot 40 minutes after 13:00.
-  Replaced with six evenly spread waking-hour slots.
+Signals retry harder before being dropped: six attempts across different
+models rather than three. They stay immediate rather than deferred — a signal
+re-sent half an hour later quotes prices that have moved, which is worse than
+not sending it.
 
-Retired models
-- Groq removed the entire Llama family from this account. NOVI's chat model
-  llama-3.1-8b-instant now 404s, which is why NOVI stopped answering, and
-  ARTICLE_MODEL llama-3.3-70b-versatile is equally dead. Confirmed against
-  the live model list. NOVI moves to openai/gpt-oss-20b; both were tested for
-  narration before selection. The engine now switches models on a
-  model-not-found error instead of retrying a model that cannot recover.
+Render still holds its own copy of these values and must be updated:
+  NEWS_API_PROVIDER=groq
+  NEWS_MODEL=openai/gpt-oss-120b
+  ARTICLE_MODEL=openai/gpt-oss-120b
 
-Story selection
-- Major world events (war, elections, central banks, disasters) score above
-  routine coverage, and roundups and filler are penalised. "Here's what
-  happened in crypto today" — the headline behind the vaguest article on the
-  site — now scores below zero and will not be selected.
-
-ARTICLE_MODEL must be changed to openai/gpt-oss-120b in Render; the value in
-render.env is updated but Render holds its own copy.
-
-267 tests pass, 39 of them new and drawn from the real failures.
+267 tests pass.

@@ -431,6 +431,12 @@ Do not add any conversational filler. Just output the final signal text (or REJE
                 max_tokens=500,
                 temperature=0.2,
                 validator=self._is_valid_signal_output,
+                # Signals are the least forgiving output we publish, so this
+                # works through more models before giving up. It stays a burst
+                # of immediate attempts rather than a delayed retry: a signal
+                # re-sent half an hour later quotes prices that have moved,
+                # which is worse than not sending it.
+                min_attempts=6,
             )
             if not cleansed:
                 # Every attempt failed validation. Dropping the signal is the

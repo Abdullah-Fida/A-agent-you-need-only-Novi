@@ -86,6 +86,9 @@ class AIEngine:
 
         self.api_keys = api_keys
         self.current_key_index = 0
+        self._model_cache = None          # provider catalogue, read once
+        self._retired_reported = set()    # one warning per retired model
+        self.notification_manager = None  # wired by main after construction
         self.db = db
         self.label = label
         self.provider = (provider or "openrouter").lower()
@@ -126,6 +129,106 @@ class AIEngine:
         logger.warning(f"Rotated to API key index {self.current_key_index}.")
         return True
     
+    # Preferred models per provider, best first. Used to pick a replacement
+    # when the configured model is not in the provider's live catalogue.
+    #
+    # This list is a preference, not a promise: providers retire models with
+    # no warning — Groq removed the entire Llama family, which silently broke
+    # both NOVI and the article agent — so whatever is actually available at
+    # runtime wins over anything hardcoded here.
+    PREFERRED_MODELS = {
+        "groq": [
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+            "groq/compound",
+            "groq/compound-mini",
+            "qwen/qwen3.6-27b",
+        ],
+        "openrouter": [
+            "openrouter/free",
+            "google/gemma-4-31b-it:free",
+            "nvidia/nemotron-3-super-120b-a12b:free",
+        ],
+        "openai": ["gpt-4o-mini", "gpt-4o"],
+    }
+
+    async def available_models(self, force: bool = False) -> set:
+        """
+        The models this provider will actually serve, from its own catalogue.
+
+        Cached for the process: the list changes on the provider's schedule,
+        not ours, and a restart re-reads it. An unreachable catalogue returns
+        an empty set, which callers treat as "unknown" and carry on rather
+        than blocking every request behind a metadata call.
+        """
+        if self._model_cache is not None and not force:
+            return self._model_cache
+
+        try:
+            models = await self.client.models.list()
+            self._model_cache = {m.id for m in models.data}
+            logger.info(f"{self.label}: provider offers {len(self._model_cache)} models.")
+        except Exception as e:
+            logger.warning(f"{self.label}: could not read the model catalogue "
+                           f"({type(e).__name__}); continuing without it.")
+            self._model_cache = set()
+        return self._model_cache
+
+    async def resolve_model(self, wanted: str) -> str:
+        """
+        Swaps a retired model for one the provider still serves.
+
+        Without this a retirement is a silent outage: every call 404s until
+        someone notices and edits an environment variable by hand.
+        """
+        catalogue = await self.available_models()
+        if not catalogue or wanted in catalogue:
+            return wanted
+
+        for candidate in self.PREFERRED_MODELS.get(self.provider, []):
+            if candidate in catalogue:
+                logger.error(f"{self.label}: model '{wanted}' is no longer offered; "
+                             f"using '{candidate}' instead.")
+                await self._warn_model_retired(wanted, candidate)
+                return candidate
+
+        # Nothing preferred is available — take any chat-capable model rather
+        # than fail outright.
+        for candidate in sorted(catalogue):
+            if not any(x in candidate for x in
+                       ("whisper", "tts", "embed", "guard", "orpheus", "moderation")):
+                logger.error(f"{self.label}: falling back to '{candidate}'.")
+                await self._warn_model_retired(wanted, candidate)
+                return candidate
+
+        logger.error(f"{self.label}: no usable model found for '{wanted}'.")
+        return wanted
+
+    async def _warn_model_retired(self, wanted: str, replacement: str):
+        """Reports a retirement once, so the config gets corrected properly."""
+        if wanted in self._retired_reported:
+            return
+        self._retired_reported.add(wanted)
+        if self.db:
+            await self.db.log_error(
+                module=f"AIEngine[{self.label}]",
+                error_type="ModelRetired",
+                error_message=(f"'{wanted}' is no longer offered by {self.provider}; "
+                               f"now using '{replacement}'. Update the configuration."),
+                auto_resolved=True,
+            )
+        if self.notification_manager:
+            await self.notification_manager.send_notification(
+                subject=f"Model retired: {wanted}",
+                message=(f"{self.provider} no longer offers '{wanted}'.\n\n"
+                         f"The bot switched to '{replacement}' by itself and is "
+                         f"still working — nothing is broken and nothing needs "
+                         f"doing right now.\n\n"
+                         f"When convenient, set the model to '{replacement}' in "
+                         f"Render so the startup choice matches what is in use."),
+                is_critical=False,
+            )
+
     # ── output sanitising ────────────────────────────────────────────
     #
     # Openings that mean the model started thinking out loud instead of
@@ -243,7 +346,7 @@ class AIEngine:
 
     async def generate(self, task: str, system_prompt: str, user_prompt: str,
                        max_tokens: int = 500, temperature: float = 0.7,
-                       validator=None) -> Optional[str]:
+                       validator=None, min_attempts: int = 3) -> Optional[str]:
         """
         Generates AI text with automatic key rotation on failure.
         
@@ -274,7 +377,11 @@ class AIEngine:
 
         # Always give at least 3 tries even with a single key, and back off
         # between them so a transient 429 doesn't kill the whole post.
-        max_attempts = max(3, len(self.api_keys) * 2)
+        # Confirm the provider still serves this model before spending the
+        # attempt budget 404-ing against a retired one.
+        model = await self.resolve_model(model)
+
+        max_attempts = max(min_attempts, len(self.api_keys) * 2)
         tried_models = {model}
         last_error = ""
 
