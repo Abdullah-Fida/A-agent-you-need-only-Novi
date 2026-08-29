@@ -1,38 +1,45 @@
-Add the AliExpress to Pinterest agent: sourcing, selection, compliance
+Complete the Pinterest agent: copy, imaging, publishing, review, controls
 
-First slice of the new agent, in its own folder so it can be worked on
-without touching the news bot. It shares only Supabase, as agreed.
+Publishes through Buffer rather than Pinterest's own API. Pinterest grants
+Trial access first, where every pin created is a sandbox entity visible only
+to its creator, and Standard access needs a demo video and one to four weeks
+of review. Buffer is an official Pinterest Marketing Partner, so this route
+publishes real pins today and stays inside Pinterest's terms — which browser
+automation would not. Confirmed against the live Buffer schema: pinterest is
+a supported service and a pin's board, title and destination link go in
+metadata.pinterest.
 
-Everything here runs offline. The AliExpress client falls back to sample
-products when no credentials are configured, and those samples deliberately
-include a low-rated item, one with twelve orders, one with no affiliate link
-and one above the price ceiling, so the filter and the compliance gate are
-exercised on every run rather than only ever seeing clean input.
+Uses a second Buffer account, separate from the one Novi posts Facebook with,
+so they do not share the free plan's three channels and ten-post queue. A full
+queue is treated as a full queue, not an error, and retried next cycle.
 
-- sourcing: signed AliExpress Portals client (HMAC-SHA256 over sorted
-  parameters, which that platform requires) plus response normalising that
-  treats every level of the nested envelope as optional.
-- selector: hard filters, then ranking. Order count is compressed
-  logarithmically, otherwise one viral listing outranks everything forever.
-  Listing titles are stripped of seller SEO spam before the copywriter sees
-  them. Counterfeit, medical-claim and brand-infringing terms are rejected
-  outright, since those are what get an affiliate account closed.
-- compliance: entirely plain code, no model involvement. Shortened or cloaked
-  links, missing #ad disclosure, and duplicates are blocked. Pinterest treats
-  cloaking as spam and an account lost that way is not recoverable, so asking
-  a model "is this compliant?" is the wrong tool.
+- content: pin copy through Novi's AIEngine, so it inherits the narration
+  guards; a model answering "We need to write a Pinterest title..." would
+  otherwise be published, which is what happened on the news side. Six angles
+  rotate so the same product does not always read the same way. The #ad
+  disclosure is appended in code, never left to the model, because forgetting
+  it once costs the account.
+- imaging: 1000x1500 branded pin. AliExpress photos are square and often
+  carry the seller's own text, so they are composited into a frame rather
+  than posted as-is — that fixes the aspect ratio Pinterest ranks on and puts
+  our wordmark on the image instead of another shop's. Renders with no photo
+  and with no installed fonts.
+- store: own tables in Novi's Supabase. Every call goes through
+  asyncio.to_thread, because supabase-py is synchronous and awaiting it
+  directly discards the coroutine silently.
+- Category performance is learned over a 30-day window, not 24 hours:
+  Pinterest is a search engine rather than a feed, so pins accumulate saves
+  over weeks and a daily read would be fitting noise. Multipliers are clamped
+  so one lucky pin nudges the ranking rather than rewriting it.
 
-Prices are refused in pin copy: AliExpress prices move constantly and a pin
-outlives them by months, turning a selling point into a false claim.
+Review is on by default and every pin waits for a decision. This recommends
+purchases rather than opinions, so an invented feature is worth catching
+before it publishes. Rejecting a pin also suppresses that product.
 
-The host check accepted any .com address, because it matched on the
-registrable suffix — sketchy-redirect.com passed as an AliExpress host.
-Fixed to exact host or true subdomain, with a test covering the
-aliexpress.com.attacker.net shape.
+Controls: a dashboard toggle, four endpoints, and two NOVI commands. Off by
+default and persisted across restarts, since it spends an affiliate quota and
+posts to a public account.
 
-Also aligned the local httpx with the pin in requirements.txt. It had drifted
-to 0.28.1, which removed the proxies argument openai 1.40.3 passes, breaking
-AIEngine construction locally. Render installs from requirements.txt so
-production was never affected.
+upload_image now takes a bucket so pin images stay out of the article heroes.
 
-32 new tests, 305 in total, all passing.
+341 tests pass.

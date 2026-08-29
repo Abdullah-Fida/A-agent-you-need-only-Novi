@@ -20,3 +20,4 @@ website/.env*
 .env.local
 render.env
 *.env
+assets/pins/

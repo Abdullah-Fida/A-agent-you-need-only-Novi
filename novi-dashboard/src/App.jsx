@@ -54,6 +54,8 @@ literally says "toggle" without saying which way.
 5. "publish_to_channels" — PUBLISHES the already-drafted post to Telegram. ONLY use this when he explicitly says "publish it", "send it", or "post it on channels".
 37. "clear" — Dismiss the data panel. Use when he says "hide", "clear", "dismiss".
 38. "news_toggle" — Turn the News Agent ON or OFF. ONLY for explicit commands: "turn on news", "stop news", "disable the news agent". NEVER for "report of the news agent", "how is the news agent", "is news working" — those are questions, use "health".
+38c. "pin_toggle" — Turn the Pinterest Agent (AliExpress products to Pinterest) ON or OFF. ONLY for explicit commands: "turn on pinterest", "start pinning", "stop the pin agent". NEVER for questions about it — use "health" for those.
+38d. "pin_now" — Build one Pinterest pin immediately instead of waiting for the schedule. Use when he says "make a pin", "post a pin now", "pin something".
 38b. "website_toggle" — Toggle the Website / auto-blogging module ON or OFF. Default is OFF. While OFF no articles are written at all. Use when he says "turn on the website", "start blogging", "stop writing articles", "enable auto blogging".
 39. "signal_toggle" — Toggle Whale Tracker VIP Signal Copier ON or OFF. Use when he says "toggle signal copier", "start whale tracker", "stop copying signals".
 40. "stealth_reply_toggle" — Toggle Stealth Marketer Reply Mode ON or OFF.
@@ -558,6 +560,20 @@ function App() {
             const err = await apiRes.json().catch(() => ({}));
             textToSpeak = `I couldn't update the limits. ${err.detail || 'The backend might not be running.'}`;
           }
+        } else if (response.action === 'pin_now') {
+          const apiRes = await fetch(`${API_BASE}/api/pins/run_now`, { method: 'POST' });
+          if (apiRes.ok) {
+            const data = await apiRes.json();
+            textToSpeak = response.reply || data.message;
+            actionItems = [
+              { type: 'heading', value: data.status === 'awaiting_review'
+                  ? 'Pin awaiting your review' : 'Pin published' },
+              { type: 'highlight', value: data.title },
+            ];
+          } else {
+            const err = await apiRes.json().catch(() => ({}));
+            textToSpeak = `I could not build a pin. ${err.detail || ''}`;
+          }
         } else if (response.action === 'post_now') {
           textToSpeak = "Working on it, Abdullah. Scraping the news and publishing now.";
           setSubtitle('Creating and publishing post...');
@@ -769,10 +785,11 @@ function App() {
             const err = await apiRes.json().catch(() => ({}));
             textToSpeak = `I could not publish the post. ${err.detail || 'Make sure you generated a post first.'}`;
           }
-        } else if (['news_toggle', 'website_toggle', 'signal_toggle', 'stealth_reply_toggle', 'stealth_invite_toggle', 'master_kill'].includes(response.action)) {
+        } else if (['news_toggle', 'website_toggle', 'pin_toggle', 'signal_toggle', 'stealth_reply_toggle', 'stealth_invite_toggle', 'master_kill'].includes(response.action)) {
           let endpoint = '';
           if (response.action === 'news_toggle') endpoint = '/api/news/toggle';
           if (response.action === 'website_toggle') endpoint = '/api/website/toggle';
+          if (response.action === 'pin_toggle') endpoint = '/api/pins/toggle';
           if (response.action === 'signal_toggle') endpoint = '/api/signal_copier/toggle';
           if (response.action === 'stealth_reply_toggle') endpoint = '/api/stealth/toggle_reply';
           if (response.action === 'stealth_invite_toggle') endpoint = '/api/stealth/toggle_invite';
@@ -997,6 +1014,8 @@ function App() {
                   on: health?.modules?.news_agent?.active },
                 { label: '🌐 WEBSITE', action: 'website_toggle', color: '99, 102, 241',
                   on: health?.modules?.website?.active },
+                { label: '📌 PINTEREST', action: 'pin_toggle', color: '198, 106, 58',
+                  on: health?.modules?.pin_agent?.active },
                 { label: '🐳 SIGNAL COPIER', action: 'signal_toggle', color: '245, 158, 11',
                   on: health?.modules?.signal_copier?.active },
                 { label: '💬 STEALTH REPLY', action: 'stealth_reply_toggle', color: '139, 92, 246',
@@ -1014,6 +1033,7 @@ function App() {
                     try {
                       let endpoint = '';
                       if (btn.action === 'news_toggle') endpoint = '/api/news/toggle';
+                      if (btn.action === 'pin_toggle') endpoint = '/api/pins/toggle';
                       if (btn.action === 'website_toggle') endpoint = '/api/website/toggle';
                       if (btn.action === 'signal_toggle') endpoint = '/api/signal_copier/toggle';
                       if (btn.action === 'stealth_reply_toggle') endpoint = '/api/stealth/toggle_reply';

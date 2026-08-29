@@ -103,6 +103,10 @@ class BotBrain:
         # not run at all — no article is written and nothing is published to
         # the site, even when the News Agent is posting.
         self.website_module_active = False
+        # AliExpress -> Pinterest agent. Off by default: it spends an
+        # affiliate API quota and posts to a public account, so it only
+        # runs when it has been switched on deliberately.
+        self.pin_module_active = False
         self.master_kill = False            # Master kill switch
         
         logger.info(f"Brain initialized. Weekly goal: {weekly_goal} subscribers.")
@@ -403,6 +407,7 @@ class BotBrain:
         return {
             "news_module_active": self.news_module_active,
             "website_module_active": self.website_module_active,
+            "pin_module_active": self.pin_module_active,
             "master_kill": self.master_kill,
             "is_paused": self.is_paused,
             "max_posts_today": self.max_posts_today,
@@ -443,6 +448,7 @@ class BotBrain:
 
         self.news_module_active = bool(saved.get("news_module_active", self.news_module_active))
         self.website_module_active = bool(saved.get("website_module_active", False))
+        self.pin_module_active = bool(saved.get("pin_module_active", False))
         self.master_kill = bool(saved.get("master_kill", False))
         self.is_paused = bool(saved.get("is_paused", False))
         self.max_posts_today = int(saved.get("max_posts_today", self.max_posts_today))
@@ -454,6 +460,7 @@ class BotBrain:
 
         logger.info(
             f"Brain state restored — news={'ON' if self.news_module_active else 'OFF'}, "
+            f"pins={'ON' if self.pin_module_active else 'OFF'}, "
             f"posts/day={self.max_posts_today}, sleep={self.SCHEDULE['sleep_start']}->"
             f"{self.SCHEDULE['sleep_end']}, master_kill={self.master_kill}"
         )

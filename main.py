@@ -254,6 +254,51 @@ async def main():
     
     # 11. Start API Server
     logger.info("Starting Dashboard API server...")
+    # 9c. Pinterest agent (AliExpress products -> Pinterest, via its own
+    # Buffer account). Its own folder, own AI key, own Buffer token; the only
+    # thing it shares with Novi is Supabase. Off unless switched on from the
+    # dashboard.
+    pin_agent = None
+    try:
+        from pin_agent.config import load_pin_config
+        from pin_agent.pin_bot import PinAgent
+
+        pin_config = load_pin_config()
+        if pin_config.ai_api_keys:
+            pin_ai = AIEngine(
+                api_keys=pin_config.ai_api_keys, db=db,
+                provider=pin_config.ai_provider,
+                base_url=pin_config.ai_base_url,
+                default_model=pin_config.ai_model,
+                label="PinAI",
+            )
+            pin_ai.notification_manager = notification_manager
+            logger.info(f"Pinterest agent has a dedicated AI: {pin_config.ai_provider} "
+                        f"/ {pin_config.ai_model or 'provider default'}")
+        else:
+            pin_ai = ai_engine
+            logger.info("Pinterest agent shares the News AI (no PIN_AI_KEYS configured).")
+
+        async def _upload_pin_image(path: str) -> str:
+            # Buffer fetches the image itself, so a pin cannot publish until
+            # its picture is hosted somewhere public.
+            return await db.upload_image(path, bucket="pin-images")
+
+        pin_agent = PinAgent(
+            config=pin_config,
+            ai_engine=pin_ai,
+            supabase_client=getattr(db, "client", None),
+            notification_manager=notification_manager,
+            image_dir=os.path.join(os.path.dirname(__file__), "assets", "pins"),
+            upload_image=_upload_pin_image,
+        )
+        if pin_config.buffer_token:
+            await pin_agent.connect()
+    except Exception as e:
+        logger.error(f"Pinterest agent could not be initialised: {type(e).__name__}: {e}")
+        pin_agent = None
+
+    api_app.state.pin_agent = pin_agent
     api_app.state.brain = brain
     api_app.state.notification_manager = notification_manager
     api_app.state.stealth_marketer = stealth_marketer
@@ -412,6 +457,7 @@ async def main():
     # Track which slots we already fired TODAY by unique key, so two slots in
     # the same hour both run and a restart doesn't re-fire a done slot.
     fired_slots = set()
+    last_pin_at = None
     last_midnight_reset = brain._get_pkt_now().day
     
     while True:
@@ -429,6 +475,16 @@ async def main():
                     signal_copier.signals_copied_today = 0
                 if stealth_marketer:
                     stealth_marketer.reset_daily_counters()
+                if pin_agent:
+                    pin_agent.reset_daily()
+                    # Re-read what has actually performed, so the next day's
+                    # picks are biased by the last 30 days rather than by
+                    # whatever was true when the process started.
+                    try:
+                        pin_agent.selector.performance =                             await pin_agent.store.category_performance()
+                    except Exception as e:
+                        logger.warning(f"Could not refresh pin performance: "
+                                       f"{type(e).__name__}")
             
             # ---- Master Kill Check ----
             if brain.master_kill:
@@ -545,6 +601,22 @@ async def main():
                         await brain.handle_error("ContentEngine", e)
 
             
+            # ---- Pinterest agent ----
+            # Spaced deliberately: Pinterest reads a burst of pins as
+            # automation, and Buffer's free queue holds ten per channel.
+            if (brain.pin_module_active and pin_agent
+                    and (last_pin_at is None
+                         or (pkt_now - last_pin_at).total_seconds()
+                         >= pin_agent.config.min_minutes_between_pins * 60)):
+                last_pin_at = pkt_now
+                try:
+                    pin = await pin_agent.run_once()
+                    if pin:
+                        logger.info(f"Pin {pin.get('status')}: {pin['title'][:50]}")
+                except Exception as e:
+                    logger.error(f"Pin agent cycle failed: {type(e).__name__}: {e}")
+                    await brain.handle_error("PinAgent", e)
+
             # ---- Periodic Metric Ingestion (every 3 hours) ----
             if (brain.last_metric_check is None or 
                 (pkt_now - brain.last_metric_check).total_seconds() > 10800):

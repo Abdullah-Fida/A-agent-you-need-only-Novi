@@ -127,6 +127,9 @@ async def health(request: Request):
             },
             "signal_copier": sc.status if sc else {"active": False, "wired": False},
             "stealth_marketer": sm.status if sm else {"active": False, "wired": False},
+            "pin_agent": (pa.status | {"active": bool(brain and brain.pin_module_active)}
+                          if (pa := getattr(st, 'pin_agent', None))
+                          else {"active": False, "wired": False}),
             "website": {
                 "active": brain.website_module_active if brain else False,
                 "articles_written": getattr(
@@ -441,6 +444,113 @@ async def toggle_website(request: Request):
     await brain.save_state()
     return {"success": True, "active": brain.website_module_active,
             "message": f"Website / Auto-Blogging is now {status}."}
+
+
+@app.post("/api/pins/toggle")
+async def toggle_pins(request: Request):
+    """Turns the AliExpress to Pinterest agent ON or OFF."""
+    brain = getattr(request.app.state, 'brain', None)
+    nm = getattr(request.app.state, 'notification_manager', None)
+    if not brain:
+        raise HTTPException(status_code=500, detail="Brain not wired.")
+
+    brain.pin_module_active = await _desired_state(request, brain.pin_module_active)
+    status = "ACTIVE" if brain.pin_module_active else "DEACTIVATED"
+
+    if nm:
+        await nm.notify_module_status(
+            "Pinterest Agent", status,
+            f"AliExpress product pinning has been turned "
+            f"{'ON' if brain.pin_module_active else 'OFF'} from the dashboard.")
+
+    if brain.db:
+        await brain.db.log_metric("pin_module_status",
+                                  1 if brain.pin_module_active else 0,
+                                  {"action": "toggled", "new_status": status})
+
+    await brain.save_state()
+    return {"success": True, "active": brain.pin_module_active,
+            "message": f"Pinterest Agent is now {status}."}
+
+
+@app.get("/api/pins/status")
+async def pins_status(request: Request):
+    """Read-only view of the pin agent, including anything awaiting review."""
+    brain = getattr(request.app.state, 'brain', None)
+    agent = getattr(request.app.state, 'pin_agent', None)
+    if not agent:
+        return {"wired": False, "active": False,
+                "message": "Pinterest agent is not configured on this deploy."}
+
+    return {
+        "wired": True,
+        "active": bool(brain and brain.pin_module_active),
+        **agent.status,
+        "pending": [
+            {"product_id": p["product_id"], "title": p["title"],
+             "image_url": p.get("image_url", ""), "link": p["link"],
+             "description": p["description"]}
+            for p in agent.pending_review[:10]
+        ],
+    }
+
+
+@app.post("/api/pins/review")
+async def pins_review(request: Request):
+    """
+    Approves or rejects a pin awaiting review.
+
+    Body: {"product_id": "...", "decision": "approve" | "reject"}
+    A pin only reaches Pinterest once a person has said yes, while review is
+    on — this recommends purchases rather than opinions, so an invented
+    feature is worth catching before it publishes.
+    """
+    agent = getattr(request.app.state, 'pin_agent', None)
+    if not agent:
+        raise HTTPException(status_code=500, detail="Pinterest agent not wired.")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    product_id = str(body.get("product_id") or "")
+    decision = str(body.get("decision") or "").lower()
+
+    if decision == "approve":
+        pin = await agent.approve_pending(product_id)
+        if pin:
+            return {"success": True, "message": f"Pin published: {pin['title'][:60]}"}
+        raise HTTPException(status_code=400,
+                            detail="Pin could not be published. Check the logs.")
+
+    if decision == "reject":
+        if agent.reject_pending(product_id):
+            return {"success": True, "message": "Pin rejected and product suppressed."}
+        raise HTTPException(status_code=404, detail="No such pin awaiting review.")
+
+    raise HTTPException(status_code=400, detail="decision must be approve or reject.")
+
+
+@app.post("/api/pins/run_now")
+async def pins_run_now(request: Request):
+    """Builds one pin immediately instead of waiting for the schedule."""
+    agent = getattr(request.app.state, 'pin_agent', None)
+    brain = getattr(request.app.state, 'brain', None)
+    if not agent:
+        raise HTTPException(status_code=500, detail="Pinterest agent not wired.")
+    if brain and not brain.pin_module_active:
+        raise HTTPException(status_code=400,
+                            detail="Pinterest agent is switched off.")
+
+    pin = await agent.run_once()
+    if not pin:
+        raise HTTPException(status_code=400,
+                            detail=agent.last_error or "No pin could be produced.")
+    return {"success": True, "status": pin.get("status"),
+            "title": pin["title"], "image_url": pin.get("image_url", ""),
+            "message": ("Pin is awaiting your review."
+                        if pin.get("status") == "awaiting_review"
+                        else "Pin published.")}
 
 
 @app.post("/api/signal_copier/toggle")

@@ -1699,5 +1699,113 @@ class TestSeoMetadataQuality(unittest.TestCase):
                          "Short and fine.")
 
 
+class TestPinCopywriter(unittest.TestCase):
+    """Copy must never carry a price, and the disclosure is added in code."""
+
+    def setUp(self):
+        from pin_agent.content import PinCopywriter
+        self.C = PinCopywriter
+
+    def test_disclosure_is_always_appended(self):
+        out = self.C._build_description({"description": "A useful gadget for small kitchens.",
+                                         "hashtags": ["kitchen", "gadgets"]})
+        self.assertIn("#ad", out, "the disclosure is required on every affiliate pin")
+
+    def test_disclosure_survives_a_model_that_forgets_it(self):
+        out = self.C._build_description({"description": "No tags, no disclosure here."})
+        self.assertIn("#ad", out)
+
+    def test_hashtags_are_normalised(self):
+        out = self.C._build_description({"description": "Body copy that is long enough.",
+                                         "hashtags": ["Kitchen Gadgets", "meal-prep", "meal-prep"]})
+        self.assertIn("#kitchengadgets", out)
+        self.assertEqual(out.count("#mealprep"), 1, "duplicate tags should collapse")
+
+    def test_a_reply_containing_a_price_is_rejected(self):
+        self.assertFalse(self.C._is_usable(
+            '{"title": "Cheap gadget", "description": "Only $8.99 today"}'))
+
+    def test_a_reply_without_the_expected_keys_is_rejected(self):
+        self.assertFalse(self.C._is_usable('{"foo": "bar"}'))
+        self.assertFalse(self.C._is_usable("We need to write a Pinterest title first"))
+
+    def test_json_is_recovered_from_surrounding_prose(self):
+        parsed = self.C._parse('Here you go:\n{"title": "A", "description": "B"}\nHope that helps')
+        self.assertEqual(parsed["title"], "A")
+
+    def test_shouted_titles_are_calmed(self):
+        self.assertEqual(self.C._tidy_title("AMAZING KITCHEN GADGET!!"),
+                         "Amazing Kitchen Gadget")
+
+    def test_angle_rotates_away_from_recent_ones(self):
+        from pin_agent.content import ANGLES
+        writer = self.C.__new__(self.C)
+        recent = list(ANGLES)[:-1]
+        self.assertEqual(writer.pick_angle(recent), list(ANGLES)[-1])
+
+
+class TestPinImageFormat(unittest.TestCase):
+    """Pinterest ranks 2:3 vertical images; AliExpress photos are square."""
+
+    def setUp(self):
+        import tempfile
+        from pin_agent.imaging import PinImageBuilder
+        self.builder = PinImageBuilder(tempfile.mkdtemp(), brand="Novi")
+
+    def test_output_is_pinterest_ratio(self):
+        from pin_agent.imaging import PIN_HEIGHT, PIN_WIDTH
+        img = self.builder.compose(None, "A pin title that is long enough", "time saver")
+        self.assertEqual(img.size, (PIN_WIDTH, PIN_HEIGHT))
+        self.assertAlmostEqual(PIN_HEIGHT / PIN_WIDTH, 1.5, places=2)
+
+    def test_square_photo_is_not_distorted(self):
+        """A square product photo must be cropped to fill, never stretched."""
+        from PIL import Image as PILImage
+        square = PILImage.new("RGB", (800, 800), (200, 150, 100))
+        out = self.builder._cover(square, (1000, 1080))
+        self.assertEqual(out.size, (1000, 1080))
+
+    def test_renders_without_a_photo(self):
+        img = self.builder.compose(None, "No photo available for this product", "")
+        self.assertEqual(img.size, (1000, 1500))
+
+    def test_renders_without_any_installed_font(self):
+        """Render's container may ship no TTF files."""
+        from PIL import ImageFont
+        real = ImageFont.truetype
+
+        def missing(font=None, size=10, *a, **kw):
+            if isinstance(font, (str, bytes, os.PathLike)):
+                raise OSError("no fonts installed")
+            return real(font, size, *a, **kw)
+
+        with patch("PIL.ImageFont.truetype", side_effect=missing):
+            img = self.builder.compose(None, "Still renders with no fonts", "fallback")
+        self.assertEqual(img.size, (1000, 1500))
+
+
+class TestPinModuleIsOffByDefault(unittest.TestCase):
+    """
+    The agent spends an affiliate quota and posts to a public account, so it
+    must never start on its own.
+    """
+
+    def test_defaults_to_off(self):
+        self.assertFalse(make_brain().pin_module_active)
+
+    def test_survives_a_restart(self):
+        brain = make_brain()
+        brain.pin_module_active = True
+        self.assertIn("pin_module_active", brain.snapshot())
+        self.assertTrue(brain.snapshot()["pin_module_active"])
+
+    def test_pins_per_day_is_clamped_to_pinterest_guidance(self):
+        """Pinterest recommends 5-15 a day; more reads as automation."""
+        import os as _os
+        from pin_agent.config import load_pin_config
+        with patch.dict(_os.environ, {"PIN_MAX_PER_DAY": "50"}):
+            self.assertLessEqual(load_pin_config().pins_per_day, 15)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

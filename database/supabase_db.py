@@ -217,7 +217,8 @@ class SupabaseDB:
     #  MEDIA (Supabase Storage)
     # ══════════════════════════════════════════════════════════
 
-    async def upload_image(self, local_path: str, dest_name: str = "") -> str:
+    async def upload_image(self, local_path: str, dest_name: str = "",
+                           bucket: str = "") -> str:
         """
         Publishes a locally generated image and returns its public URL.
 
@@ -225,6 +226,10 @@ class SupabaseDB:
         an article hero has to live somewhere durable and publicly reachable
         before the website can render it. Returns "" on failure; callers treat
         that as "no hero image" rather than a hard error.
+
+        `bucket` lets a second agent keep its images separate — the pin agent
+        writes to its own bucket rather than mixing product pictures in with
+        news article heroes.
         """
         if not self._initialized or not local_path or not os.path.exists(local_path):
             return ""
@@ -238,7 +243,7 @@ class SupabaseDB:
             return ""
 
         def _put():
-            storage = self.client.storage.from_(IMAGE_BUCKET)
+            storage = self.client.storage.from_(bucket or IMAGE_BUCKET)
             storage.upload(
                 path=name,
                 file=blob,

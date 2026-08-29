@@ -46,16 +46,24 @@ class PinConfig:
     ali_app_secret: str = ""
     ali_tracking_id: str = ""
 
-    # ── Pinterest ─────────────────────────────────────────────────
-    pinterest_app_id: str = ""
-    pinterest_app_secret: str = ""
-    pinterest_access_token: str = ""
-    pinterest_refresh_token: str = ""
-    pinterest_redirect_uri: str = ""
-    # Trial access publishes sandbox pins only its creator can see. Left False
-    # until Pinterest grants Standard access, so nothing is posted publicly by
-    # accident during testing.
-    pinterest_standard_access: bool = False
+    # ── Pinterest, published through Buffer ───────────────────────
+    #
+    # Buffer is an official Pinterest Marketing Partner, so posting through it
+    # needs no Pinterest API approval of our own — Pinterest's own API grants
+    # Trial access only, where pins are sandbox entities nobody else can see,
+    # and Standard access takes weeks to be reviewed.
+    #
+    # This is a SECOND Buffer account, separate from the one Novi uses for
+    # Facebook, so the two do not share the free plan's channel and queue
+    # allowance.
+    buffer_token: str = ""
+    buffer_organization_id: str = ""
+    buffer_board_id: str = ""          # Pinterest board every pin goes to
+
+    # Buffer's free plan holds 10 scheduled posts per channel. The queue is
+    # topped up rather than filled in one go, which also happens to be the
+    # spacing Pinterest expects.
+    max_queued: int = 8
 
     # ── AI (its own key, separate from the news bot) ──────────────
     ai_api_keys: List[str] = field(default_factory=list)
@@ -85,13 +93,10 @@ def load_pin_config() -> PinConfig:
         ali_app_key=_clean(os.getenv("ALI_APP_KEY", "")),
         ali_app_secret=_clean(os.getenv("ALI_APP_SECRET", "")),
         ali_tracking_id=_clean(os.getenv("ALI_TRACKING_ID", "")),
-        pinterest_app_id=_clean(os.getenv("PINTEREST_APP_ID", "")),
-        pinterest_app_secret=_clean(os.getenv("PINTEREST_APP_SECRET", "")),
-        pinterest_access_token=_clean(os.getenv("PINTEREST_ACCESS_TOKEN", "")),
-        pinterest_refresh_token=_clean(os.getenv("PINTEREST_REFRESH_TOKEN", "")),
-        pinterest_redirect_uri=_clean(os.getenv("PINTEREST_REDIRECT_URI", "")),
-        pinterest_standard_access=_clean(
-            os.getenv("PINTEREST_STANDARD_ACCESS", "")).lower() in ("1", "true", "yes"),
+        buffer_token=_clean(os.getenv("PIN_BUFFER_TOKEN", "")),
+        buffer_organization_id=_clean(os.getenv("PIN_BUFFER_ORG_ID", "")),
+        buffer_board_id=_clean(os.getenv("PIN_BOARD_ID", "")),
+        max_queued=_int("PIN_MAX_QUEUED", 8),
         ai_api_keys=_csv("PIN_AI_KEYS"),
         ai_provider=_clean(os.getenv("PIN_AI_PROVIDER", "")) or "groq",
         ai_base_url=_clean(os.getenv("PIN_AI_BASE", "")),
