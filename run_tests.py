@@ -29,6 +29,9 @@ def main():
     ok &= run("INTEGRATION TESTS", [os.path.join("tests", "test_integrations.py")])
     # Regression/QA invariants
     ok &= run("QA INVARIANT CHECKS", [os.path.join("tests", "qa_check.py")])
+    # Pinterest agent: sourcing, selection and the compliance gate
+    ok &= run("PIN AGENT TESTS",
+              ["-m", "unittest", "pin_agent.tests.test_pin_agent"])
 
     print(f"\n{'=' * 64}")
     print("  ALL TESTS PASSED" if ok else "  SOME TESTS FAILED")

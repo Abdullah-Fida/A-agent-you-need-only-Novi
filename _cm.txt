@@ -1,23 +1,38 @@
-Stop truncating metadata mid-word; make fallback keywords searchable
+Add the AliExpress to Pinterest agent: sourcing, selection, compliance
 
-Quality-tested the article pipeline against live stories. The body is strong
-— 827 words, four sections, clean HTML, no narration — but the metadata had
-two defects that only show up in search results.
+First slice of the new agent, in its own folder so it can be worked on
+without touching the news bot. It shares only Supabase, as agreed.
 
-Keywords, when the model's SEO call failed, came from splitting the headline
-into single words: "notches", "best", "since", "week". Those rank for
-nothing. The fallback now builds two-word search phrases, stepping past each
-consumed word so "bitcoin short squeeze" yields one phrase rather than three
-overlapping ones, and filters a much wider set of words that carry no search
-intent.
+Everything here runs offline. The AliExpress client falls back to sample
+products when no credentials are configured, and those samples deliberately
+include a low-rated item, one with twelve orders, one with no affiliate link
+and one above the price ceiling, so the filter and the compliance gate are
+exercised on every run rather than only ever seeing clean input.
 
-Titles and descriptions were cut with a hard slice, so a 182-character
-description ended "underscoring its sensiti" and a 74-character title ended
-"Bitcoin Short Squeez". Google renders that truncation exactly as written.
-Both now trim at a sentence or word boundary.
+- sourcing: signed AliExpress Portals client (HMAC-SHA256 over sorted
+  parameters, which that platform requires) plus response normalising that
+  treats every level of the nested envelope as optional.
+- selector: hard filters, then ranking. Order count is compressed
+  logarithmically, otherwise one viral listing outranks everything forever.
+  Listing titles are stripped of seller SEO spam before the copywriter sees
+  them. Counterfeit, medical-claim and brand-infringing terms are rejected
+  outright, since those are what get an affiliate account closed.
+- compliance: entirely plain code, no model involvement. Shortened or cloaked
+  links, missing #ad disclosure, and duplicates are blocked. Pinterest treats
+  cloaking as spam and an account lost that way is not recoverable, so asking
+  a model "is this compliant?" is the wrong tool.
 
-When the SEO model does answer it is already good — 'xrp price surge',
-'bitcoin short squeeze', 'bitcoin liquidation cascade' from the same story —
-so this only governs the fallback path and the final length enforcement.
+Prices are refused in pin copy: AliExpress prices move constantly and a pin
+outlives them by months, turning a selling point into a false claim.
 
-281 tests pass.
+The host check accepted any .com address, because it matched on the
+registrable suffix — sketchy-redirect.com passed as an AliExpress host.
+Fixed to exact host or true subdomain, with a test covering the
+aliexpress.com.attacker.net shape.
+
+Also aligned the local httpx with the pin in requirements.txt. It had drifted
+to 0.28.1, which removed the proxies argument openai 1.40.3 passes, breaking
+AIEngine construction locally. Render installs from requirements.txt so
+production was never affected.
+
+32 new tests, 305 in total, all passing.
