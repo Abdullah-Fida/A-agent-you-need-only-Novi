@@ -65,9 +65,17 @@ worked. A separate account is the better choice anyway:
    at novinews.pk would be a mismatch. A claimed domain only adds analytics; it
    is not needed to publish.
 6. Country: whichever you actually operate from. Language: English.
-7. "What does your brand do?" → **Home decor** or nearest. This only seeds your
-   recommendations; it is not the niche decision.
-8. Skip the ads offer and the "build your first campaign" prompts.
+7. **"Describe your business"** → **Content creator**.
+
+   Not *Online merchant or marketplace*: it demands a website, and you are not
+   the merchant. You refer people to AliExpress and are paid a commission,
+   which is what Pinterest files under Content creator. Picking merchant also
+   invites Pinterest to expect a product catalogue you do not have.
+
+8. **"What's your brand's focus?"** → Home Decor, plus DIY and Food & Drink if
+   it allows more than one. This only seeds your home feed.
+9. Any screen asking for a **website** → skip it. Any screen offering **ads**
+   or a first campaign → *Not now*.
 
 Both accounts now live under the same dropdown and you can switch between them
 without logging out.
