@@ -213,7 +213,12 @@ async def main():
         twitter=twitter_broadcaster,
         buffer=buffer_broadcaster,
         article_agent=content_engine.article_agent,
-        notification_manager=notification_manager
+        notification_manager=notification_manager,
+        # The website publishes on its own schedule, so it needs its own way
+        # to find a story and choose a section.
+        scraper=scraper,
+        pick_category=lambda: content_engine._select_category(
+            content_engine._current_hour_pkt()),
     )
 
     # 10. Connect Telegram Broadcaster, Stealth Marketer & Signal Copier
@@ -516,6 +521,27 @@ async def main():
                 await asyncio.sleep(300)
                 continue
             
+            # ---- The website's own publishing run ----
+            # Independent of the Telegram slots and of the sleep window: a web
+            # page has no plausible-hours problem, and tying articles to the
+            # channel meant the whole US afternoon and evening could never
+            # carry one.
+            article_slot = brain.get_due_article_slot()
+            if article_slot and article_slot["key"] not in fired_slots:
+                fired_slots.add(article_slot["key"])
+                try:
+                    published = await fanout.publish_scheduled_article()
+                    if published:
+                        logger.info(f"Website article live: /{published.get('slug')}")
+                    else:
+                        # Nothing published: either deferred, or every
+                        # candidate was already written up. Free the slot so
+                        # the next pass through this hour can try again.
+                        fired_slots.discard(article_slot["key"])
+                except Exception as e:
+                    logger.error(f"Scheduled article failed: {type(e).__name__}: {e}")
+                    fired_slots.discard(article_slot["key"])
+
             # ---- Deferred website articles ----
             # A story held back because it had no picture, or because it
             # failed the pre-publish quality check, is rewritten once its

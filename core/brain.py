@@ -56,6 +56,27 @@ class BotBrain:
         "evening_wrap": {"hour": 21, "minute": 0},    # 9:00 PM PKT
         "sleep_start": 23,  # 11 PM PKT
         "sleep_end": 7,     # 7 AM PKT
+
+        # The WEBSITE runs on its own clock.
+        #
+        # A Telegram channel has to behave like a person: it sleeps, and it
+        # posts at hours that look plausible where it lives. A website has no
+        # such constraint -- nobody sees when a page was uploaded, only when
+        # they search for it -- so tying articles to the Telegram schedule
+        # meant the entire US afternoon and evening, which is 14:00-22:00 in
+        # New York and the sleep window here, could never carry an article.
+        #
+        # These six deliberately run through that window.
+        #
+        #     PKT     UTC    London  New York
+        "article_slots": [
+            {"hour": 11, "minute": 30},  # 06:30   07:30   02:30  UK commute
+            {"hour": 15, "minute": 0},   # 10:00   11:00   06:00  US wakes
+            {"hour": 18, "minute": 0},   # 13:00   14:00   09:00  US PEAK
+            {"hour": 21, "minute": 0},   # 16:00   17:00   12:00  US lunch
+            {"hour": 1,  "minute": 0},   # 20:00   21:00   16:00  US afternoon
+            {"hour": 4,  "minute": 0},   # 23:00   00:00   19:00  US evening
+        ],
     }
 
     # How long a post slot stays "open" after its scheduled minute. This must
@@ -252,6 +273,25 @@ class BotBrain:
 
         return None
     
+    def get_due_article_slot(self) -> Optional[Dict]:
+        """
+        The website's own slot, if one is due.
+
+        Deliberately ignores the sleep window and the Telegram post limit.
+        Neither applies to a web page: the sleep window exists so the Telegram
+        account looks human, and the post limit protects that account from
+        looking like a bot. A published article is read whenever someone
+        searches for it.
+        """
+        pkt_now = self._get_pkt_now()
+        for slot in self.SCHEDULE.get("article_slots", []):
+            if (pkt_now.hour == slot["hour"]
+                    and slot["minute"] <= pkt_now.minute
+                    < slot["minute"] + self.SLOT_WINDOW_MINUTES):
+                return {"type": "article", "hour": slot["hour"],
+                        "key": f"article_{slot['hour']}_{slot['minute']}"}
+        return None
+
     def can_post(self) -> bool:
         """Checks if we're within daily post limits."""
         if self.posts_today >= self.max_posts_today:

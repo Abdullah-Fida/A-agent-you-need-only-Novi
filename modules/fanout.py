@@ -32,7 +32,7 @@ class Fanout:
 
     def __init__(self, brain=None, db=None, growth_engine=None,
                  reddit=None, twitter=None, buffer=None, article_agent=None,
-                 notification_manager=None):
+                 notification_manager=None, scraper=None, pick_category=None):
         self.brain = brain
         self.db = db
         self.growth = growth_engine
@@ -41,9 +41,112 @@ class Fanout:
         self.buffer = buffer
         self.article_agent = article_agent
         self.nm = notification_manager
+        # Used only by the website's own publishing run.
+        self.scraper = scraper
+        self.pick_category = pick_category
 
         # Stories waiting for another attempt at an article.
         self._deferred: List[Dict] = []
+
+    # ── the website's own publishing run ─────────────────────────
+
+    async def _already_published(self, source_url: str) -> bool:
+        """
+        Whether this story already has an article.
+
+        Checked on the source URL rather than the headline: two runs of the
+        same feed produce the same link but the agent may reword the title,
+        so a title check would let duplicates through.
+        """
+        if not (self.db and source_url):
+            return False
+        try:
+            client = getattr(self.db, "client", None)
+            if client is None:
+                return False
+            res = await asyncio.to_thread(
+                lambda: client.table("articles").select("slug")
+                .eq("source_url", source_url).limit(1).execute())
+            return bool(res.data)
+        except Exception as e:
+            # Better to risk a duplicate than to skip a story because the
+            # lookup failed.
+            logger.warning(f"Duplicate check failed: {type(e).__name__}: {e}")
+            return False
+
+    async def _existing_slug(self, source_url: str) -> str:
+        """The slug of an already-published article for this story, if any."""
+        if not (self.db and source_url):
+            return ""
+        try:
+            client = getattr(self.db, "client", None)
+            if client is None:
+                return ""
+            res = await asyncio.to_thread(
+                lambda: client.table("articles").select("slug")
+                .eq("source_url", source_url).limit(1).execute())
+            return (res.data[0]["slug"] if res.data else "")
+        except Exception:
+            return ""
+
+    async def publish_scheduled_article(self) -> Optional[Dict]:
+        """
+        Writes and publishes one article, independent of Telegram.
+
+        This is the website's own run. It does not consult the sleep window or
+        the Telegram post limit, because neither has anything to do with a web
+        page: the first exists so the Telegram account looks human, the second
+        protects that account from looking automated.
+        """
+        if not (self.article_agent and self.scraper):
+            return None
+        if self.brain and not getattr(self.brain, "website_module_active", False):
+            logger.info("Website module is OFF — skipping the scheduled article.")
+            return None
+
+        category = self.pick_category() if self.pick_category else "world_news"
+        logger.info(f"Scheduled article run — category '{category}'.")
+
+        try:
+            stories = await self.scraper.fetch_latest_news(category=category)
+        except Exception as e:
+            logger.error(f"Scheduled article: scraping failed: {e}")
+            await self._record_error("Fanout.scheduled_article", e)
+            return None
+
+        if not stories:
+            logger.warning(f"Scheduled article: no stories for '{category}'.")
+            return None
+
+        # Walk the ranked list until one has not been written up already.
+        for story in stories[:12]:
+            link = story.get("link") or ""
+            if await self._already_published(link):
+                continue
+
+            try:
+                article = await self.article_agent.generate_and_publish_article(
+                    story=story, category=category)
+            except Exception as e:
+                logger.error(f"Scheduled article raised {type(e).__name__}: {e}")
+                await self._record_error("Fanout.scheduled_article", e)
+                return None
+
+            if article:
+                logger.info(f"Scheduled article published: /{article.get('slug')}")
+                return article
+
+            # Deferred rather than failed -- retry it later instead of burning
+            # the slot on a story that is only missing a picture.
+            if getattr(self.article_agent, "retry_after_minutes", 0):
+                self._defer_article(
+                    story, {"image_url": "", "category": category},
+                    reason=getattr(self.article_agent, "last_skip_reason", "unknown"),
+                    attempts=0)
+                return None
+
+        logger.info("Scheduled article: every candidate was already published.")
+        return None
 
     # ── deferred articles ────────────────────────────────────────
 
@@ -125,54 +228,23 @@ class Fanout:
         """
         Sends a package everywhere it should go.
 
-        Order matters: the website article is written first so its slug can be
-        linked from the Facebook caption.
+        The website article is NOT written here -- it has its own schedule.
+        This only looks one up so the Facebook caption can link to it.
 
         Returns a per-platform result map.
         """
         results: Dict[str, bool] = {}
 
-        # 1. Website article (gives us the slug for the social links).
-        # Gated by the website module toggle, which is OFF by default — while
-        # off the Article Agent does not run at all, so it burns no tokens on
-        # its (separate) API key.
+        # 1. The article for this story is written on the WEBSITE's schedule,
+        # not this one. All that is needed here is its slug, if it happens to
+        # exist yet, so the Facebook caption can link to it. Creating one here
+        # as well would publish the same story twice.
         article_slug = ""
-        website_on = bool(self.brain and getattr(self.brain, "website_module_active", False))
-
-        if self.article_agent and story and website_on:
-            try:
-                # Reuse the picture already generated and hosted for this post,
-                # so the story looks the same on Telegram, Facebook and the
-                # site — and only one Bing image is spent on it.
-                article = await self.article_agent.generate_and_publish_article(
-                    story=story,
-                    main_image_url=package.get("image_url", ""),
-                    # The section the content engine actually chose, so the
-                    # article is filed correctly and illustrated to match.
-                    category=package.get("category", ""),
-                )
-                if article:
-                    article_slug = article.get("slug", "")
-                    package["article_slug"] = article_slug
-                    results["website"] = True
-                else:
-                    results["website"] = False
-                    # The agent says whether waiting would help. A missing
-                    # picture or a failed quality check is transient; a story
-                    # it simply could not write is not.
-                    if getattr(self.article_agent, "retry_after_minutes", 0):
-                        self._defer_article(
-                            story, package,
-                            reason=getattr(self.article_agent,
-                                           "last_skip_reason", "unknown"),
-                            attempts=0)
-            except Exception as e:
-                logger.error(f"Article publishing failed: {type(e).__name__}: {e}")
-                results["website"] = False
-                await self._record_error("ArticleAgent", e)
-        elif self.article_agent and story and not website_on:
-            logger.info("Website module is OFF — skipping article generation.")
-            results["website"] = False
+        if self.db and story:
+            article_slug = await self._existing_slug(story.get("link", ""))
+            if article_slug:
+                package["article_slug"] = article_slug
+        results["website"] = bool(article_slug)
 
         # 2. Everything else, in parallel — each isolated from the others
         tasks = {

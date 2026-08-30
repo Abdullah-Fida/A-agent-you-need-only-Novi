@@ -1212,7 +1212,12 @@ class TestArticleCategory(unittest.TestCase):
         p = os.path.join(self.ROOT, "modules", "fanout.py")
         with open(p, encoding="utf-8") as fh:
             src = fh.read()
-        self.assertIn('category=package.get("category"', src)
+        # Articles are written on the website's own schedule now, so the
+        # category reaches the agent from publish_scheduled_article rather
+        # than from distribute(). The requirement is unchanged: the chosen
+        # section must be passed, never the story's generic "News".
+        self.assertIn("category=category", src)
+        self.assertIn("self.pick_category()", src)
 
 
 class TestToggleSafety(unittest.TestCase):
@@ -2079,6 +2084,61 @@ class TestCategoryMatchesTheAudience(unittest.TestCase):
         # working exactly as before.
         self.assertIn(self.engine._select_category(None),
                       {c for c, _ in self.CE.CONTENT_MIX})
+
+
+class TestWebsiteHasItsOwnSchedule(unittest.TestCase):
+    """
+    The website publishes independently of Telegram.
+
+    Articles used to be created inside the Telegram fan-out, so they
+    inherited the sleep window -- 23:00-07:00 PKT, which is 14:00-22:00 in
+    New York. The entire US afternoon and evening could never carry an
+    article.
+    """
+
+    def setUp(self):
+        from core.brain import BotBrain
+        self.B = BotBrain
+        self.slots = BotBrain.SCHEDULE["article_slots"]
+
+    @staticmethod
+    def _zone(slot, offset_from_pkt):
+        return (slot["hour"] - 5 + offset_from_pkt) % 24
+
+    def test_six_article_slots(self):
+        self.assertEqual(len(self.slots), 6)
+
+    def test_slots_run_through_the_sleep_window(self):
+        # This is the whole point of the separate schedule. If no slot falls
+        # inside it, the decoupling has quietly been undone.
+        start = self.B.SCHEDULE["sleep_start"]
+        end = self.B.SCHEDULE["sleep_end"]
+        inside = [s for s in self.slots if s["hour"] >= start or s["hour"] < end]
+        self.assertGreaterEqual(len(inside), 2,
+                                "no article slot uses the hours the Telegram "
+                                "schedule cannot reach")
+
+    def test_us_afternoon_and_evening_are_covered(self):
+        ny_hours = {self._zone(s, -4) for s in self.slots}
+        self.assertTrue(any(14 <= h <= 20 for h in ny_hours),
+                        f"nothing publishes during US afternoon/evening: {sorted(ny_hours)}")
+
+    def test_most_slots_reach_the_us(self):
+        awake = [s for s in self.slots if 6 <= self._zone(s, -4) <= 20]
+        self.assertGreaterEqual(len(awake), 5)
+
+    def test_article_slots_are_separate_from_telegram_slots(self):
+        posts = {(s["hour"], s["minute"]) for s in self.B.SCHEDULE["post_slots"]}
+        arts = {(s["hour"], s["minute"]) for s in self.slots}
+        self.assertNotEqual(posts, arts,
+                            "the two schedules are identical, so nothing was decoupled")
+
+    def test_due_slot_ignores_the_sleep_window(self):
+        # get_due_article_slot must not consult is_sleeping().
+        import inspect
+        src = inspect.getsource(self.B.get_due_article_slot)
+        self.assertNotIn("is_sleeping", src)
+        self.assertNotIn("can_post", src)
 
 
 if __name__ == "__main__":
