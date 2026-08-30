@@ -410,25 +410,27 @@ class ArticleAgent:
         Order: the outlet's own photo, then whatever was already made for the
         Telegram post, then a generated image. The outlet's photo comes first
         because it shows the actual event, and because it costs one download
-        rather than a minute of generation.
+        rather than a minute of generation. The image generator applies that
+        order itself, so this method only has to host whatever it returns.
+
+        Everything is RE-HOSTED, never hot-linked. Returning the outlet's URL
+        directly worked on the day and broke months later when they rotated a
+        CDN path, leaving a dead hero on an article nobody was watching. It
+        also put our traffic on their bandwidth, and some publishers block
+        that by referer.
 
         Returns "" when nothing usable could be produced. The caller must NOT
         publish in that case -- an article with an empty image well is the one
         thing that makes a news site look broken.
         """
-        # 1. The photograph published with the story.
-        if story_image_url and await self._image_loads(story_image_url):
-            logger.info("Article hero: the photo published with the story.")
-            return story_image_url
-
-        # 2. The picture already made and hosted for the Telegram post, so a
-        #    story that needed generating is only generated once.
+        # The picture already made and hosted for the Telegram post, so a
+        # story is never illustrated twice.
         if provided_url:
             return provided_url
 
-        # 3. Generate one. allow_card=False: a drawn headline card is fine on
-        #    Telegram, where the alternative is no post, but on the website it
-        #    is a placeholder and we would rather wait and retry.
+        # allow_card=False: a drawn headline card is fine on Telegram, where
+        # the alternative is no post, but on the website it is a placeholder
+        # and we would rather wait and retry.
         if not self.image_gen:
             logger.warning("ArticleAgent has no image generator.")
             return ""
@@ -451,6 +453,9 @@ class ArticleAgent:
             if local_path and self.db:
                 url = await self.db.upload_image(local_path)
                 if url:
+                    tier = getattr(self.image_gen, "last_source", "?")
+                    logger.info(f"Article hero hosted from '{tier}' "
+                                f"(story_image = the outlet's own photo).")
                     return url
                 logger.warning("Hero image could not be hosted — run "
                                "database/schema.sql to create the "
@@ -458,32 +463,6 @@ class ArticleAgent:
 
         logger.warning(f"No usable hero image after {self.IMAGE_ATTEMPTS} attempts.")
         return ""
-
-    async def _image_loads(self, url: str) -> bool:
-        """
-        Whether a URL actually serves an image.
-
-        A link in a feed is not proof of a picture: outlets rotate CDN paths
-        and expire assets, and a 404 in the hero slot looks exactly as broken
-        as no image at all. Checked with a HEAD so nothing is downloaded.
-        """
-        if not (url or "").startswith("http"):
-            return False
-        try:
-            import httpx
-            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-                r = await client.head(url)
-                if r.status_code >= 400:
-                    # Some CDNs refuse HEAD but serve GET perfectly well.
-                    r = await client.get(url, headers={"Range": "bytes=0-1023"})
-            ok = r.status_code < 400 and "image" in r.headers.get("content-type", "")
-            if not ok:
-                logger.warning(f"Story photo not usable (HTTP {r.status_code}, "
-                               f"{r.headers.get('content-type', '?')}).")
-            return ok
-        except Exception as e:
-            logger.warning(f"Story photo unreachable: {type(e).__name__}: {e}")
-            return False
 
     @staticmethod
     def _image_category(category: str) -> str:
