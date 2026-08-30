@@ -101,6 +101,7 @@ ALI_TRACKING_ID=
 PIN_BUFFER_TOKEN=
 PIN_BUFFER_ORG_ID=          # optional, discovered automatically
 PIN_BOARD_ID=               # optional, uses the default board
+PIN_CHANNEL_ID=             # required once >1 Pinterest account is connected
 
 PIN_AI_KEYS=                # its own key; falls back to Novi's AI
 PIN_AI_PROVIDER=groq

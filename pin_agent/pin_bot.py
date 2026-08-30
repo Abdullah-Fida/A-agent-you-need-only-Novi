@@ -50,7 +50,8 @@ class PinAgent:
             access_token=config.buffer_token,
             organization_id=config.buffer_organization_id,
             board_id=config.buffer_board_id,
-            db=None, max_queued=config.max_queued)
+            db=None, max_queued=config.max_queued,
+            channel_id=config.buffer_channel_id)
         self.store = PinStore(supabase_client)
 
         # Pins waiting for a human yes/no while review is on.

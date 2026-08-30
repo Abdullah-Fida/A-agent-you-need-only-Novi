@@ -59,6 +59,9 @@ class PinConfig:
     buffer_token: str = ""
     buffer_organization_id: str = ""
     buffer_board_id: str = ""          # Pinterest board every pin goes to
+    # Which connected Pinterest account to publish as. Only optional while
+    # exactly one is connected in Buffer.
+    buffer_channel_id: str = ""
 
     # Buffer's free plan holds 10 scheduled posts per channel. The queue is
     # topped up rather than filled in one go, which also happens to be the
@@ -100,6 +103,7 @@ def load_pin_config() -> PinConfig:
         buffer_token=_clean(os.getenv("PIN_BUFFER_TOKEN", "")),
         buffer_organization_id=_clean(os.getenv("PIN_BUFFER_ORG_ID", "")),
         buffer_board_id=_clean(os.getenv("PIN_BOARD_ID", "")),
+        buffer_channel_id=_clean(os.getenv("PIN_CHANNEL_ID", "")),
         max_queued=_int("PIN_MAX_QUEUED", 8),
         ai_api_keys=_csv("PIN_AI_KEYS"),
         ai_provider=_clean(os.getenv("PIN_AI_PROVIDER", "")) or "groq",

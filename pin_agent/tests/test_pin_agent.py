@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(
 
 from pin_agent.compliance import ComplianceGate
 from pin_agent.selector import ProductSelector
+from pin_agent.publisher import PinterestPublisher
 from pin_agent.sourcing import AliExpressClient
 
 
@@ -231,6 +232,49 @@ class TestSourcing(unittest.TestCase):
         client = AliExpressClient("key", "secret", "track")
         for junk in (None, [], "text", {}, {"unexpected": {}}):
             self.assertEqual(client._parse(junk), [])
+
+
+class TestChannelSelection(unittest.TestCase):
+    """
+    Which Pinterest account a pin lands on.
+
+    The failure this guards against is publishing affiliate pins to somebody's
+    personal profile because it happened to sort first.
+    """
+
+    PERSONAL = {"id": "chan_personal", "name": "Abdullah Khan",
+                "service": "pinterest", "isDisconnected": False}
+    BRAND = {"id": "chan_brand", "name": "Tidy Nook",
+             "service": "pinterest", "isDisconnected": False}
+    FACEBOOK = {"id": "chan_fb", "name": "Novi", "service": "facebook",
+                "isDisconnected": False}
+
+    def _publisher(self, channels, channel_id=""):
+        publisher = PinterestPublisher("token", channel_id=channel_id)
+        publisher.channels = channels
+        return publisher
+
+    def test_single_channel_needs_no_configuration(self):
+        publisher = self._publisher([self.BRAND, self.FACEBOOK])
+        self.assertEqual(publisher.target_channel["id"], "chan_brand")
+
+    def test_configured_id_wins_over_ordering(self):
+        publisher = self._publisher([self.PERSONAL, self.BRAND],
+                                    channel_id="chan_brand")
+        self.assertEqual(publisher.target_channel["name"], "Tidy Nook")
+
+    def test_unknown_configured_id_refuses_rather_than_guessing(self):
+        publisher = self._publisher([self.PERSONAL, self.BRAND],
+                                    channel_id="chan_deleted")
+        self.assertIsNone(publisher.target_channel)
+
+    def test_disconnected_channels_are_never_targeted(self):
+        stale = dict(self.BRAND, isDisconnected=True)
+        publisher = self._publisher([stale])
+        self.assertIsNone(publisher.target_channel)
+
+    def test_no_pinterest_channel_at_all(self):
+        self.assertIsNone(self._publisher([self.FACEBOOK]).target_channel)
 
 
 if __name__ == "__main__":

@@ -54,10 +54,12 @@ class PinterestPublisher:
     """Queues pins to Pinterest through Buffer."""
 
     def __init__(self, access_token: str, organization_id: str = "",
-                 board_id: str = "", db=None, max_queued: int = 8):
+                 board_id: str = "", db=None, max_queued: int = 8,
+                 channel_id: str = ""):
         self.token = (access_token or "").strip()
         self.organization_id = (organization_id or "").strip()
         self.board_id = (board_id or "").strip()
+        self.channel_id = (channel_id or "").strip()
         self.db = db
         self.max_queued = max_queued
 
@@ -81,11 +83,43 @@ class PinterestPublisher:
                 and not c.get("isDisconnected")]
 
     @property
+    def target_channel(self) -> Optional[Dict]:
+        """
+        The channel to publish to.
+
+        Picking channels[0] is only safe while exactly one Pinterest account is
+        connected. Someone who leaves a personal profile connected alongside
+        the brand one would otherwise get affiliate pins published under their
+        own name, so an explicit PIN_CHANNEL_ID wins and an ambiguous choice is
+        logged loudly rather than made silently.
+        """
+        channels = self.pinterest_channels
+        if not channels:
+            return None
+
+        if self.channel_id:
+            for channel in channels:
+                if channel.get("id") == self.channel_id:
+                    return channel
+            logger.error(f"PIN_CHANNEL_ID={self.channel_id} matches no connected "
+                         f"Pinterest channel. Not guessing; refusing to publish.")
+            return None
+
+        if len(channels) > 1:
+            names = ", ".join(f"{c.get('name')} ({c.get('id')})" for c in channels)
+            logger.warning(f"{len(channels)} Pinterest channels are connected "
+                           f"[{names}]. Publishing to '{channels[0].get('name')}'. "
+                           f"Set PIN_CHANNEL_ID to choose deliberately.")
+        return channels[0]
+
+    @property
     def status(self) -> Dict:
         return {
             "configured": bool(self.token),
             "connected": self._connected,
             "board_id": self.board_id,
+            "channel_id": self.channel_id,
+            "target_channel": (self.target_channel or {}).get("name", ""),
             "channels": [{"name": c.get("name"), "service": c.get("service"),
                           "connected": not c.get("isDisconnected")}
                          for c in self.channels],
@@ -184,9 +218,10 @@ class PinterestPublisher:
         and it returns nothing when the Pinterest account has no boards at
         all, which is a thing to fix on Pinterest rather than here.
         """
-        if not self.pinterest_channels:
+        channel = self.target_channel
+        if not channel:
             return None
-        channel_id = self.pinterest_channels[0]["id"]
+        channel_id = channel["id"]
 
         query = ("query($id: ChannelId!) { channel(input: {id: $id}) { "
                  "metadata { ... on PinterestMetadata { boards { id name } } } } }")
@@ -234,8 +269,8 @@ class PinterestPublisher:
         if not self._connected:
             await self.connect()
 
-        channels = self.pinterest_channels
-        if not channels:
+        channel = self.target_channel
+        if not channel:
             logger.error("No Pinterest channel to publish to.")
             return False
 
@@ -261,7 +296,7 @@ class PinterestPublisher:
             metadata["boardServiceId"] = board_id
 
         post_input: Dict[str, Any] = {
-            "channelId": channels[0]["id"],
+            "channelId": channel["id"],
             "text": pin.get("description") or "",
             "assets": [{"image": {"url": image_url, "thumbnailUrl": image_url}}],
             "mode": "addToQueue",

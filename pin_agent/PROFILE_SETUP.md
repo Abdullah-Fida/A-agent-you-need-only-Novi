@@ -42,21 +42,38 @@ about 30 cents and costs exactly as much to build a pin for as a $40 one.
 
 ---
 
-## 2. Convert the account — do this first
+## 2. Create a separate business account
 
-From the dropdown you already have open (top right, the `A` avatar):
+The "Upgrade" button on Pinterest's Personal-vs-Business screen is **free** —
+that word is Pinterest's marketing, not a paid plan. Converting would have
+worked. A separate account is the better choice anyway:
 
-1. Click **Convert to business**.
-2. Business name: `Tidy Nook`
-3. Website: **leave blank.** You don't own a Tidy Nook domain, and linking
-   novinews.pk here would be a mismatch. You can claim a domain later; it is
-   only needed for analytics, not for publishing.
-4. Country: whichever you actually operate from. Language: English.
-5. "What does your brand do?" → **Home decor** or the closest option offered.
-   This only seeds your recommendations, it is not the niche decision.
-6. If it offers to run ads, **skip**.
+- The affiliate brand is not attached to your real name and personal saves.
+- If the brand account is ever restricted for affiliate activity, your personal
+  account is untouched.
+- The profile is Tidy Nook from day one, with no history to clean up.
 
-Converting is free, reversible, and keeps every existing pin and follower.
+### Steps
+
+1. From the account dropdown (top right), click **Add Pinterest account**.
+2. Choose **Business**.
+3. Email: it must differ from the personal account's. Use a Gmail dot variant —
+   `abdullah.khan646khan@gmail.com` delivers to the same inbox and Pinterest
+   treats it as a distinct address. Use a password you have written down.
+4. Business name: `Tidy Nook`
+5. Website: **leave blank.** You don't own a Tidy Nook domain, and pointing this
+   at novinews.pk would be a mismatch. A claimed domain only adds analytics; it
+   is not needed to publish.
+6. Country: whichever you actually operate from. Language: English.
+7. "What does your brand do?" → **Home decor** or nearest. This only seeds your
+   recommendations; it is not the niche decision.
+8. Skip the ads offer and the "build your first campaign" prompts.
+
+Both accounts now live under the same dropdown and you can switch between them
+without logging out.
+
+**Do not delete the personal account.** Nothing needs it removed, and Buffer is
+still holding a connection to it until step 5.
 
 ---
 
@@ -131,19 +148,24 @@ Cover: `board_6_tiny-apartment-solutions.jpg`
 
 ---
 
-## 5. Reconnect Buffer — last, not first
+## 5. Point Buffer at the new account — last, not first
 
-Do this **after** everything above, including the username change.
+Do this **after** everything above.
 
-1. buffer.com → Channels → Pinterest → **Disconnect**
-2. **Connect** it again, and pick the Tidy Nook account.
+1. buffer.com → Channels → Pinterest (**Abdullah Khan**) → **Disconnect**.
+   This is the personal profile. Leaving it connected is how affiliate pins end
+   up published under your own name.
+2. **Connect** Pinterest again and pick **Tidy Nook**.
+3. Send me the channel name you see. I will read its id and set:
+
+   ```
+   PIN_CHANNEL_ID=<the Tidy Nook channel id>
+   ```
 
 Buffer caches the board list at connection time. This is the exact reason the
 live pin test failed — Buffer saw zero boards and Pinterest rejected the post.
 
 Then tell me, and I will re-run the live pin.
-
----
 
 ## 6. Warm-up
 
