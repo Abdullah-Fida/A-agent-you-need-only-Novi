@@ -1,0 +1,62 @@
+================================================================================
+DOCS  --  what is in here and what belongs where
+================================================================================
+Last updated: 2026-08-30
+
+Everything that is knowledge rather than code lives in this folder. If you are
+picking the project up after a break, read HANDOFF.md first, then come here.
+
+
+IN THIS FOLDER
+--------------------------------------------------------------------------------
+INDEX.txt                 this file
+
+ACCOUNTS.txt              which service sits on which gmail, plus the ids that
+                          are easy to lose (Buffer org and channel, Supabase
+                          project). NO passwords or API keys -- those live in
+                          Render and in render.env, which is gitignored.
+
+PINTEREST_STRATEGY.txt    the Pinterest module in full: why this category and
+                          not decor, the economics, the profile copy, all six
+                          boards with their Pinterest serviceIds, the sixteen
+                          rotating search terms, the compliance rules, cadence,
+                          and what is still outstanding.
+
+
+ELSEWHERE, deliberately
+--------------------------------------------------------------------------------
+../HANDOFF.md             the whole-project handover. Live status, the fix log,
+                          the landmines, and how to resume. START HERE.
+
+../SYSTEM.md              architecture.
+
+../pin_agent/README.md    how the pin agent works, module by module.
+../pin_agent/PROFILE_SETUP.md
+                          the click-by-click Pinterest account walkthrough. Kept
+                          next to the code it sets up rather than in here.
+
+
+RULES FOR THIS FOLDER
+--------------------------------------------------------------------------------
+1. NEVER put a password, API key or token in these files. They are committed to
+   git. Record WHERE a secret lives, never the secret. Secrets belong in Render
+   env vars, and locally in render.env, which *.env keeps out of git.
+
+2. Write down the reasoning, not just the decision. "Storage, not decor" is
+   worth nothing in six months without the paragraph explaining why. Anything
+   that was learned the hard way -- a wrong id, a cached list, a silent
+   fallback -- goes in as a note so it is not rediscovered the expensive way.
+
+3. Dates are absolute. "Last Tuesday" is useless later.
+
+4. When something changes, update the file rather than adding a second one that
+   contradicts the first.
+
+
+ONE FILE PER MODULE, as each is finished
+--------------------------------------------------------------------------------
+  [x] PINTEREST_STRATEGY.txt
+  [ ] NEWS_STRATEGY.txt        the news agent and the Telegram channel
+  [ ] ARTICLE_STRATEGY.txt     the article agent and the website
+  [ ] SIGNALS_STRATEGY.txt     the signal copier
+  [ ] SOCIAL_STRATEGY.txt      Facebook, and Twitter and Reddit when unblocked

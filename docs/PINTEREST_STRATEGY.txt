@@ -1,0 +1,198 @@
+================================================================================
+PINTEREST MODULE  --  category, boards and strategy
+================================================================================
+Last updated: 2026-08-30
+Code: pin_agent/          Setup walkthrough: pin_agent/PROFILE_SETUP.md
+
+
+1. THE CATEGORY
+--------------------------------------------------------------------------------
+Home and kitchen ORGANIZATION. Storage, not decor.
+
+Wider than kitchen alone -- it covers bathroom, closet and small-apartment
+storage, which is where the AliExpress inventory depth is -- but it deliberately
+stops short of home decor.
+
+Why storage beats decor, even though decor has more Pinterest traffic:
+
+                        ORGANIZATION              DECOR
+  What they want        a fix for a problem       inspiration, a mood
+  What they do next     buy a $15 solution now    save it for "someday"
+  Competing against     other product pins        professional photography
+  AliExpress fit        good -- generic goods     poor -- taste-driven, ships
+                                                  badly, high return rate
+
+Somebody searching "under sink organizer" has a cupboard annoying them today.
+Somebody searching "kitchen decor ideas" is daydreaming. The AliExpress
+affiliate cookie is short, so slow-converting traffic is close to worthless.
+That single fact is the whole argument.
+
+REJECTED, and why:
+  Jewelry / fashion    AliExpress listings are frequently counterfeit, and
+                       counterfeit links are how affiliate accounts get
+                       permanently banned. Not worth it at any commission.
+  Electronics / phone  3-5% commission vs 7-9% here. Male-skewed, and weak on
+                       Pinterest.
+  Craft supplies       Pinterest-native, but order values too small to earn.
+  Home decor           see the table above.
+
+
+2. THE ECONOMICS
+--------------------------------------------------------------------------------
+AliExpress pays roughly 7-9% in Home & Kitchen.
+
+PIN_MIN_PRICE is 12, raised from 3. At 8%, a $4 product earns about 30 cents
+and costs exactly as much to build a pin for as a $40 one. Cheap listings also
+have the worst photos and the longest shipping.
+PIN_MAX_PRICE is 80.
+
+HONEST CAVEAT, worth re-reading when results look slow: the AliExpress cookie
+window is short and Pinterest traffic is slow by nature -- people save a pin now
+and buy weeks later, often after it has expired. Judge this over months, not
+days. It does not change the category choice; it sets the expectation.
+
+
+3. THE PROFILE
+--------------------------------------------------------------------------------
+  Name      Tidy Nook | Home & Kitchen Organization
+  Username  tidynookideas
+  Brand     Tidy Nook              (PIN_BRAND -- deliberately not "Novi", which
+                                    means nothing to a Pinterest shopper)
+  Avatar    assets/brand/avatar_terracotta.jpg
+  Website   none, deliberately. Claiming a domain only adds analytics.
+
+  Bio:
+  Clever storage for small kitchens, bathrooms and tiny apartments. I find the
+  organizers, racks and containers that actually fit - and actually work. New
+  finds daily. Some links are affiliate links (#ad).
+
+The keywords live in the NAME field because Pinterest indexes that in search.
+The bio is written for humans. The #ad in the bio is deliberate: every pin
+carries one too, but the FTC expects a profile-level disclosure as well.
+
+
+4. THE BOARDS
+--------------------------------------------------------------------------------
+Six boards, all public. Pinterest distributes pins BY BOARD TOPIC, so the board
+is the strongest signal for who gets shown the pin. One board holding everything
+is topically incoherent and Pinterest cannot place it. Six tight boards are six
+separate search surfaces. Six also stops 6-8 affiliate pins a day from looking
+like dumping.
+
+The serviceId is the id Pinterest itself uses, and is what Buffer's
+boardServiceId field wants. Buffer's internal board id is a DIFFERENT number and
+is rejected with "Board not found". These ids change if the channel is
+disconnected and reconnected.
+
+  Small Kitchen Organization        1104859789775179496
+  Kitchen Gadgets Worth Buying      1104859789775179498
+  Pantry and Fridge Storage         1104859789775179520
+  Under Sink and Cabinet Storage    1104859789775179524
+  Bathroom Storage Ideas            1104859789775179525
+  Tiny Apartment Solutions          1104859789775179526
+
+  Descriptions:
+
+  Small Kitchen Organization
+    Storage ideas for kitchens with no counter space. Drawer dividers, cabinet
+    risers, over-the-sink racks and corner organizers that make a small kitchen
+    work harder. Affiliate links marked #ad.
+
+  Kitchen Gadgets Worth Buying
+    Kitchen tools that earn their drawer space - herb scissors, jar openers,
+    measuring sets and prep gadgets. Skip the clutter, keep the useful ones.
+    Affiliate links marked #ad.
+
+  Pantry and Fridge Storage
+    Airtight jars, stackable bins, egg holders and fridge organizers that stop
+    food going to waste and make shelves easy to read at a glance. Affiliate
+    links marked #ad.
+
+  Under Sink and Cabinet Storage
+    The most wasted space in the house, sorted. Pull-out drawers, sliding trays,
+    tension rods and stacking shelves for under-sink cabinets. Affiliate links
+    marked #ad.
+
+  Bathroom Storage Ideas
+    Shower caddies, over-toilet shelving, drawer trays and counter organizers
+    for bathrooms with nowhere to put anything. Affiliate links marked #ad.
+
+  Tiny Apartment Solutions
+    Space-saving ideas for renters and small flats - foldable racks, wall hooks,
+    over-door storage and furniture that does two jobs. Affiliate links marked
+    #ad.
+
+Board COVERS cannot be uploaded. Pinterest builds a cover from pins already in
+the board. The images in assets/brand/board_*.jpg are usable only by pinning one
+to its board first, then selecting it. Cosmetic; blocks nothing.
+
+
+5. HOW PRODUCTS ARE FOUND
+--------------------------------------------------------------------------------
+sourcing.py rotates 16 search terms, one per run. A category id alone returns
+the same best-sellers every time and the dedupe gate starves within days.
+
+Every term is PROBLEM-SHAPED, not browse-shaped. That is the category thesis
+expressed in code:
+
+  kitchen drawer organizer     pot lid organizer rack
+  under sink organizer         stackable storage bin
+  spice rack organizer         corner shelf organizer
+  pantry storage container     bathroom storage shelf
+  fridge organizer bin         wall mounted kitchen rack
+  cabinet shelf riser          closet organizer box
+  over the sink rack           kitchen sink caddy
+  airtight food container      utensil holder organizer
+
+Filters: min rating 4.3, min orders 100, price 12-80.
+
+
+6. THE RULES THAT PROTECT THE ACCOUNT
+--------------------------------------------------------------------------------
+compliance.py is PURE CODE. No language model touches it. A model would be right
+most of the time, and the failure mode is losing the account.
+
+It refuses:
+  - shortened or cloaked links (bit.ly, linktr.ee, ...) -- Pinterest reads these
+    as spam
+  - any host that is not AliExpress, including lookalikes such as
+    aliexpress.com.attacker.net
+  - a missing #ad disclosure
+  - ANY price in the copy. AliExpress prices move constantly and a pin outlives
+    them by months, so a stated price becomes a false claim.
+  - duplicates, checked on product id, destination link AND image fingerprint,
+    because AliExpress relists identical products under new ids
+
+
+7. CADENCE
+--------------------------------------------------------------------------------
+PIN_MAX_PER_DAY=4 for the first ten days. A brand-new account posting eight
+affiliate links a day is the textbook spam signature. Then raise to 8.
+Pinterest guidance tops out near 15 and the config clamps there.
+PIN_MIN_GAP_MINUTES=45.
+
+PIN_REQUIRE_REVIEW stays on until the output has earned trust. This recommends
+purchases rather than opinions, so catching an invented feature before it
+publishes is cheap insurance.
+
+
+8. STATE, as of 2026-08-30
+--------------------------------------------------------------------------------
+WORKING, proven end to end with a real pin published on 2026-08-30:
+  source -> copy -> image -> hosting -> compliance -> publish
+  Pin id 6a93e2fd4322eea1c975757f, "Herb scissors gift for the culinary lover".
+
+STILL TO DO:
+  [ ] AliExpress keys: ALI_APP_KEY, ALI_APP_SECRET, ALI_TRACKING_ID.
+      Apply at portals.aliexpress.com -> Tools -> Dropshipping and Affiliates
+      developer API. TURN THE VPN OFF -- AliExpress blocks datacentre IPs.
+      Until these exist the agent runs on sample products.
+  [ ] Run database/pin_schema.sql in Supabase. pin_posts and the pin-images
+      bucket do not exist yet, so nothing is being recorded and the dedupe
+      history is empty every run. The live test borrowed article-images.
+  [ ] Board routing by product type. Every pin currently goes to ONE board,
+      which wastes the six-board structure above.
+  [ ] Render env: PIN_BUFFER_TOKEN, PIN_CHANNEL_ID, PIN_MAX_PER_DAY=4.
+
+NOT NEEDED: a separate Groq key. The pin agent runs fine on the Novi one. Add
+one only if rate limits start biting.

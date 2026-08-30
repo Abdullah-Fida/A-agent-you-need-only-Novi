@@ -7,6 +7,8 @@ this file records where it *is* and what is still broken.
 
 ---
 
+> **Reference docs live in [`docs/`](docs/INDEX.txt).** `ACCOUNTS.txt` maps every service to the gmail that owns it; `PINTEREST_STRATEGY.txt` holds the Pinterest category, boards and board ids. No secrets in either -- those stay in Render and render.env.
+
 ## 1. What this is
 
 An autonomous news operation run by one Python bot ("Novi"):

@@ -1,0 +1,72 @@
+================================================================================
+ACCOUNTS  --  which service sits on which login
+================================================================================
+Last updated: 2026-08-30
+
+NO PASSWORDS OR API KEYS IN THIS FILE. It is committed to git. Secrets live in
+Render's environment variables (production) and in render.env locally, which is
+gitignored via *.env. If you ever need a secret, read it from there.
+
+
+CONFIRMED
+--------------------------------------------------------------------------------
+Pinterest            abdullahkhan646khan@gmail.com
+                     Profile : Tidy Nook | Home & Kitchen Organization
+                     Username: tidynookideas
+                     Type    : Business (converted from the personal account,
+                               so there is only ONE Pinterest account, not two)
+                     Boards  : 6 -- see PINTEREST_STRATEGY.txt for ids
+
+Buffer (pin agent)   abdullahkhan646khan@gmail.com
+                     Purpose : publishes the Pinterest pins
+                     Org id  : 6a92f605830b192aa6530384
+                     Channel : 6a93e064065799be4652c4dd  (tidynookideas)
+                     NOTE    : the channel id CHANGED when the Pinterest
+                               channel was disconnected and reconnected on
+                               2026-08-30. A reconnect always mints a new id,
+                               so PIN_CHANNEL_ID must be re-read after one.
+                     Plan    : free -- 3 channels, 10 queued posts per channel
+
+Supabase             abdullahfida645@gmail.com
+                     Project : romytbehhwgpbzdtvesf
+                     Purpose : the ONE thing every module shares. News posts,
+                               articles, images, signals and pins all land here.
+
+Telegram             phone 0307497300
+                     Purpose : channel posting, signal copier, stealth marketer
+                     NOTE    : the auth key is bound to a device fingerprint.
+                               See HANDOFF.md before touching the session.
+
+
+PLANNED  (account exists, integration not finished)
+--------------------------------------------------------------------------------
+Twitter / X          abdullahkhan646khan@gmail.com
+                     Blocked : posting needs paid API credits, or Playwright,
+                               which needs ~400MB against Render's 512MB.
+
+Reddit               abdullahkhan646khan@gmail.com
+                     Blocked : app creation errors on two accounts. Reddit
+                               blocks datacentre IPs -- retry with the VPN OFF.
+
+
+TO CONFIRM  (you said you would check and tell me)
+--------------------------------------------------------------------------------
+Groq                 ??? -- which gmail owns the API key
+OpenRouter           ??? -- which gmail owns the API key
+Buffer (Novi)        ??? -- the SEPARATE Buffer account that posts Facebook.
+                            Not the pin one above; they are kept apart so they
+                            do not share the free plan's channel allowance.
+Render               ??? -- hosts the bot
+Vercel               ??? -- hosts the website and the Novi dashboard
+Alert email          ??? -- where the Bing-cookie-expired mail is sent
+
+
+HOUSEKEEPING
+--------------------------------------------------------------------------------
+Credentials pasted into a chat window should be treated as exposed and rotated.
+That currently includes the Buffer pin-agent token. Rotating it means: Buffer ->
+Settings -> Personal API token -> regenerate, then update PIN_BUFFER_TOKEN in
+Render. Nothing else breaks.
+
+The Telegram API ID in use is 2040, which is a public, widely shared id rather
+than one registered to this project. See HANDOFF.md for what that risks.
