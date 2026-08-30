@@ -1871,6 +1871,26 @@ class TestArticleQualityGate(unittest.TestCase):
     def test_short_article_is_blocked(self):
         self.assertTrue(self.blocking(word_count=90))
 
+    def test_hyphenated_compounds_are_not_doubled_words(self):
+        # "on-chain" appears in most crypto copy, which is the largest section
+        # on the site. Flagging "impact on on-chain activity" as a defect
+        # deferred perfectly good articles.
+        for text in ("the impact on on-chain activity rose",
+                     "data on on-chain volumes climbed",
+                     "they met in in-person talks"):
+            body = f"<p>{text}. " + ("Prose continues here. " * 60) + "</p>"
+            blocking = self.blocking(content=body)
+            self.assertFalse([p for p in blocking if "doubled" in p],
+                             f"false positive on: {text}")
+
+    def test_genuine_doubled_words_are_still_caught(self):
+        for text in ("a look at the the market",
+                     "prices fell on on Tuesday",
+                     "and and the results came in"):
+            body = f"<p>{text}. " + ("Prose continues here. " * 60) + "</p>"
+            self.assertTrue([p for p in self.blocking(content=body) if "doubled" in p],
+                            f"missed a real defect: {text}")
+
     def test_seo_problems_are_fixable_not_blocking(self):
         # An over-long meta title is untidy. It is not a reason to spike the
         # piece, so it must never appear in the blocking list.

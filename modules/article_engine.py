@@ -267,8 +267,13 @@ class ArticleAgent:
 
     # A doubled word that is genuinely wrong. Words that legitimately repeat
     # in English ("had had", "that that") are left out on purpose.
+    #
+    # The trailing (?!-) is what makes this usable on a crypto desk. Without
+    # it, "the impact on on-chain activity" and "met in in-person talks" were
+    # both flagged as defects and the articles deferred -- and "on-chain"
+    # appears in most crypto copy, which is the largest section on the site.
     _DOUBLED = re.compile(
-        r"\b(the|a|an|of|to|in|and|is|was|for|on|with|it)\s+\1\b", re.I)
+        r"\b(the|a|an|of|to|in|and|is|was|for|on|with|it)\s+\1\b(?!-)", re.I)
 
     def _quality_issues(self, record: Dict) -> Tuple[List[str], List[str]]:
         """
