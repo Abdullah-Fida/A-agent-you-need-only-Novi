@@ -1981,5 +1981,51 @@ class TestArticleDeferral(unittest.TestCase):
         self.assertEqual(f.deferred_count, 1, "a not-yet-due story was dropped")
 
 
+class TestScheduleReachesTheAudience(unittest.TestCase):
+    """
+    Slot times exist to reach readers, not to be tidy.
+
+    Three of the previous six went out at midnight, 02:30 and 05:00 New York
+    time, into an empty room. These pin the improvement so a later edit cannot
+    quietly undo it.
+    """
+
+    @staticmethod
+    def _in_zone(slot, offset_from_pkt):
+        return (slot["hour"] - 5 + offset_from_pkt) % 24
+
+    def setUp(self):
+        from core.brain import BotBrain
+        self.slots = BotBrain.SCHEDULE["post_slots"]
+        self.sleep_start = BotBrain.SCHEDULE["sleep_start"]
+        self.sleep_end = BotBrain.SCHEDULE["sleep_end"]
+
+    def test_six_slots(self):
+        self.assertEqual(len(self.slots), 6)
+
+    def test_no_slot_falls_inside_the_sleep_window(self):
+        # A slot inside the sleep window is skipped every single day, which is
+        # how the channel used to see four posts when six were configured.
+        for s in self.slots:
+            self.assertFalse(s["hour"] >= self.sleep_start or s["hour"] < self.sleep_end,
+                             f"{s['hour']:02d}:{s['minute']:02d} PKT is inside the "
+                             f"sleep window and can never fire")
+
+    def test_at_least_four_slots_reach_the_us(self):
+        awake = [s for s in self.slots if 6 <= self._in_zone(s, -4) <= 14]
+        self.assertGreaterEqual(len(awake), 4,
+                                "fewer than four posts land in US waking hours")
+
+    def test_every_slot_reaches_the_uk(self):
+        awake = [s for s in self.slots if 7 <= self._in_zone(s, 1) <= 20]
+        self.assertEqual(len(awake), len(self.slots))
+
+    def test_slots_are_spread_not_clustered(self):
+        minutes = sorted(s["hour"] * 60 + s["minute"] for s in self.slots)
+        gaps = [b - a for a, b in zip(minutes, minutes[1:])]
+        self.assertTrue(all(g >= 90 for g in gaps),
+                        f"posts bunched too closely: {gaps}")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

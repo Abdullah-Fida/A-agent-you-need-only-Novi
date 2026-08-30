@@ -31,18 +31,27 @@ class BotBrain:
     # Default daily schedule (PKT times)
     SCHEDULE = {
         "morning_brief": {"hour": 8, "minute": 0},   # 8:00 AM PKT
-        # Six slots, evenly spread across waking hours. Two of the previous
-        # six could never produce a post: 00:40 sat inside the sleep window so
-        # it was skipped every night, and 13:40 was a leftover makeup slot 40
-        # minutes after 13:00 — which is why the channel saw four or five
-        # posts a day rather than six.
+        # Six slots, timed for the audience rather than for Pakistan.
+        #
+        # The website is the product and its readers are in the UK, Europe and
+        # the United States, so the slots are chosen by what they read in UTC,
+        # not by what hour it happens to be locally. The old spread put three
+        # of six posts out at midnight, 02:30 and 05:00 New York time -- into
+        # an empty room.
+        #
+        # Every slot must also sit outside the 23:00-07:00 PKT sleep window,
+        # which is 14:00-22:00 in New York; that window is why nothing can be
+        # published during the US evening without decoupling the article agent
+        # from the Telegram schedule entirely.
+        #
+        #     PKT     UTC    London  New York
         "post_slots": [
-            {"hour": 9,  "minute": 0},   # 9:00 AM PKT
-            {"hour": 11, "minute": 30},  # 11:30 AM
-            {"hour": 14, "minute": 0},   # 2:00 PM
-            {"hour": 16, "minute": 30},  # 4:30 PM
-            {"hour": 19, "minute": 0},   # 7:00 PM
-            {"hour": 22, "minute": 0},   # 10:00 PM
+            {"hour": 11, "minute": 30},  # 06:30   07:30   02:30  UK commute
+            {"hour": 14, "minute": 0},   # 09:00   10:00   05:00  UK morning
+            {"hour": 16, "minute": 0},   # 11:00   12:00   07:00  US wakes
+            {"hour": 18, "minute": 0},   # 13:00   14:00   09:00  US PEAK
+            {"hour": 20, "minute": 0},   # 15:00   16:00   11:00  US late morning
+            {"hour": 22, "minute": 0},   # 17:00   18:00   13:00  US lunch
         ],
         "evening_wrap": {"hour": 21, "minute": 0},    # 9:00 PM PKT
         "sleep_start": 23,  # 11 PM PKT
