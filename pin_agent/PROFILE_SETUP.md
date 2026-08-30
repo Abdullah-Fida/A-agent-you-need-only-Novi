@@ -72,10 +72,19 @@ worked. A separate account is the better choice anyway:
    which is what Pinterest files under Content creator. Picking merchant also
    invites Pinterest to expect a product catalogue you do not have.
 
-8. **"What's your brand's focus?"** → Home Decor, plus DIY and Food & Drink if
-   it allows more than one. This only seeds your home feed.
-9. Any screen asking for a **website** → skip it. Any screen offering **ads**
-   or a first campaign → *Not now*.
+8. **"A few more details"**:
+   - *What's the focus of your brand?* → **Home**
+   - *What are your business goals?* (up to 3) → **Drive traffic to my
+     website**, then brand awareness, then grow my audience.
+
+   The goal matters more than it looks. The revenue here is outbound clicks to
+   AliExpress, so traffic is the honest objective. Do not pick anything about
+   selling products on Pinterest: that implies a merchant catalogue and a
+   verified website, neither of which exists here.
+9. **Confirm the email** Pinterest sends. Unverified accounts are limited and
+   Buffer will not connect cleanly to one.
+10. Any screen asking for a **website** → skip. Any screen offering **ads** or a
+    first campaign → *Not now*.
 
 Both accounts now live under the same dropdown and you can switch between them
 without logging out.
