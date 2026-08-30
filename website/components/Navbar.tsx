@@ -9,11 +9,10 @@ const DEFAULT_SECTIONS = ['World', 'Crypto', 'Tech', 'Business', 'Pakistan'];
 /**
  * The masthead.
  *
- * Laid out the way a newspaper front page is: the dateline and the utilities
- * sit either side of a centred wordmark, with the sections on their own rule
- * beneath. Putting the name in the optical centre is what makes a masthead
- * read as a publication rather than as an app header with a logo in the
- * corner.
+ * The wordmark sits top-LEFT. It was centred, which looked handsome and broke
+ * the one navigation convention every reader relies on -- logo top-left goes
+ * home -- so people could not find their way back from a section page even
+ * though the link was there the whole time. Convention beats symmetry.
  */
 export default async function Navbar() {
   const found = await getCategories();
@@ -28,19 +27,12 @@ export default async function Navbar() {
     <header className="masthead">
       <div className="main-container">
         <div className="masthead-top">
-          <div className="masthead-side masthead-side--left">
-            <time dateTime={now.toISOString().slice(0, 10)}>{today}</time>
-          </div>
-
           <Link href="/" className="wordmark" aria-label={`${SITE_NAME} home`}>
             {SITE_NAME}
           </Link>
 
-          <div className="masthead-side masthead-side--right">
-            <span className="live">
-              <span className="live-dot" aria-hidden="true" />
-              Updating continuously
-            </span>
+          <div className="masthead-meta">
+            <time dateTime={now.toISOString().slice(0, 10)}>{today}</time>
             <ThemeToggle />
           </div>
         </div>
@@ -50,6 +42,9 @@ export default async function Navbar() {
         <div className="main-container">
           <nav aria-label="Sections" className="sections">
             <ul>
+              <li>
+                <Link href="/" className="sections-home">Home</Link>
+              </li>
               {sections.map((s) => (
                 <li key={s}>
                   <Link href={`/category/${encodeURIComponent(s)}`}>{s}</Link>

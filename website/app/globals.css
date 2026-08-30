@@ -160,25 +160,24 @@ img {
 }
 
 .masthead-top {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: center;
-  gap: 20px;
-  padding: 22px 0 18px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 20px 0 16px;
 }
 
-.masthead-side {
+.masthead-meta {
   display: inline-flex;
   align-items: center;
-  gap: 14px;
+  gap: 16px;
   font-family: var(--font-ui);
   font-size: .72rem;
   letter-spacing: .09em;
   text-transform: uppercase;
   color: var(--ink-4);
-  min-width: 0;
+  white-space: nowrap;
 }
-.masthead-side--right { justify-content: flex-end; }
 
 .live {
   display: inline-flex;
@@ -197,16 +196,16 @@ img {
 
 .wordmark {
   font-family: var(--font-display);
-  font-size: clamp(1.75rem, 3.6vw, 2.6rem);
+  font-size: clamp(1.6rem, 3.2vw, 2.3rem);
   font-weight: 600;
-  letter-spacing: -.03em;
+  letter-spacing: -.032em;
   line-height: 1;
   color: var(--ink);
   white-space: nowrap;
 }
 
-/* The double rule: heavy over hairline. The oldest device in newspaper
-   design and still the cheapest way to say "this is a publication". */
+/* Heavy rule over hairline: the oldest device in newspaper design, and still
+   the cheapest way to say "this is a publication". */
 .masthead-rule {
   border-top: 2px solid var(--ink);
   border-bottom: 1px solid var(--rule);
@@ -214,21 +213,23 @@ img {
 
 .sections ul {
   display: flex;
-  justify-content: center;
   flex-wrap: wrap;
-  gap: 30px;
+  gap: 26px;
   list-style: none;
-  padding: 11px 0;
+  padding: 10px 0;
 }
 .sections a {
   font-family: var(--font-ui);
-  font-size: .78rem;
+  font-size: .77rem;
   font-weight: 600;
   letter-spacing: .1em;
   text-transform: uppercase;
   color: var(--ink-2);
   transition: color .15s;
 }
+/* An explicit Home link. The wordmark goes home too, but a reader deep in a
+   section should not have to know that. */
+.sections-home { color: var(--ink-4); }
 .sections a:hover { color: var(--accent); }
 
 .theme-toggle {
@@ -251,12 +252,11 @@ img {
 @media (max-width: 860px) {
   /* The dateline is the first thing to go: on a phone the reader knows what
      day it is, and the wordmark needs the room. */
-  .masthead-top {
-    grid-template-columns: auto 1fr;
-    padding: 14px 0 12px;
-  }
-  .masthead-side--left { display: none; }
-  .wordmark { font-size: 1.5rem; }
+  .masthead-top { padding: 14px 0 10px; }
+  /* The date is the first thing to go: on a phone the reader knows what day
+     it is, and the wordmark needs the room. */
+  .masthead-meta time { display: none; }
+  .wordmark { font-size: 1.45rem; }
   .sections ul {
     justify-content: flex-start;
     gap: 20px;

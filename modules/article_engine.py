@@ -197,7 +197,7 @@ class ArticleAgent:
             "word_count": words,
             "source_url": source_url,
             "source_name": source_name,
-            "author": f"{self.site_name} AI Desk",
+            "author": f"{self.site_name} Newsroom",
             "status": "published",
         }
 

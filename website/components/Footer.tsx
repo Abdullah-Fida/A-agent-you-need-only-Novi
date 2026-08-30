@@ -42,7 +42,10 @@ export default function Footer() {
 
         <div className="footer-base">
           <span>© {new Date().getFullYear()} {SITE_NAME}</span>
-          <span>Reporting assisted by automated research and editing.</span>
+          {/* How the newsroom works is explained properly on /about, where a
+              reader looking for it will go. Repeating it on every page read
+              as a machine apologising for itself. */}
+          <Link href="/about">Editorial standards</Link>
         </div>
       </div>
     </footer>
