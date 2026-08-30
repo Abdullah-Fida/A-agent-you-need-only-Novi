@@ -13,6 +13,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
+from pin_agent import boards as board_routing
 from pin_agent.compliance import ComplianceGate
 from pin_agent.content import PinCopywriter
 from pin_agent.imaging import PinImageBuilder
@@ -142,6 +143,14 @@ class PinAgent:
                 "angle": copy["angle"],
                 "category": product.get("category_name", ""),
                 "score": product.get("score", 0),
+                # Routed by name, resolved to a Pinterest id at publish time.
+                # An explicit PIN_BOARD_ID still overrides, for pinning the
+                # whole account to one board deliberately.
+                "board_name": board_routing.choose_board(
+                    product.get("title", ""),
+                    product.get("clean_title", ""),
+                    product.get("category_name", ""),
+                    copy["title"]),
                 "board_id": self.config.buffer_board_id,
             }
 

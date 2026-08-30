@@ -20,6 +20,8 @@ The API details that matter, confirmed by introspecting the live schema:
 """
 import asyncio
 import logging
+
+from pin_agent import boards as board_routing
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("PinAgent.Publisher")
@@ -64,6 +66,8 @@ class PinterestPublisher:
         self.max_queued = max_queued
 
         self.channels: List[Dict] = []
+        # name -> Pinterest serviceId, read once from the live channel.
+        self.board_ids: Dict[str, str] = {}
         self._connected = False
         self.pins_sent = 0
         self.last_error = ""
@@ -232,6 +236,9 @@ class PinterestPublisher:
         data = await self._gql(query, {"id": channel_id})
         boards = (((data or {}).get("channel") or {}).get("metadata") or {}).get("boards") or []
 
+        self.board_ids = {b["name"]: b["serviceId"] for b in boards
+                          if b.get("name") and b.get("serviceId")}
+
         if not boards:
             self.last_error = ("The Pinterest account has no boards. Create one at "
                                "pinterest.com, then reconnect the channel in Buffer.")
@@ -247,6 +254,31 @@ class PinterestPublisher:
         logger.warning(f"No board matched '{name_contains}'; using the first one: "
                        f"{boards[0].get('name')}")
         return boards[0].get("serviceId")
+
+    async def board_for(self, name: str) -> str:
+        """
+        The Pinterest id for a board name, fetching the list once if needed.
+
+        Falls back to the configured default board when the name is unknown --
+        a board renamed on Pinterest should misfile a pin, not drop it.
+        """
+        if not self.board_ids:
+            await self.find_board()
+
+        resolved = board_routing.resolve(name, self.board_ids)
+        if resolved:
+            return resolved
+
+        if name:
+            logger.warning(f"No board named '{name}' on this account; using the "
+                           f"default. Boards present: "
+                           f"{', '.join(sorted(self.board_ids)) or 'none'}")
+
+        # Prefer the routing table's own default over whatever ensure_board
+        # happened to pick, which is simply the first board the API returned.
+        fallback = board_routing.resolve(board_routing.DEFAULT_BOARD,
+                                         self.board_ids)
+        return fallback or self.board_id
 
     async def ensure_board(self) -> bool:
         """
@@ -295,7 +327,10 @@ class PinterestPublisher:
             "title": (pin.get("title") or "")[:100],
             "url": pin.get("link") or "",
         }
-        board_id = pin.get("board_id") or self.board_id
+        board_id = pin.get("board_id") or ""
+        if not board_id and pin.get("board_name"):
+            board_id = await self.board_for(pin["board_name"])
+        board_id = board_id or self.board_id
         if board_id:
             metadata["boardServiceId"] = board_id
 

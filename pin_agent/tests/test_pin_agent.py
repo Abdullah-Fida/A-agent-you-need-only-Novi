@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(
 
 from pin_agent.compliance import ComplianceGate
 from pin_agent.selector import ProductSelector
+from pin_agent import boards as board_routing
 from pin_agent.publisher import PinterestPublisher
 from pin_agent.sourcing import AliExpressClient
 
@@ -275,6 +276,72 @@ class TestChannelSelection(unittest.TestCase):
 
     def test_no_pinterest_channel_at_all(self):
         self.assertIsNone(self._publisher([self.FACEBOOK]).target_channel)
+
+
+class TestBoardRouting(unittest.TestCase):
+    """
+    Which of the six boards a product lands on.
+
+    Misfiling is cosmetic, but sending everything to one board wastes the
+    structure that makes Pinterest able to place a pin at all.
+    """
+
+    def assertBoard(self, expected, *texts):
+        self.assertEqual(board_routing.choose_board(*texts), expected,
+                         f"routing {texts!r}")
+
+    def test_each_board_is_reachable(self):
+        self.assertBoard("Kitchen Gadgets Worth Buying",
+                         "Stainless Steel Herb Scissors 5 Blade Shears")
+        self.assertBoard("Under Sink and Cabinet Storage",
+                         "Under Sink Organizer Pull Out Cabinet Basket")
+        self.assertBoard("Pantry and Fridge Storage",
+                         "Airtight Cereal Container Pantry Food Storage Jar")
+        self.assertBoard("Bathroom Storage Ideas",
+                         "Bathroom Shower Caddy Shampoo Holder")
+        self.assertBoard("Tiny Apartment Solutions",
+                         "Over Door Hanging Closet Organizer Foldable")
+        self.assertBoard("Small Kitchen Organization",
+                         "Kitchen Drawer Divider Cutlery Utensil Tray")
+
+    def test_unmatched_product_falls_back_rather_than_dropping(self):
+        self.assertBoard(board_routing.DEFAULT_BOARD, "an unrelated widget")
+        self.assertBoard(board_routing.DEFAULT_BOARD, "")
+        self.assertBoard(board_routing.DEFAULT_BOARD, "", "", "")
+
+    def test_category_and_search_term_count_too(self):
+        # Listing titles are keyword soup; the useful word is often elsewhere.
+        self.assertBoard("Bathroom Storage Ideas",
+                         "2Pcs Wall Mounted Rack", "Bathroom", "shower caddy")
+
+    def test_word_boundaries_are_respected(self):
+        # "jar" must not fire inside "jarring", nor "counter" inside
+        # "counterfeit". Both would otherwise misroute on a substring.
+        self.assertBoard(board_routing.DEFAULT_BOARD,
+                         "a jarring counterfeit widget")
+
+    def test_ordinary_inflections_still_match(self):
+        # "wall mount" has to catch "Wall Mounted", which is how the listings
+        # are actually titled.
+        self.assertBoard("Tiny Apartment Solutions",
+                         "Wall Mounted Over Door Hooks")
+
+    def test_every_route_names_a_real_board(self):
+        self.assertIn(board_routing.DEFAULT_BOARD, board_routing.ALL_BOARDS)
+        self.assertEqual(len(board_routing.ALL_BOARDS),
+                         len(set(board_routing.ALL_BOARDS)))
+
+    def test_resolve_maps_name_to_pinterest_id(self):
+        ids = {"Bathroom Storage Ideas": "1104859789775179525"}
+        self.assertEqual(board_routing.resolve("Bathroom Storage Ideas", ids),
+                         "1104859789775179525")
+        self.assertEqual(board_routing.resolve("bathroom storage ideas", ids),
+                         "1104859789775179525")
+
+    def test_resolve_returns_none_for_a_renamed_board(self):
+        # Better to fall back deliberately than publish to whatever sorts first.
+        self.assertIsNone(board_routing.resolve("Deleted Board", {"A": "1"}))
+        self.assertIsNone(board_routing.resolve("Anything", {}))
 
 
 if __name__ == "__main__":
