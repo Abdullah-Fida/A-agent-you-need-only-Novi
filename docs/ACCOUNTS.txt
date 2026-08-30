@@ -27,6 +27,23 @@ Buffer (pin agent)   abdullahkhan646khan@gmail.com
                                so PIN_CHANNEL_ID must be re-read after one.
                      Plan    : free -- 3 channels, 10 queued posts per channel
 
+AliExpress Portals   abdullahkhan646khan@gmail.com
+                     Joined from the existing AliExpress BUYER account, which
+                     is the normal route -- the notice on the form is not a
+                     warning.
+                     Site     : Tidy Nook, https://www.pinterest.com/tidynookideas/
+                     Attribute: Non-network (own channel, no sub-affiliates)
+                     Category : Home & Garden, Home Improvement
+                     NOTE     : approval yields the TRACKING ID only. The
+                                ALI_APP_KEY and ALI_APP_SECRET come from a
+                                separate request afterwards, at
+                                portals.aliexpress.com -> Tools -> Dropshipping
+                                and Affiliates developer API.
+                     NOTE     : apply and use with the VPN OFF. AliExpress
+                                blocks datacentre IPs.
+                     Payee name must match the bank account exactly or
+                     withdrawals are rejected.
+
 Supabase             abdullahfida645@gmail.com
                      Project : romytbehhwgpbzdtvesf
                      Purpose : the ONE thing every module shares. News posts,
