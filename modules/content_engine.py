@@ -30,6 +30,33 @@ class ContentEngine:
         ("crypto", 0.25),
         ("pakistan", 0.10),
     ]
+
+    # The same story is not equally interesting everywhere. Crypto, tech,
+    # business and world reporting read the same in London, New York or
+    # Karachi; a Pakistani domestic story does not travel, and putting one out
+    # at 09:00 New York spends the best slot of the day on the smallest
+    # possible audience.
+    #
+    # So the slot picks the mix. Regional stories go out while the West is
+    # asleep and Asia is awake; the US-facing slots carry only categories that
+    # travel. The daily volume of Pakistan coverage is unchanged -- roughly
+    # one every other day either way -- it simply lands where it is read.
+    US_FACING_HOURS_PKT = {16, 18, 20, 22}
+
+    GLOBAL_MIX = [
+        ("crypto", 0.30),
+        ("tech_ai", 0.28),
+        ("business_markets", 0.22),
+        ("world_news", 0.20),
+    ]
+
+    REGIONAL_MIX = [
+        ("pakistan", 0.28),
+        ("world_news", 0.24),
+        ("tech_ai", 0.18),
+        ("crypto", 0.16),
+        ("business_markets", 0.14),
+    ]
     
     def __init__(self, ai_engine: AIEngine, scraper: NewsScraper,
                  image_gen: ImageGenerator, db=None,
@@ -47,14 +74,30 @@ class ContentEngine:
         self.posts_generated_today = 0
         logger.info("Content Engine & ArticleAgent initialized.")
     
-    def _select_category(self) -> str:
+    def _select_category(self, hour_pkt: Optional[int] = None) -> str:
         """
-        Selects the next content category based on the defined mix ratios.
-        Uses weighted random selection.
+        Picks the next category, weighted by who is awake to read it.
+
+        Slots that land in US waking hours draw from GLOBAL_MIX, which carries
+        no regional coverage. Everything else draws from REGIONAL_MIX, where
+        Pakistan is weighted up. Passing no hour keeps the old behaviour, so a
+        manual "post now" from the dashboard is unaffected.
         """
-        categories = [cat for cat, _ in self.CONTENT_MIX]
-        weights = [weight for _, weight in self.CONTENT_MIX]
+        if hour_pkt is None:
+            mix = self.CONTENT_MIX
+        elif hour_pkt in self.US_FACING_HOURS_PKT:
+            mix = self.GLOBAL_MIX
+        else:
+            mix = self.REGIONAL_MIX
+
+        categories = [cat for cat, _ in mix]
+        weights = [weight for _, weight in mix]
         return random.choices(categories, weights=weights, k=1)[0]
+
+    @staticmethod
+    def _current_hour_pkt() -> int:
+        from datetime import datetime, timezone, timedelta
+        return (datetime.now(timezone.utc) + timedelta(hours=5)).hour
     
     async def produce_content_package(self, category: str = None, progress_callback = None, force: bool = False) -> Optional[Dict]:
         """
@@ -75,7 +118,7 @@ class ContentEngine:
         """
         # 1. Select category
         if not category:
-            category = self._select_category()
+            category = self._select_category(self._current_hour_pkt())
         
         logger.info(f"Producing content package for category: {category}")
         if progress_callback:

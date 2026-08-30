@@ -2027,5 +2027,59 @@ class TestScheduleReachesTheAudience(unittest.TestCase):
                         f"posts bunched too closely: {gaps}")
 
 
+class TestCategoryMatchesTheAudience(unittest.TestCase):
+    """
+    Regional stories must not occupy the slots aimed at the West.
+
+    A Pakistani domestic story is worth publishing; publishing it at 09:00
+    New York spends the best slot of the day on the smallest audience.
+    """
+
+    def setUp(self):
+        from modules.content_engine import ContentEngine
+        self.engine = ContentEngine.__new__(ContentEngine)
+        self.CE = ContentEngine
+
+    def _draw(self, hour, n=400):
+        from collections import Counter
+        return Counter(self.engine._select_category(hour) for _ in range(n))
+
+    def test_us_slots_never_carry_regional_stories(self):
+        for hour in sorted(self.CE.US_FACING_HOURS_PKT):
+            self.assertEqual(self._draw(hour)["pakistan"], 0,
+                             f"a Pakistan story can reach the {hour}:00 PKT slot, "
+                             f"which is US morning")
+
+    def test_regional_stories_still_get_published(self):
+        # Weighted down is fine; silenced is not. Pakistan is a section on the
+        # site and must keep filling.
+        early = self._draw(11)
+        self.assertGreater(early["pakistan"], 0)
+
+    def test_daily_volume_of_regional_coverage_is_preserved(self):
+        # Moving stories between slots must not quietly cut how many are
+        # published. Both mixes together should stay near the original 10%.
+        from collections import Counter
+        total = Counter()
+        for hour in (11, 14, 16, 18, 20, 22):
+            total += self._draw(hour, n=500)
+        share = total["pakistan"] / sum(total.values())
+        self.assertGreater(share, 0.05, f"regional coverage collapsed to {share:.1%}")
+        self.assertLess(share, 0.20, f"regional coverage ballooned to {share:.1%}")
+
+    def test_every_mix_only_names_real_categories(self):
+        known = {c for c, _ in self.CE.CONTENT_MIX}
+        for mix in (self.CE.GLOBAL_MIX, self.CE.REGIONAL_MIX):
+            for cat, weight in mix:
+                self.assertIn(cat, known, f"{cat} is not a known category")
+                self.assertGreater(weight, 0)
+
+    def test_no_hour_falls_back_to_the_original_mix(self):
+        # The dashboard's manual "post now" passes no hour and must keep
+        # working exactly as before.
+        self.assertIn(self.engine._select_category(None),
+                      {c for c, _ in self.CE.CONTENT_MIX})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
