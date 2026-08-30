@@ -176,31 +176,50 @@ class PinterestPublisher:
 
     async def find_board(self, name_contains: str = "") -> Optional[str]:
         """
-        Looks up a board id from the connected channel.
+        Looks up a Pinterest board id from the connected channel.
 
-        Buffer exposes boards per channel; the exact field name has varied, so
-        several shapes are tried and a failure is reported rather than raised —
-        a pin can still publish to the account's default board.
+        Boards hang off the channel's metadata union, not off the channel
+        directly. Buffer rejects a pin with "Pinterest posts require a board
+        to be selected", so this has to succeed before anything can publish —
+        and it returns nothing when the Pinterest account has no boards at
+        all, which is a thing to fix on Pinterest rather than here.
         """
         if not self.pinterest_channels:
             return None
         channel_id = self.pinterest_channels[0]["id"]
 
-        for field in ("boards", "pinterestBoards"):
-            query = ("query($id: ChannelId!) { channel(input: {id: $id}) { "
-                     f"{field} {{ id name }} }} }}")
-            data = await self._gql(query.replace("}} }", "} }"), {"id": channel_id})
-            boards = ((data or {}).get("channel") or {}).get(field) or []
-            if not boards:
-                continue
-            for board in boards:
-                if not name_contains or name_contains.lower() in \
-                        (board.get("name") or "").lower():
-                    logger.info(f"Using Pinterest board: {board.get('name')}")
-                    return board.get("id")
-        logger.info("Could not list boards from Buffer; the pin will use the "
-                    "channel's default board.")
-        return None
+        query = ("query($id: ChannelId!) { channel(input: {id: $id}) { "
+                 "metadata { ... on PinterestMetadata { boards { id name } } } } }")
+        data = await self._gql(query, {"id": channel_id})
+        boards = (((data or {}).get("channel") or {}).get("metadata") or {}).get("boards") or []
+
+        if not boards:
+            self.last_error = ("The Pinterest account has no boards. Create one at "
+                               "pinterest.com, then reconnect the channel in Buffer.")
+            logger.error(self.last_error)
+            return None
+
+        for board in boards:
+            if not name_contains or name_contains.lower() in (board.get("name") or "").lower():
+                logger.info(f"Using Pinterest board: {board.get('name')} "
+                            f"({board.get('id')})")
+                return board.get("id")
+
+        logger.warning(f"No board matched '{name_contains}'; using the first one: "
+                       f"{boards[0].get('name')}")
+        return boards[0].get("id")
+
+    async def ensure_board(self) -> bool:
+        """
+        Makes sure a board id is set before publishing.
+
+        Looked up once and cached, rather than on every pin, since the board
+        rarely changes and each lookup is a network round trip.
+        """
+        if self.board_id:
+            return True
+        self.board_id = await self.find_board() or ""
+        return bool(self.board_id)
 
     # ── publishing ───────────────────────────────────────────────
 
@@ -218,6 +237,10 @@ class PinterestPublisher:
         channels = self.pinterest_channels
         if not channels:
             logger.error("No Pinterest channel to publish to.")
+            return False
+
+        if not pin.get("board_id") and not await self.ensure_board():
+            logger.error(f"Cannot publish: {self.last_error}")
             return False
 
         image_url = (pin.get("image_url") or "").strip()

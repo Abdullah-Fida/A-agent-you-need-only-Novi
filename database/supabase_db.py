@@ -260,8 +260,9 @@ class SupabaseDB:
             return url
 
         logger.error(
-            f"Image upload failed. Does the public '{IMAGE_BUCKET}' storage bucket exist? "
-            f"Run database/schema.sql, or create it in Supabase → Storage."
+            f"Image upload failed. Does the public '{bucket or IMAGE_BUCKET}' storage "
+            f"bucket exist? Run the matching schema file, or create it in "
+            f"Supabase → Storage."
         )
         return ""
 

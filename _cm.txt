@@ -1,45 +1,24 @@
-Complete the Pinterest agent: copy, imaging, publishing, review, controls
+Find the Pinterest board the way Buffer actually exposes it
 
-Publishes through Buffer rather than Pinterest's own API. Pinterest grants
-Trial access first, where every pin created is a sandbox entity visible only
-to its creator, and Standard access needs a demo video and one to four weeks
-of review. Buffer is an official Pinterest Marketing Partner, so this route
-publishes real pins today and stays inside Pinterest's terms — which browser
-automation would not. Confirmed against the live Buffer schema: pinterest is
-a supported service and a pin's board, title and destination link go in
-metadata.pinterest.
+A live end-to-end run got as far as publishing and was refused with
+"Pinterest posts require a board to be selected". Buffer's schema marks
+boardServiceId optional; the API enforces it.
 
-Uses a second Buffer account, separate from the one Novi posts Facebook with,
-so they do not share the free plan's three channels and ten-post queue. A full
-queue is treated as a full queue, not an error, and retried next cycle.
+find_board was guessing at channel.boards and channel.pinterestBoards, neither
+of which exists. Boards hang off the channel's metadata union:
 
-- content: pin copy through Novi's AIEngine, so it inherits the narration
-  guards; a model answering "We need to write a Pinterest title..." would
-  otherwise be published, which is what happened on the news side. Six angles
-  rotate so the same product does not always read the same way. The #ad
-  disclosure is appended in code, never left to the model, because forgetting
-  it once costs the account.
-- imaging: 1000x1500 branded pin. AliExpress photos are square and often
-  carry the seller's own text, so they are composited into a frame rather
-  than posted as-is — that fixes the aspect ratio Pinterest ranks on and puts
-  our wordmark on the image instead of another shop's. Renders with no photo
-  and with no installed fonts.
-- store: own tables in Novi's Supabase. Every call goes through
-  asyncio.to_thread, because supabase-py is synchronous and awaiting it
-  directly discards the coroutine silently.
-- Category performance is learned over a 30-day window, not 24 hours:
-  Pinterest is a search engine rather than a feed, so pins accumulate saves
-  over weeks and a daily read would be fitting noise. Multipliers are clamped
-  so one lucky pin nudges the ranking rather than rewriting it.
+  channel(input: {id}) { metadata { ... on PinterestMetadata { boards { id name } } } }
 
-Review is on by default and every pin waits for a decision. This recommends
-purchases rather than opinions, so an invented feature is worth catching
-before it publishes. Rejecting a pin also suppresses that product.
+publish() now resolves and caches a board before building the request, and
+says what is wrong when it cannot.
 
-Controls: a dashboard toggle, four endpoints, and two NOVI commands. Off by
-default and persisted across restarts, since it spends an affiliate quota and
-posts to a public account.
+Verified against the live account: the query works, and the board list comes
+back empty because the Pinterest account has no boards yet. That is the
+remaining blocker and it is fixed on Pinterest, not here.
 
-upload_image now takes a bucket so pin images stay out of the article heroes.
+Everything before that step is confirmed working end to end against the real
+account: Buffer connected, channel found, copy written, a 195 KB branded pin
+built from the real product photo, image hosted publicly, compliance passed.
 
-341 tests pass.
+Also stopped the upload failure message naming article-images when a
+different bucket was asked for, which sent me looking in the wrong place.
