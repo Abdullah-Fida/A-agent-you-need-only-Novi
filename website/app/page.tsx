@@ -119,8 +119,26 @@ export default async function HomePage() {
           <div className="front-main">
             <Link href={`/${lead.slug}`} className="lead">
               <div className="lead-imgwrap">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={lead.main_image_url} alt="" className="lead-img" />
+                {/*
+                  The most-requested asset on the site. As a plain <img> it
+                  bypassed the optimizer completely: a full-size JPEG served
+                  straight from Supabase on every single homepage view, with
+                  no CDN cache and no AVIF conversion. Through next/image it
+                  is resized, converted and cached at the edge, which is what
+                  keeps Supabase egress flat as traffic grows.
+
+                  priority, because this is the largest-contentful-paint
+                  element and Core Web Vitals is a ranking signal.
+                */}
+                <Image
+                  src={lead.main_image_url}
+                  alt=""
+                  className="lead-img"
+                  width={1200}
+                  height={675}
+                  sizes="(max-width: 980px) 100vw, 66vw"
+                  priority
+                />
                 <span className={`chip chip--${(lead.category || 'news').toLowerCase()}`}>
                   {lead.category}
                 </span>
