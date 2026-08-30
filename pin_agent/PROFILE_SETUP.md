@@ -127,41 +127,34 @@ Notes:
 
 ## 4. Create the six boards
 
-Click **Create a board** (the red button already on your screen), once per row.
-Name it, then open the board → **pencil icon** → paste the description → set
-the cover image.
+Click **Create a board**, once per row. Name it, then open the board →
+**pencil icon** → paste the description.
+
+**Do not chase the cover images yet.** Pinterest builds a board cover from pins
+already inside that board — there is no upload-a-cover control. The covers in
+`assets/brand/` are only usable by pinning one to its board first and then
+selecting it, which is cosmetic work that blocks nothing. Boards fill their own
+covers from the newest pin once the agent starts posting.
 
 **Leave every board public.** A secret board publishes nothing.
 
 ### 1. Small Kitchen Organization
 > Storage ideas for kitchens with no counter space. Drawer dividers, cabinet risers, over-the-sink racks and corner organizers that make a small kitchen work harder. Affiliate links marked #ad.
 
-Cover: `board_1_small-kitchen-organization.jpg`
-
 ### 2. Kitchen Gadgets Worth Buying
 > Kitchen tools that earn their drawer space - herb scissors, jar openers, measuring sets and prep gadgets. Skip the clutter, keep the useful ones. Affiliate links marked #ad.
-
-Cover: `board_2_kitchen-gadgets-worth-buying.jpg`
 
 ### 3. Pantry and Fridge Storage
 > Airtight jars, stackable bins, egg holders and fridge organizers that stop food going to waste and make shelves easy to read at a glance. Affiliate links marked #ad.
 
-Cover: `board_3_pantry-and-fridge-storage.jpg`
-
 ### 4. Under Sink and Cabinet Storage
 > The most wasted space in the house, sorted. Pull-out drawers, sliding trays, tension rods and stacking shelves for under-sink cabinets. Affiliate links marked #ad.
-
-Cover: `board_4_under-sink-and-cabinet-storage.jpg`
 
 ### 5. Bathroom Storage Ideas
 > Shower caddies, over-toilet shelving, drawer trays and counter organizers for bathrooms with nowhere to put anything. Affiliate links marked #ad.
 
-Cover: `board_5_bathroom-storage-ideas.jpg`
-
 ### 6. Tiny Apartment Solutions
 > Space-saving ideas for renters and small flats - foldable racks, wall hooks, over-door storage and furniture that does two jobs. Affiliate links marked #ad.
-
-Cover: `board_6_tiny-apartment-solutions.jpg`
 
 ---
 
