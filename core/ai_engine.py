@@ -3,6 +3,7 @@ Multi-Key OpenRouter AI Engine with automatic failover, retry, and self-healing.
 Routes different tasks to different free models via a pool of API keys.
 """
 import asyncio
+import contextlib
 import logging
 import random
 import re
@@ -122,7 +123,9 @@ class AIEngine:
 
     def __init__(self, api_keys: List[str], db=None, base_url: str = "",
                  provider: str = "openrouter", default_model: str = "",
-                 label: str = "AI"):
+                 label: str = "AI", backup_keys: Optional[List[str]] = None,
+                 backup_provider: str = "", backup_model: str = "",
+                 backup_base_url: str = ""):
         """
         Args:
             api_keys:      one or more keys, rotated on failure
@@ -130,16 +133,32 @@ class AIEngine:
             provider:      'openrouter' | 'groq' | 'openai'
             default_model: model used when a task has no specific mapping
             label:         name used in logs, e.g. 'ArticleAI'
+            backup_keys:   keys for a SECOND provider, used only when every
+                           model on the first one has failed. Model-level
+                           fallback cannot survive the provider itself being
+                           down, and that outage stops the whole bot.
         """
         if not api_keys:
             raise ValueError(f"{label}: at least one API key is required.")
 
         self.api_keys = api_keys
         self.current_key_index = 0
-        self._model_cache = None
+        self._model_cache = None          # provider catalogue, read once
         # Flipped off permanently if the provider rejects the parameter, so one
         # unsupported deployment does not fail every later call.
-        self._reasoning_effort_ok = True          # provider catalogue, read once
+        self._reasoning_effort_ok = True
+
+        # Second provider, tried only when the first is completely exhausted.
+        self.backup_keys = [k.strip() for k in (backup_keys or []) if k.strip()]
+        self.backup_provider = (backup_provider or "").strip().lower()
+        self.backup_model = (backup_model or "").strip()
+        self.backup_base_url = (backup_base_url or "").strip()
+        self._failing_over = False
+        if self.backup_keys and self.backup_provider:
+            logger.info(f"{label}: backup provider configured "
+                        f"({self.backup_provider} / "
+                        f"{self.backup_model or 'provider default'}).")
+
         self._retired_reported = set()    # one warning per retired model
         self.notification_manager = None  # wired by main after construction
         self.db = db
@@ -445,6 +464,43 @@ class AIEngine:
         # Unknown provider: the configured model is the only thing we can trust.
         return self.default_model or DEFAULT_MODEL
 
+    def _can_fail_over(self) -> bool:
+        """Whether a second provider is available and not already in use."""
+        return bool(self.backup_keys and self.backup_provider
+                    and not self._failing_over)
+
+    @contextlib.asynccontextmanager
+    async def _on_backup_provider(self):
+        """
+        Swaps in the backup provider for one call, then restores everything.
+
+        The client, keys, provider, model and the cached model catalogue all
+        belong to a provider, so all of them move together -- leaving the
+        catalogue behind would offer Groq model names to OpenRouter, which is
+        the bug this whole fallback path exists to avoid.
+        """
+        saved = (self.client, self.api_keys, self.current_key_index,
+                 self.provider, self.base_url, self.default_model,
+                 self._model_cache, self._reasoning_effort_ok)
+        self._failing_over = True
+        try:
+            self.api_keys = self.backup_keys
+            self.current_key_index = 0
+            self.provider = self.backup_provider
+            self.base_url = (self.backup_base_url
+                             or self.PROVIDERS.get(self.backup_provider, ""))
+            self.default_model = self.backup_model
+            self._model_cache = None
+            self._reasoning_effort_ok = True
+            # _build_client assigns self.client rather than returning it.
+            self._build_client()
+            yield
+        finally:
+            (self.client, self.api_keys, self.current_key_index,
+             self.provider, self.base_url, self.default_model,
+             self._model_cache, self._reasoning_effort_ok) = saved
+            self._failing_over = False
+
     async def generate(self, task: str, system_prompt: str, user_prompt: str,
                        max_tokens: int = 500, temperature: float = 0.7,
                        validator=None, min_attempts: int = 3) -> Optional[str]:
@@ -596,6 +652,19 @@ class AIEngine:
                     self._rotate_key()
 
                 await self._backoff(attempt)
+
+        # Every model on this provider is exhausted. If a second provider is
+        # configured, try it before giving up: model-level fallback cannot
+        # help when the provider itself is down, rate-limited or unreachable,
+        # and that outage takes the whole bot with it.
+        if self._can_fail_over():
+            logger.error(f"{self.label}: {self.provider} exhausted "
+                         f"({last_error}). Failing over to {self.backup_provider}.")
+            async with self._on_backup_provider():
+                return await self.generate(
+                    task=task, system_prompt=system_prompt, user_prompt=user_prompt,
+                    max_tokens=max_tokens, temperature=temperature,
+                    validator=validator, min_attempts=min_attempts)
 
         logger.critical(f"AI generation failed after {max_attempts} attempts. Last error: {last_error}")
         if self.db:

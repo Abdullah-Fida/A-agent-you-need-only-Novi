@@ -66,6 +66,12 @@ async def main():
         base_url=config.news_api_base,
         default_model=config.news_model,
         label="NewsAI",
+        # A second provider, tried only once every model on the first has
+        # failed. One provider and one key was a single point of failure for
+        # the entire bot.
+        backup_keys=config.backup_api_keys,
+        backup_provider=config.backup_api_provider,
+        backup_model=config.backup_model,
     )
 
     # The Article Agent can run on its OWN provider, key and model (OpenRouter,
@@ -79,6 +85,9 @@ async def main():
             base_url=config.article_api_base,
             default_model=config.article_model,
             label="ArticleAI",
+            backup_keys=config.backup_api_keys,
+            backup_provider=config.backup_api_provider,
+            backup_model=config.backup_model,
         )
         logger.info(f"Article Agent has a dedicated AI: {config.article_api_provider} "
                     f"/ {config.article_model or 'provider default'}")
@@ -500,6 +509,16 @@ async def main():
                 await asyncio.sleep(300)
                 continue
             
+            # ---- Deferred website articles ----
+            # A story held back because it had no picture, or because it
+            # failed the pre-publish quality check, is rewritten once its
+            # delay has elapsed. Independent of the post slots: the Telegram
+            # post already went out, only the article is outstanding.
+            try:
+                await fanout.retry_due_articles()
+            except Exception as e:
+                logger.error(f"Deferred article pass failed: {type(e).__name__}: {e}")
+
             # ---- News Agent Post Slot (only if news_module_active) ----
             if brain.news_module_active:
                 slot = brain.get_next_post_slot()

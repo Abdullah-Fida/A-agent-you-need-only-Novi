@@ -1807,5 +1807,159 @@ class TestPinModuleIsOffByDefault(unittest.TestCase):
             self.assertLessEqual(load_pin_config().pins_per_day, 15)
 
 
+class TestArticleQualityGate(unittest.TestCase):
+    """
+    The last check before an article is published.
+
+    Every case here is a failure that actually reached the site or the feed:
+    narration published as prose, a body cut off mid-sentence, a meta
+    description sliced through a word.
+    """
+
+    def setUp(self):
+        from modules.article_engine import ArticleAgent
+        self.agent = ArticleAgent.__new__(ArticleAgent)
+        body = "<p>" + ("The central bank raised rates on Tuesday. " * 40) + "</p>"
+        self.good = {
+            "title": "Central bank raises rates for the third time this year",
+            "slug": "central-bank-raises-rates-third-time",
+            "content": body,
+            "word_count": 320,
+            "category": "Business",
+            "summary": "Rates rose again on Tuesday.",
+            "meta_title": "Central bank raises rates for the third time",
+            "meta_description": (
+                "The central bank lifted its benchmark rate again on Tuesday, "
+                "the third increase this year, as policymakers press on."),
+            "seo_keywords": ["central bank", "interest rates", "monetary policy"],
+        }
+
+    def blocking(self, **overrides):
+        return self.agent._quality_issues({**self.good, **overrides})[0]
+
+    def fixable(self, **overrides):
+        return self.agent._quality_issues({**self.good, **overrides})[1]
+
+    def test_a_clean_article_passes_untouched(self):
+        blocking, fixable = self.agent._quality_issues(self.good)
+        self.assertEqual(blocking, [])
+        self.assertEqual(fixable, [])
+
+    def test_narration_is_blocked(self):
+        body = "<p>Here is the article you requested. " + ("Filler. " * 80) + "</p>"
+        self.assertTrue(self.blocking(content=body))
+
+    def test_placeholder_text_is_blocked(self):
+        body = "<p>Lorem ipsum dolor sit amet. " + ("More filler. " * 80) + "</p>"
+        self.assertTrue(self.blocking(content=body))
+
+    def test_doubled_word_is_blocked(self):
+        body = "<p>The the bank raised rates. " + ("Prose follows. " * 80) + "</p>"
+        self.assertTrue(any("doubled" in p for p in self.blocking(content=body)))
+
+    def test_a_body_cut_off_mid_sentence_is_blocked(self):
+        body = "<p>" + ("Prose continues. " * 80) + "and then it just</p>"
+        self.assertTrue(any("mid-sentence" in p for p in self.blocking(content=body)))
+
+    def test_unbalanced_markup_is_blocked(self):
+        self.assertTrue(any("unbalanced" in p
+                            for p in self.blocking(content="<p>" + ("Text here. " * 80))))
+
+    def test_malformed_slug_is_blocked(self):
+        self.assertTrue(any("slug" in p for p in self.blocking(slug="Bad_Slug!!")))
+
+    def test_short_article_is_blocked(self):
+        self.assertTrue(self.blocking(word_count=90))
+
+    def test_seo_problems_are_fixable_not_blocking(self):
+        # An over-long meta title is untidy. It is not a reason to spike the
+        # piece, so it must never appear in the blocking list.
+        overrides = dict(meta_title="x" * 120, meta_description="Short.",
+                         seo_keywords=["one"])
+        self.assertEqual(self.blocking(**overrides), [])
+        self.assertTrue(self.fixable(**overrides))
+
+    def test_repair_clears_every_fixable_problem(self):
+        bad = {**self.good,
+               "title": "CENTRAL BANK RAISES RATES AGAIN...",
+               "meta_title": "x" * 120,
+               "meta_description": "Short.",
+               "summary": "",
+               "seo_keywords": ["rates"]}
+        _, fixable = self.agent._quality_issues(bad)
+        self.assertTrue(fixable)
+
+        repaired = self.agent._repair_record(bad, fixable)
+        blocking_after, fixable_after = self.agent._quality_issues(repaired)
+        self.assertEqual(fixable_after, [], f"repair left: {fixable_after}")
+        self.assertEqual(blocking_after, [], "repair introduced a blocking fault")
+
+    def test_repair_never_cuts_metadata_mid_word(self):
+        bad = {**self.good, "meta_title": "Central bank raises interest rates "
+                                          "for the third consecutive time this year"}
+        repaired = self.agent._repair_record(bad, ["meta title too long"])
+        self.assertLessEqual(len(repaired["meta_title"]), 70)
+        # Whatever survives must end on a real boundary, not a half word.
+        self.assertRegex(repaired["meta_title"], r"[\w.!?\u2026\)\"']$")
+
+
+class TestSourcePhotoPreferredOverGenerated(unittest.TestCase):
+    """
+    The outlet's own photograph outranks a generated illustration.
+
+    This was the other way round: Bing ran first and the real picture was
+    only ever reached when Bing failed, which is backwards for reporting.
+    """
+
+    def test_generator_tries_the_story_photo_before_bing(self):
+        import inspect
+        from modules.image_generator import ImageGenerator
+        src = inspect.getsource(ImageGenerator.generate)
+        self.assertLess(src.index("story_image_url"), src.index("self.bing_cookie"),
+                        "Bing must not be attempted before the story photograph")
+
+    def test_three_generation_attempts(self):
+        from modules.image_generator import ImageGenerator
+        self.assertGreaterEqual(ImageGenerator.BING_ATTEMPTS, 3)
+
+    def test_allow_card_false_is_honoured(self):
+        import inspect
+        from modules.image_generator import ImageGenerator
+        self.assertIn("allow_card",
+                      inspect.signature(ImageGenerator.generate).parameters)
+
+
+class TestArticleDeferral(unittest.TestCase):
+    """A story with no picture is held back, not published and not lost."""
+
+    def test_fanout_retries_after_thirty_minutes(self):
+        from modules.fanout import Fanout
+        self.assertEqual(Fanout.ARTICLE_RETRY_MINUTES, 30)
+        self.assertEqual(Fanout.MAX_ARTICLE_ATTEMPTS, 3)
+
+    def test_a_deferred_story_is_queued(self):
+        from modules.fanout import Fanout
+        f = Fanout()
+        f._defer_article({"title": "A story"}, {"image_url": "", "category": "World"},
+                         reason="no hero image", attempts=0)
+        self.assertEqual(f.deferred_count, 1)
+
+    def test_it_gives_up_rather_than_looping_forever(self):
+        from modules.fanout import Fanout
+        f = Fanout()
+        f._defer_article({"title": "A story"}, {}, reason="no image",
+                         attempts=Fanout.MAX_ARTICLE_ATTEMPTS - 1)
+        self.assertEqual(f.deferred_count, 0)
+
+    def test_nothing_is_due_before_its_delay_elapses(self):
+        from modules.fanout import Fanout
+        f = Fanout()
+        f._defer_article({"title": "A story"}, {}, reason="no image", attempts=0)
+        published = asyncio.get_event_loop_policy().new_event_loop().run_until_complete(
+            f.retry_due_articles())
+        self.assertEqual(published, 0)
+        self.assertEqual(f.deferred_count, 1, "a not-yet-due story was dropped")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -12,7 +12,7 @@ article-writing API later means changing only `AIEngine.MODELS["article"]`
 import asyncio
 import logging
 import re
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 
 from core.ai_engine import AIEngine
 
@@ -31,6 +31,14 @@ class ArticleAgent:
 
     MIN_ACCEPTABLE_WORDS = 250
 
+    # Tries at producing a hero image before the article is deferred rather
+    # than published without one.
+    IMAGE_ATTEMPTS = 3
+
+    # How long before a deferred story is worth trying again. Matches the
+    # brain's own retry delay so the two do not disagree.
+    RETRY_MINUTES = 30
+
     def __init__(self, ai_engine: AIEngine, db=None, site_name: str = "Novi News",
                  site_url: str = "", image_gen=None):
         self.ai = ai_engine
@@ -39,6 +47,12 @@ class ArticleAgent:
         self.site_url = (site_url or "").rstrip("/")
         self.image_gen = image_gen
         self.articles_written = 0
+
+        # Why the last attempt produced nothing, and whether it is worth
+        # retrying. Returning a bare None told the caller a story had failed
+        # but not whether waiting would help.
+        self.last_skip_reason = ""
+        self.retry_after_minutes = 0
         logger.info(f"ArticleAgent initialized "
                     f"(image generation: {'on' if image_gen else 'OFF — no generator supplied'}).")
 
@@ -118,6 +132,11 @@ class ArticleAgent:
         that filed every article under one section and picked the world-news
         illustration for crypto stories.
         """
+        # Cleared per run, so a caller reading these after a success is not
+        # looking at the previous story's failure.
+        self.last_skip_reason = ""
+        self.retry_after_minutes = 0
+
         title = (story.get("title") or "").strip() or "Breaking News Update"
         summary = (story.get("summary") or "").strip()
         pipeline_category = (category or story.get("category") or "").strip()
@@ -149,6 +168,17 @@ class ArticleAgent:
                              story_image_url=story.get("real_image_url", "")),
         )
 
+        # An article with no picture is not publishable. The story is not
+        # discarded -- retry_after_minutes tells the caller to come back, and
+        # the outlet's photo or the generator is usually available later.
+        if not hero_url:
+            self.last_skip_reason = "no hero image"
+            self.retry_after_minutes = self.RETRY_MINUTES
+            logger.warning(f"Deferring '{title[:50]}' — no hero image after "
+                           f"{self.IMAGE_ATTEMPTS} attempts. Retrying in "
+                           f"{self.RETRY_MINUTES} minutes.")
+            return None
+
         base_slug = self._slugify(seo.get("slug_hint") or title)
         slug = await self._unique_slug(base_slug)
 
@@ -171,6 +201,28 @@ class ArticleAgent:
             "status": "published",
         }
 
+        # Last gate before anything is published. Fixable problems are
+        # repaired; anything blocking means the piece is wrong rather than
+        # untidy, so it is deferred and written again from scratch.
+        blocking, fixable = self._quality_issues(record)
+
+        if fixable:
+            logger.info(f"Article '{slug}' tidied before publishing: "
+                        + "; ".join(fixable))
+            record = self._repair_record(record, fixable)
+            # Repairs can only remove problems, but re-checking is what proves
+            # that rather than assuming it.
+            blocking, still = self._quality_issues(record)
+            if still:
+                logger.warning(f"Still imperfect after repair: {'; '.join(still)}")
+
+        if blocking:
+            self.last_skip_reason = "; ".join(blocking)
+            self.retry_after_minutes = self.RETRY_MINUTES
+            logger.warning(f"Deferring '{title[:50]}' — failed the quality "
+                           f"check: {self.last_skip_reason}")
+            return None
+
         saved = None
         if self.db:
             saved = await self.db.save_article(record)
@@ -184,49 +236,237 @@ class ArticleAgent:
                     f"{record['reading_minutes']} min read)")
         return saved or record
 
+    # ── pre-publish quality gate ─────────────────────────────────
+    #
+    # Deterministic, and deliberately not a model call. Asking a language
+    # model whether its own output is good is the least reliable check
+    # available, and every rule below is one that has actually shipped:
+    # narration published as an article, a meta description cut mid-word, a
+    # headline still carrying another outlet's newsletter tag.
+
+    # Phrases that mean the model described the task instead of doing it.
+    _BAD_BODY_MARKERS = (
+        "as an ai", "as a language model", "i cannot", "i can't help",
+        "here is the article", "here's the article", "here is a", "sure, here",
+        "let me write", "i will write", "certainly!", "below is the",
+        "lorem ipsum", "todo", "xxxxx", "[insert", "placeholder",
+        "word count:", "meta description:", "seo keywords:",
+    )
+
+    # A doubled word that is genuinely wrong. Words that legitimately repeat
+    # in English ("had had", "that that") are left out on purpose.
+    _DOUBLED = re.compile(
+        r"\b(the|a|an|of|to|in|and|is|was|for|on|with|it)\s+\1\b", re.I)
+
+    def _quality_issues(self, record: Dict) -> Tuple[List[str], List[str]]:
+        """
+        Checks a finished article before it is published.
+
+        Returns (blocking, fixable). Blocking problems mean the article is
+        wrong, not merely untidy, and it is deferred rather than published.
+        Fixable ones are repaired in code and do not stop the publish.
+        """
+        blocking: List[str] = []
+        fixable: List[str] = []
+
+        title = record.get("title") or ""
+        body = record.get("content") or ""
+        text = re.sub(r"<[^>]+>", " ", body)
+        text = re.sub(r"\s+", " ", text).strip()
+        lowered = text[:600].lower()
+
+        # ── the body ──
+        if not body.strip():
+            blocking.append("empty body")
+        if record.get("word_count", 0) < self.MIN_ACCEPTABLE_WORDS:
+            blocking.append(f"only {record.get('word_count', 0)} words")
+        if "<p" not in body.lower():
+            blocking.append("body has no paragraphs")
+
+        hit = next((m for m in self._BAD_BODY_MARKERS if m in lowered), "")
+        if hit:
+            blocking.append(f"narration or placeholder text ({hit!r})")
+
+        doubled = self._DOUBLED.search(text)
+        if doubled:
+            blocking.append(f"doubled word ({doubled.group(0)!r})")
+
+        # A body that stops mid-sentence is a truncated generation, not prose.
+        if text and text[-1] not in ".!?\"')":
+            blocking.append("body ends mid-sentence")
+
+        # Unbalanced tags render as raw markup on the page.
+        for tag in ("p", "h2", "h3", "ul", "li", "strong"):
+            if body.lower().count(f"<{tag}") != body.lower().count(f"</{tag}>"):
+                blocking.append(f"unbalanced <{tag}> tags")
+                break
+
+        # ── the headline ──
+        if len(title) < 20:
+            blocking.append("headline too short")
+        if title.isupper() and len(title) > 12:
+            fixable.append("headline is all caps")
+        if title.rstrip().endswith(("...", "…", "-", "|")):
+            fixable.append("headline ends in a dangling separator")
+
+        # ── SEO ──
+        meta_title = record.get("meta_title") or ""
+        meta_desc = record.get("meta_description") or ""
+        keywords = record.get("seo_keywords") or []
+
+        if not meta_title:
+            fixable.append("no meta title")
+        elif len(meta_title) > 70:
+            fixable.append(f"meta title {len(meta_title)} chars (max 70)")
+
+        if not meta_desc:
+            fixable.append("no meta description")
+        else:
+            if len(meta_desc) > 160:
+                fixable.append(f"meta description {len(meta_desc)} chars (max 160)")
+            if len(meta_desc) < 50:
+                fixable.append(f"meta description only {len(meta_desc)} chars")
+            if meta_desc.rstrip().endswith(("-", ",", "and", "the", "of")):
+                fixable.append("meta description cut mid-phrase")
+
+        if len(keywords) < 3:
+            fixable.append(f"only {len(keywords)} SEO keywords")
+
+        slug = record.get("slug") or ""
+        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", slug or ""):
+            blocking.append(f"malformed slug {slug!r}")
+        elif len(slug) > 80:
+            fixable.append("slug over 80 characters")
+
+        if not (record.get("summary") or "").strip():
+            fixable.append("no summary")
+
+        return blocking, fixable
+
+    def _repair_record(self, record: Dict, problems: List[str]) -> Dict:
+        """
+        Fixes the cosmetic problems the gate found.
+
+        Only touches what is safe to derive in code. Anything needing
+        judgement is left for the gate to block on, because a wrong repair is
+        worse than a deferred article.
+        """
+        fixed = dict(record)
+        title = fixed.get("title") or ""
+
+        if any("all caps" in p for p in problems):
+            fixed["title"] = title.title()
+        if any("dangling separator" in p for p in problems):
+            fixed["title"] = re.sub(r"[\s.\-|…]+$", "", fixed.get("title") or "")
+
+        # Meta title and description are trimmed on a sentence or word
+        # boundary; the old code cut on a character count and left words
+        # sliced in half in Google's results.
+        mt = fixed.get("meta_title") or fixed.get("title") or ""
+        fixed["meta_title"] = self._trim_to_sentence(mt, 70)
+
+        md = fixed.get("meta_description") or fixed.get("summary") or ""
+        if len(md) < 50:
+            # Too thin to be useful: rebuild it from the opening of the body.
+            body_text = re.sub(r"\s+", " ", self._strip_html(fixed.get("content", ""))).strip()
+            md = body_text[:300] or md
+        fixed["meta_description"] = self._trim_to_sentence(md, 160)
+
+        if len(fixed.get("seo_keywords") or []) < 3:
+            fixed["seo_keywords"] = (self._derive_keywords(
+                fixed.get("title", ""), fixed.get("category", "")) or [])[:12]
+
+        if not (fixed.get("summary") or "").strip():
+            body_text = re.sub(r"\s+", " ", self._strip_html(fixed.get("content", ""))).strip()
+            fixed["summary"] = self._trim_to_sentence(body_text, 300)
+
+        if len(fixed.get("slug") or "") > 80:
+            fixed["slug"] = (fixed["slug"][:80]).rsplit("-", 1)[0].strip("-")
+
+        return fixed
+
     async def _hero_image(self, title: str, category: str,
                           provided_url: str = "", story_image_url: str = "") -> str:
         """
         Returns a publicly reachable hero image URL for the article.
 
-        `provided_url` is normally the picture already generated and uploaded
-        for the Telegram post, so the usual path costs nothing: one image is
-        made per story and every channel shares it.
+        Order: the outlet's own photo, then whatever was already made for the
+        Telegram post, then a generated image. The outlet's photo comes first
+        because it shows the actual event, and because it costs one download
+        rather than a minute of generation.
 
-        Only when there is no such image does the agent generate its own, and
-        only when that fails does it fall back to the photo published with the
-        original story.
+        Returns "" when nothing usable could be produced. The caller must NOT
+        publish in that case -- an article with an empty image well is the one
+        thing that makes a news site look broken.
         """
+        # 1. The photograph published with the story.
+        if story_image_url and await self._image_loads(story_image_url):
+            logger.info("Article hero: the photo published with the story.")
+            return story_image_url
+
+        # 2. The picture already made and hosted for the Telegram post, so a
+        #    story that needed generating is only generated once.
         if provided_url:
             return provided_url
 
-        if self.image_gen:
+        # 3. Generate one. allow_card=False: a drawn headline card is fine on
+        #    Telegram, where the alternative is no post, but on the website it
+        #    is a placeholder and we would rather wait and retry.
+        if not self.image_gen:
+            logger.warning("ArticleAgent has no image generator.")
+            return ""
+
+        for attempt in range(1, self.IMAGE_ATTEMPTS + 1):
             try:
                 local_path = await self.image_gen.generate(
                     headline=title,
                     category=self._image_category(category),
                     source_credit=self.site_name,
                     story_image_url=story_image_url,
+                    allow_card=False,
                 )
             except Exception as e:
-                logger.error(f"Hero image generation failed: {type(e).__name__}: {e}")
+                logger.error(f"Hero image generation failed "
+                             f"(attempt {attempt}/{self.IMAGE_ATTEMPTS}): "
+                             f"{type(e).__name__}: {e}")
                 local_path = None
 
             if local_path and self.db:
                 url = await self.db.upload_image(local_path)
                 if url:
                     return url
-                logger.warning("Hero image could not be hosted — run database/schema.sql "
-                               "to create the 'article-images' bucket.")
-        else:
-            logger.warning("ArticleAgent has no image generator.")
+                logger.warning("Hero image could not be hosted — run "
+                               "database/schema.sql to create the "
+                               "'article-images' bucket.")
 
-        # Last resort: the photo the outlet published with the story.
-        if story_image_url:
-            logger.info("Using the original news photo as the article hero.")
-            return story_image_url
-
+        logger.warning(f"No usable hero image after {self.IMAGE_ATTEMPTS} attempts.")
         return ""
+
+    async def _image_loads(self, url: str) -> bool:
+        """
+        Whether a URL actually serves an image.
+
+        A link in a feed is not proof of a picture: outlets rotate CDN paths
+        and expire assets, and a 404 in the hero slot looks exactly as broken
+        as no image at all. Checked with a HEAD so nothing is downloaded.
+        """
+        if not (url or "").startswith("http"):
+            return False
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+                r = await client.head(url)
+                if r.status_code >= 400:
+                    # Some CDNs refuse HEAD but serve GET perfectly well.
+                    r = await client.get(url, headers={"Range": "bytes=0-1023"})
+            ok = r.status_code < 400 and "image" in r.headers.get("content-type", "")
+            if not ok:
+                logger.warning(f"Story photo not usable (HTTP {r.status_code}, "
+                               f"{r.headers.get('content-type', '?')}).")
+            return ok
+        except Exception as e:
+            logger.warning(f"Story photo unreachable: {type(e).__name__}: {e}")
+            return False
 
     @staticmethod
     def _image_category(category: str) -> str:
@@ -412,16 +652,28 @@ broader implications instead."""
 
     @staticmethod
     def _trim_to_sentence(text: str, limit: int) -> str:
-        """Cuts at a sentence boundary where possible, so it doesn't end mid-word."""
+        """
+        Cuts at a sentence boundary where possible, so it doesn't end mid-word.
+
+        The result is never longer than `limit`. The ellipsis used to be added
+        after the text had already been cut to the limit, so a 70-character
+        meta title came back at 71 and Google truncated it anyway -- the exact
+        thing this function exists to prevent.
+        """
         text = re.sub(r"\s+", " ", text or "").strip()
         if len(text) <= limit:
             return text
+
         cut = text[:limit]
         stop = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
         if stop > limit * 0.55:
             return cut[:stop + 1].strip()
+
+        # Leave room for the ellipsis inside the budget, not beyond it.
+        cut = text[:max(1, limit - 1)]
         space = cut.rfind(" ")
-        return (cut[:space] if space > 0 else cut).strip().rstrip(",;:") + "…"
+        trimmed = (cut[:space] if space > 0 else cut).strip().rstrip(",;:")
+        return (trimmed + "…")[:limit]
 
     @classmethod
     def _parse_json(cls, raw: Optional[str]) -> Optional[Dict]:

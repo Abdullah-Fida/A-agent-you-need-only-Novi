@@ -28,6 +28,13 @@ class BotConfig:
     # AI — Article Agent (its own provider/key/model, kept separate so the
     # blog writer can run on a stronger paid model without touching the rest)
     article_api_keys: List[str] = field(default_factory=list)
+
+    # A SECOND provider, used only when every model on the first has failed.
+    # Model-level fallback cannot survive the provider itself being down, and
+    # with one provider and one key that outage stops the whole bot.
+    backup_api_keys: List[str] = field(default_factory=list)
+    backup_api_provider: str = ""
+    backup_model: str = ""
     article_api_provider: str = "openrouter"   # openrouter | groq | openai
     article_api_base: str = ""                 # explicit override
     article_model: str = ""
@@ -85,6 +92,39 @@ class BotConfig:
     email_receiver: str = ""
     resend_api_key: str = ""
 
+def _backup_provider() -> str:
+    """
+    The provider to fall back to. Defaults to whichever of the two known
+    providers is NOT the primary, so a spare key already in the environment
+    becomes a safety net with no extra configuration.
+    """
+    explicit = _clean(os.getenv("BACKUP_API_PROVIDER", "")).lower()
+    if explicit:
+        return explicit
+    primary = (_clean(os.getenv("NEWS_API_PROVIDER", "")) or "openrouter").lower()
+    return "openrouter" if primary == "groq" else "groq"
+
+
+def _backup_keys() -> List[str]:
+    """
+    Keys for the backup provider.
+
+    Falls back to whatever spare key the environment already holds for the
+    other provider: running on Groq usually means an unused OpenRouter key is
+    still configured, and an unused key is a free second chance.
+    """
+    explicit = _csv("BACKUP_API_KEYS")
+    if explicit:
+        return explicit
+
+    provider = _backup_provider()
+    if provider == "openrouter":
+        return _csv("OPENROUTER_API_KEYS") or _csv("OPENROUTER_API_KEY")
+    if provider == "groq":
+        return _csv("GROQ_API_KEY") or _csv("GROQ_API_KEYS")
+    return []
+
+
 def _news_keys(openrouter_keys):
     """
     The keys that match the provider the News AI is pointed at.
@@ -131,6 +171,9 @@ def load_config() -> BotConfig:
         news_api_base=_clean(os.getenv("NEWS_API_BASE", "")),
         news_model=_clean(os.getenv("NEWS_MODEL", "")),
         article_api_keys=_csv("ARTICLE_API_KEYS") or _csv("ARTICLE_API_KEY"),
+        backup_api_keys=_backup_keys(),
+        backup_api_provider=_backup_provider(),
+        backup_model=_clean(os.getenv("BACKUP_MODEL", "")),
         article_api_provider=_clean(os.getenv("ARTICLE_API_PROVIDER", "")) or "openrouter",
         article_api_base=_clean(os.getenv("ARTICLE_API_BASE", "")),
         article_model=_clean(os.getenv("ARTICLE_MODEL", "")),

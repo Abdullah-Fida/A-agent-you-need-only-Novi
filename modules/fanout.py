@@ -14,13 +14,21 @@ succeeded.
 """
 import asyncio
 import logging
-from typing import Any, Dict, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("OmniBot.Fanout")
 
 
 class Fanout:
     """Distributes one content package across every secondary platform."""
+
+    # A story that could not be illustrated is worth another look shortly:
+    # the outlet's own photo often appears minutes after the feed entry, and
+    # the generator recovers. Publishing without a picture is not an option,
+    # and throwing the story away over a transient image failure is worse.
+    ARTICLE_RETRY_MINUTES = 30
+    MAX_ARTICLE_ATTEMPTS = 3
 
     def __init__(self, brain=None, db=None, growth_engine=None,
                  reddit=None, twitter=None, buffer=None, article_agent=None,
@@ -33,6 +41,85 @@ class Fanout:
         self.buffer = buffer
         self.article_agent = article_agent
         self.nm = notification_manager
+
+        # Stories waiting for another attempt at an article.
+        self._deferred: List[Dict] = []
+
+    # ── deferred articles ────────────────────────────────────────
+
+    def _defer_article(self, story: Optional[Dict], package: Dict,
+                       reason: str, attempts: int) -> None:
+        """Queues a story for another attempt, or gives up after the cap."""
+        if not story:
+            return
+        if attempts + 1 >= self.MAX_ARTICLE_ATTEMPTS:
+            logger.error(f"Giving up on article for "
+                         f"'{(story.get('title') or '')[:50]}' after "
+                         f"{self.MAX_ARTICLE_ATTEMPTS} attempts — {reason}")
+            return
+
+        due = datetime.now(timezone.utc) + timedelta(minutes=self.ARTICLE_RETRY_MINUTES)
+        self._deferred.append({
+            "story": story,
+            # Only the fields the retry needs, so a whole package is not held
+            # in memory for half an hour.
+            "image_url": package.get("image_url", ""),
+            "category": package.get("category", ""),
+            "due": due,
+            "attempts": attempts + 1,
+            "reason": reason,
+        })
+        logger.info(f"Article for '{(story.get('title') or '')[:50]}' deferred "
+                    f"{self.ARTICLE_RETRY_MINUTES} min "
+                    f"(attempt {attempts + 2}/{self.MAX_ARTICLE_ATTEMPTS}) — {reason}")
+
+    @property
+    def deferred_count(self) -> int:
+        return len(self._deferred)
+
+    async def retry_due_articles(self) -> int:
+        """
+        Rewrites any deferred story whose delay has elapsed.
+
+        Called from the main loop. Returns how many were published this pass.
+        """
+        if not self._deferred or not self.article_agent:
+            return 0
+        if self.brain and not getattr(self.brain, "website_module_active", False):
+            return 0
+
+        now = datetime.now(timezone.utc)
+        due = [d for d in self._deferred if d["due"] <= now]
+        if not due:
+            return 0
+        self._deferred = [d for d in self._deferred if d["due"] > now]
+
+        published = 0
+        for item in due:
+            title = (item["story"].get("title") or "")[:50]
+            logger.info(f"Retrying deferred article: '{title}' "
+                        f"(attempt {item['attempts'] + 1}/{self.MAX_ARTICLE_ATTEMPTS})")
+            try:
+                article = await self.article_agent.generate_and_publish_article(
+                    story=item["story"],
+                    main_image_url=item["image_url"],
+                    category=item["category"],
+                )
+            except Exception as e:
+                logger.error(f"Deferred article raised {type(e).__name__}: {e}")
+                await self._record_error("ArticleAgent.retry", e)
+                article = None
+
+            if article:
+                published += 1
+                logger.info(f"Deferred article published: /{article.get('slug')}")
+            elif getattr(self.article_agent, "retry_after_minutes", 0):
+                self._defer_article(
+                    item["story"],
+                    {"image_url": item["image_url"], "category": item["category"]},
+                    reason=getattr(self.article_agent, "last_skip_reason", "unknown"),
+                    attempts=item["attempts"])
+        return published
 
     async def distribute(self, package: Dict, story: Optional[Dict] = None) -> Dict[str, bool]:
         """
@@ -70,6 +157,15 @@ class Fanout:
                     results["website"] = True
                 else:
                     results["website"] = False
+                    # The agent says whether waiting would help. A missing
+                    # picture or a failed quality check is transient; a story
+                    # it simply could not write is not.
+                    if getattr(self.article_agent, "retry_after_minutes", 0):
+                        self._defer_article(
+                            story, package,
+                            reason=getattr(self.article_agent,
+                                           "last_skip_reason", "unknown"),
+                            attempts=0)
             except Exception as e:
                 logger.error(f"Article publishing failed: {type(e).__name__}: {e}")
                 results["website"] = False

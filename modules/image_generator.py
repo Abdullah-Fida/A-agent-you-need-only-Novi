@@ -1,16 +1,21 @@
 """
 Image Generator.
 
-Pictures come from Bing Image Creator (DALL-E 3) and nowhere else — no other
-generator is used. When Bing cannot deliver, the chain falls back to real
-photography rather than to a different AI:
+Real photography first, generated imagery second:
 
-    1. Bing Image Creator  — DALL-E 3, needs a live `_U` cookie
-    2. The photo published with the original news story
+    1. The photo published with the original news story
+    2. Bing Image Creator — DALL-E 3, needs a live `_U` cookie, retried
     3. A branded headline card drawn locally
 
-Tier 3 needs no network and no installed fonts, so `generate()` returning
-None means the disk write itself failed — nothing else can produce it.
+The order matters. Bing used to run first and the outlet's own photograph was
+only reached when Bing failed, which is backwards for reporting: a picture of
+the actual event beats an illustration of it, and it costs one download rather
+than a minute of generation. No other generator is used.
+
+Tier 3 needs no network and no installed fonts, so `generate()` returning None
+means either the disk write failed or the caller passed `allow_card=False` --
+which the website article does, preferring to defer over publishing a
+placeholder.
 
 The cookie expires every few weeks. When it does, Bing stops redirecting and
 the failure is silent, so a dead cookie raises an email alert asking for a
@@ -128,7 +133,7 @@ class ImageGenerator:
     # Bing's own polling loop can legitimately take over a minute, so its
     # ceiling is generous; the point is only that it cannot run unbounded.
     BING_TIMEOUT = 110.0
-    BING_ATTEMPTS = 2
+    BING_ATTEMPTS = 3
     STORY_IMAGE_TIMEOUT = 25.0
 
     # How many consecutive Bing failures before we conclude the cookie is dead
@@ -168,12 +173,19 @@ class ImageGenerator:
     # ── public API ────────────────────────────────────────────────────
 
     async def generate(self, headline: str, category: str = "default",
-                       source_credit: str = "", story_image_url: str = "") -> Optional[str]:
+                       source_credit: str = "", story_image_url: str = "",
+                       allow_card: bool = True) -> Optional[str]:
         """
-        Returns the path to a saved JPEG, or None only if the disk write failed.
+        Returns the path to a saved JPEG, or None if the disk write failed or
+        `allow_card=False` and no real picture could be obtained.
 
-        `story_image_url` is the photo from the original article, used as a
-        tier before falling back to a drawn card.
+        Order is: the photo the outlet published, then a generated image,
+        then a drawn card. Real reporting imagery first -- an illustration
+        of an event is never better than a picture of it.
+
+        `allow_card=False` returns None instead of drawing a card, for
+        callers that would rather defer and try again than publish a
+        placeholder.
         """
         headline = (headline or "Breaking News").strip()
         deadline = time.monotonic() + self.total_budget
@@ -185,9 +197,28 @@ class ImageGenerator:
         img: Optional[Image.Image] = None
         tier = "card"
 
-        # Bing is the only generator used. It is retried, because it is the
-        # only thing standing between the post and a fallback photograph.
-        if self.bing_cookie:
+        # 1. The photograph the outlet published with the story.
+        #
+        # This runs FIRST, ahead of the generator. It shows the actual event
+        # rather than an illustration of it, it is what a reader expects on a
+        # news page, and it costs one download instead of a minute of image
+        # generation. Bing used to run first and the real photo was only ever
+        # reached when Bing failed, which is backwards for reporting.
+        if story_image_url:
+            try:
+                img = await asyncio.wait_for(
+                    self._from_url(story_image_url),
+                    timeout=min(self.STORY_IMAGE_TIMEOUT, max(left(), 1)),
+                )
+            except Exception as e:
+                logger.warning(f"News photo unusable: {type(e).__name__}: {e}")
+                img = None
+            if img is not None:
+                tier = "story_image"
+                logger.info("Using the photo published with the original story.")
+
+        # 2. Generate one, retried, when the story came without a picture.
+        if img is None and self.bing_cookie:
             for attempt in range(1, self.BING_ATTEMPTS + 1):
                 remaining = left()
                 if remaining < 15:
@@ -217,23 +248,17 @@ class ImageGenerator:
             if img is None:
                 await self._note_bing_failure(headline)
 
-        # Fall back to the photograph the outlet published with the story.
-        # Real reporting imagery beats a synthetic stand-in.
-        if img is None and story_image_url and left() > 5:
-            try:
-                img = await asyncio.wait_for(
-                    self._from_url(story_image_url),
-                    timeout=min(self.STORY_IMAGE_TIMEOUT, left()),
-                )
-            except Exception as e:
-                logger.warning(f"News photo unusable: {type(e).__name__}: {e}")
-                img = None
-            if img is not None:
-                tier = "story_image"
-                logger.info("Using the photo published with the original news story.")
-
+        # 3. Neither worked. The drawn card keeps a Telegram post publishable,
+        #    but it is not a news picture, so callers that would rather wait --
+        #    the website article -- pass allow_card=False and defer instead.
         if img is None:
-            logger.warning("Bing unavailable and no usable news photo — "
+            if not allow_card:
+                logger.warning("No news photo and no generated image; caller "
+                               "asked not to fall back to a card.")
+                self.stats["failed"] = self.stats.get("failed", 0) + 1
+                self.last_source = "none"
+                return None
+            logger.warning("No news photo and Bing unavailable — "
                            "drawing branded headline card.")
             img = self._branded_card(headline, category, source_credit)
 
