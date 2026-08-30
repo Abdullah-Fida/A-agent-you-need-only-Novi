@@ -28,7 +28,10 @@ export default function ArticleCard({ article, showImage = true }: ArticleCardPr
         />
       )}
       <span className="tag">{article.category || 'News'}</span>
-      <h2>{article.title}</h2>
+      {/* h3, not h2: the section name above this card is the h2, and a card
+          title at the same level flattens the outline that both screen
+          readers and search engines read the page structure from. */}
+      <h3>{article.title}</h3>
       {article.summary && <p>{article.summary}</p>}
       <div className="byline">
         <time dateTime={article.published_at}>{date}</time>

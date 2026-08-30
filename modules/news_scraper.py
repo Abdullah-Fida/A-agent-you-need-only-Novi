@@ -135,7 +135,8 @@ class NewsScraper:
                 if link_elem is None:
                     link_elem = item.find('{http://www.w3.org/2005/Atom}link')
                 
-                title = title_elem.text if title_elem is not None and title_elem.text else ""
+                title = self._strip_publisher_tag(
+                    title_elem.text if title_elem is not None and title_elem.text else "")
                 summary = desc_elem.text if desc_elem is not None and desc_elem.text else ""
                 
                 # Get link (handle Atom's href attribute)
@@ -166,6 +167,24 @@ class NewsScraper:
         
         return articles
     
+    # Publishers append their own newsletter or section branding to RSS
+    # titles -- "... backs Trump plan | First Thing". Republished as-is it
+    # advertises somebody else's newsletter on our front page, and it was the
+    # lead headline when it slipped through.
+    #
+    # Only a trailing tag after a separator is removed, and only a short one:
+    # a real headline can contain a dash, so "Cuts to jobs - what it means"
+    # has to survive. Em dash and en dash are included because feeds use both.
+    _PUBLISHER_TAG = re.compile(
+        r"\s+[|–—]\s*[A-Z][A-Za-z'&.]*(?:\s+[A-Za-z'&.]+){0,3}\s*$")
+
+    @staticmethod
+    def _strip_publisher_tag(title: str) -> str:
+        cleaned = NewsScraper._PUBLISHER_TAG.sub("", (title or "").strip())
+        # Never strip so much that nothing sensible is left; a headline that is
+        # mostly its own tag is better published whole than truncated to a word.
+        return cleaned if len(cleaned) >= 25 else (title or "").strip()
+
     # Namespaces publishers actually use for item artwork
     _MRSS = "{http://search.yahoo.com/mrss/}"
     _ITUNES = "{http://www.itunes.com/dtds/podcast-1.0.dtd}"
