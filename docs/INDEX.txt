@@ -16,6 +16,12 @@ ACCOUNTS.txt              which service sits on which gmail, plus the ids that
                           project). NO passwords or API keys -- those live in
                           Render and in render.env, which is gitignored.
 
+ORIGINAL_BLUEPRINT.txt    the original Daily Pulse PK / Novi ecosystem plan,
+                          rescued from plan.txt at the desktop root so it lives
+                          in git rather than loose beside the project.
+                          Historical -- the build has moved past parts of it --
+                          but it records what this was meant to be.
+
 PINTEREST_STRATEGY.txt    the Pinterest module in full: why this category and
                           not decor, the economics, the profile copy, all six
                           boards with their Pinterest serviceIds, the sixteen
