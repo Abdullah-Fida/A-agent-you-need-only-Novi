@@ -36,7 +36,7 @@ export default function ThemeToggle() {
     setTheme(next);
     document.documentElement.setAttribute('data-theme', next);
     try {
-      localStorage.setItem('novi-theme', next);
+      localStorage.setItem('pressvane-theme', next);
     } catch {
       /* private browsing — the choice simply won't persist */
     }

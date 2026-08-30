@@ -34,6 +34,7 @@ export default function Footer() {
             <ul>
               <li><a href={TELEGRAM} target="_blank" rel="noopener noreferrer">Telegram</a></li>
               <li><Link href="/about">About &amp; standards</Link></li>
+              <li><Link href="/privacy">Privacy policy</Link></li>
               <li><a href="/feed.xml">RSS feed</a></li>
               <li><a href="/sitemap.xml">Sitemap</a></li>
             </ul>

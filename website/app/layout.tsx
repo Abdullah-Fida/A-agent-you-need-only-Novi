@@ -152,7 +152,7 @@ export default function RootLayout({
         <script
           dangerouslySetInnerHTML={{
             __html:
-              "try{var t=localStorage.getItem('novi-theme');" +
+              "try{var t=localStorage.getItem('pressvane-theme');" +
               "if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}",
           }}
         />
