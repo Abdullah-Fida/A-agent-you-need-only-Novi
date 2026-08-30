@@ -27,6 +27,40 @@ NICHE_CATEGORIES = {
     "phone_accessories": ["509"],
 }
 
+# A category id alone returns the same best-selling listings on every call, so
+# the deduplication gate would starve within days. These rotate, one per run,
+# which is also how the profile stays spread across its boards instead of
+# piling forty near-identical drawer dividers onto one.
+#
+# Every term is a thing somebody types when they have a problem to solve, not
+# a thing they browse for. That intent is what makes the category convert.
+NICHE_KEYWORDS = {
+    "home_kitchen": [
+        "kitchen drawer organizer",
+        "under sink organizer",
+        "spice rack organizer",
+        "pantry storage container",
+        "fridge organizer bin",
+        "cabinet shelf riser",
+        "over the sink rack",
+        "airtight food container",
+        "utensil holder organizer",
+        "pot lid organizer rack",
+        "stackable storage bin",
+        "corner shelf organizer",
+        "bathroom storage shelf",
+        "wall mounted kitchen rack",
+        "closet organizer box",
+        "kitchen sink caddy",
+    ],
+    "home_decor": [
+        "wall shelf floating",
+        "storage basket woven",
+        "desk organizer wood",
+        "entryway key holder",
+    ],
+}
+
 
 class AliExpressClient:
     """Fetches affiliate products. Falls back to sample data with no keys."""
@@ -38,6 +72,7 @@ class AliExpressClient:
         self.tracking_id = (tracking_id or "").strip()
         self.niche = niche
         self.last_error = ""
+        self._keyword_index = 0
 
         if not self.is_live:
             logger.warning("AliExpress credentials missing - running on sample "
@@ -74,6 +109,20 @@ class AliExpressClient:
         params["sign"] = self._sign(params)
         return params
 
+    def next_keywords(self) -> str:
+        """
+        The next search term for this niche, round-robin.
+
+        Advances even when the query later fails, so a term that returns
+        nothing usable cannot pin the agent to itself forever.
+        """
+        terms = NICHE_KEYWORDS.get(self.niche) or []
+        if not terms:
+            return ""
+        term = terms[self._keyword_index % len(terms)]
+        self._keyword_index += 1
+        return term
+
     async def fetch_products(self, keywords: str = "", page: int = 1,
                              page_size: int = 40) -> List[Dict]:
         """Returns normalised product dicts. Never raises."""
@@ -82,7 +131,7 @@ class AliExpressClient:
 
         categories = NICHE_CATEGORIES.get(self.niche, [])
         params = self._build_params("aliexpress.affiliate.product.query", {
-            "keywords": keywords,
+            "keywords": keywords or self.next_keywords(),
             "category_ids": ",".join(categories),
             "page_no": page,
             "page_size": min(page_size, 50),
