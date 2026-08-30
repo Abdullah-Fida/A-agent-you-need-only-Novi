@@ -40,12 +40,13 @@ class ArticleAgent:
     RETRY_MINUTES = 30
 
     def __init__(self, ai_engine: AIEngine, db=None, site_name: str = "Novi News",
-                 site_url: str = "", image_gen=None):
+                 site_url: str = "", image_gen=None, indexnow=None):
         self.ai = ai_engine
         self.db = db
         self.site_name = site_name
         self.site_url = (site_url or "").rstrip("/")
         self.image_gen = image_gen
+        self.indexnow = indexnow
         self.articles_written = 0
 
         # Why the last attempt produced nothing, and whether it is worth
@@ -232,6 +233,17 @@ class ArticleAgent:
                 return None
 
         self.articles_written += 1
+
+        # Tell the search engines it exists. Best-effort and deliberately not
+        # awaited for success: the article is already saved, and a notification
+        # service being down is not a publishing failure.
+        if self.indexnow:
+            try:
+                await self.indexnow.submit_article(slug)
+            except Exception as e:
+                logger.warning(f"IndexNow notification skipped: "
+                               f"{type(e).__name__}: {e}")
+
         logger.info(f"Article published: /{slug} ({words} words, "
                     f"{record['reading_minutes']} min read)")
         return saved or record

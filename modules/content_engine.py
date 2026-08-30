@@ -34,7 +34,7 @@ class ContentEngine:
     def __init__(self, ai_engine: AIEngine, scraper: NewsScraper,
                  image_gen: ImageGenerator, db=None,
                  site_name: str = "Novi News", site_url: str = "",
-                 article_ai: AIEngine = None):
+                 article_ai: AIEngine = None, indexnow=None):
         self.ai = ai_engine
         self.scraper = scraper
         self.image_gen = image_gen
@@ -43,7 +43,7 @@ class ContentEngine:
         # The article agent may run on its own provider/key/model
         self.article_agent = ArticleAgent(ai_engine=article_ai or ai_engine, db=db,
                                           site_name=site_name, site_url=site_url,
-                                          image_gen=image_gen)
+                                          image_gen=image_gen, indexnow=indexnow)
         self.posts_generated_today = 0
         logger.info("Content Engine & ArticleAgent initialized.")
     

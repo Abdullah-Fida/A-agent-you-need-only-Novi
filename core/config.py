@@ -92,6 +92,10 @@ class BotConfig:
     email_receiver: str = ""
     resend_api_key: str = ""
 
+    # IndexNow tells Bing, Yandex and others about a new article the
+    # moment it publishes, instead of waiting to be crawled.
+    indexnow_key: str = ""
+
 def _backup_provider() -> str:
     """
     The provider to fall back to. Defaults to whichever of the two known
@@ -197,6 +201,7 @@ def load_config() -> BotConfig:
         buffer_services=_csv("BUFFER_SERVICES") or ["facebook"],
         site_url=_clean(os.getenv("SITE_URL", "")),
         site_name=_clean(os.getenv("SITE_NAME", "")) or "PressVane",
+        indexnow_key=_clean(os.getenv("INDEXNOW_KEY", "")),
         reddit_client_id=os.getenv("REDDIT_CLIENT_ID", ""),
         reddit_client_secret=os.getenv("REDDIT_CLIENT_SECRET", ""),
         reddit_username=os.getenv("REDDIT_USERNAME", ""),

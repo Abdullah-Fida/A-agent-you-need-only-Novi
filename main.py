@@ -31,6 +31,7 @@ from modules.notification_manager import NotificationManager
 from modules.growth_engine import GrowthEngine
 from modules.buffer_broadcaster import BufferBroadcaster
 from modules.fanout import Fanout
+from modules.indexnow import IndexNow
 import uvicorn
 from core.api_server import app as api_app
 
@@ -118,6 +119,11 @@ async def main():
                                bing_cookie=config.bing_cookie,
                                notification_manager=notification_manager, db=db)
 
+    # Notifies Bing, Yandex and others the moment an article publishes, rather
+    # than waiting for a crawler to find it. Google is not a participant and
+    # still discovers articles through the sitemap.
+    indexnow = IndexNow(key=config.indexnow_key, site_url=config.site_url, db=db)
+
     content_engine = ContentEngine(
         ai_engine=ai_engine,
         scraper=scraper,
@@ -125,7 +131,8 @@ async def main():
         db=db,
         site_name=config.site_name,
         site_url=config.site_url,
-        article_ai=article_ai
+        article_ai=article_ai,
+        indexnow=indexnow
     )
 
     # 6. Initialize The Brain + Growth Engine
