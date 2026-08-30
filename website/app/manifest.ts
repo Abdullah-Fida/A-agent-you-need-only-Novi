@@ -1,6 +1,6 @@
 import { MetadataRoute } from 'next';
 
-const SITE_NAME = process.env.NEXT_PUBLIC_SITE_NAME || 'Novi News';
+const SITE_NAME = process.env.NEXT_PUBLIC_SITE_NAME || 'PressVane';
 
 export default function manifest(): MetadataRoute.Manifest {
   return {

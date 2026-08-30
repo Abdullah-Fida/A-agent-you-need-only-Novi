@@ -196,7 +196,7 @@ def load_config() -> BotConfig:
         buffer_organization_id=_clean(os.getenv("BUFFER_ORGANIZATION_ID", "")),
         buffer_services=_csv("BUFFER_SERVICES") or ["facebook"],
         site_url=_clean(os.getenv("SITE_URL", "")),
-        site_name=_clean(os.getenv("SITE_NAME", "")) or "Novi News",
+        site_name=_clean(os.getenv("SITE_NAME", "")) or "PressVane",
         reddit_client_id=os.getenv("REDDIT_CLIENT_ID", ""),
         reddit_client_secret=os.getenv("REDDIT_CLIENT_SECRET", ""),
         reddit_username=os.getenv("REDDIT_USERNAME", ""),

@@ -28,7 +28,7 @@ function resolveSiteUrl(): string {
 }
 
 export const SITE_URL = resolveSiteUrl();
-export const SITE_NAME = process.env.NEXT_PUBLIC_SITE_NAME?.trim() || 'Novi News';
+export const SITE_NAME = process.env.NEXT_PUBLIC_SITE_NAME?.trim() || 'PressVane';
 export const TELEGRAM_URL =
   process.env.NEXT_PUBLIC_TELEGRAM_URL?.trim() || 'https://t.me/Novi_Network';
 
