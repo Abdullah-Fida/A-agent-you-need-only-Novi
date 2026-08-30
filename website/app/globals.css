@@ -43,6 +43,18 @@
      makes which one wins depend on stylesheet order. next/font already
      bakes in a fallback stack, so it owns these two variables outright. */
 
+
+  /* Per-section accents. Same perceived weight, so the page reads as one
+     palette rather than a bag of colours competing for attention. */
+  --sec-world:    #12508C;
+  --sec-crypto:   #A8620E;
+  --sec-tech:     #5B3FA8;
+  --sec-business: #0F6B4F;
+  --sec-pakistan: #0E6A6A;
+  --sec-politics: #8C2F4A;
+  --sec-sport:    #1F6F2E;
+  --sec-news:     #4A5058;
+
   --measure:      68ch;
   --shadow:       0 1px 2px rgba(20,22,26,.04);
 }
@@ -61,6 +73,14 @@
     --accent:     #6BA8E8;
     --accent-deep:#9CC6F0;
     --accent-wash:#0E1D2E;
+    --sec-world:    #6BA8E8;
+    --sec-crypto:   #E0A44E;
+    --sec-tech:     #A98FE0;
+    --sec-business: #4FC49B;
+    --sec-pakistan: #4FBDBD;
+    --sec-politics: #E08098;
+    --sec-sport:    #6FCB7E;
+    --sec-news:     #9AA1AA;
     --flag:       #E8695F;
     --shadow:     0 1px 2px rgba(0,0,0,.4);
   }
@@ -271,9 +291,13 @@ img {
   aspect-ratio: 16 / 9;
   object-fit: cover;
   border-radius: 3px;
-  margin-bottom: 20px;
+  /* The gap belongs to the wrapper, not the image: the category chip is
+     positioned against the wrapper's bottom edge, and a margin here would
+     leave it floating in the whitespace under the photo. */
+  display: block;
   background: var(--paper-2);
 }
+.lead-imgwrap { margin-bottom: 20px; }
 .lead h1 {
   font-family: var(--font-display);
   font-size: clamp(2rem, 4.2vw, 3.1rem);
@@ -858,3 +882,196 @@ img {
   border-bottom: 1px solid currentColor;
   padding-bottom: 2px;
 }
+
+
+/* ── Wire strip ───────────────────────────────────────────────── */
+/* Every newsroom front page opens with one. It is the cheapest possible
+   signal that the site is alive rather than a brochure. */
+.ticker {
+  border-bottom: 1px solid var(--rule);
+  background: var(--paper-2);
+  overflow: hidden;
+}
+.ticker-inner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 42px;
+}
+.ticker-flag {
+  flex: none;
+  font-family: var(--font-ui);
+  font-size: .68rem;
+  font-weight: 800;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: #fff;
+  background: var(--flag);
+  padding: 4px 10px;
+  border-radius: 2px;
+}
+.ticker-track {
+  display: flex;
+  align-items: center;
+  gap: 30px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  white-space: nowrap;
+  min-width: 0;
+}
+.ticker-track::-webkit-scrollbar { display: none; }
+.ticker-track a {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-size: .84rem;
+  font-weight: 500;
+  color: var(--ink-2);
+  flex: none;
+}
+.ticker-track a:hover { color: var(--accent); }
+.ticker-dot {
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  background: var(--rule-2);
+  flex: none;
+}
+
+/* ── Front page frame ─────────────────────────────────────────── */
+.front {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 36px;
+  padding: 34px 0 8px;
+}
+@media (min-width: 980px) {
+  .front { grid-template-columns: minmax(0, 2.15fr) minmax(0, 1fr); gap: 40px; }
+}
+
+.lead-imgwrap { position: relative; }
+/* The category rides on the picture rather than sitting under it: it labels
+   the image, and it buys a line of vertical space back for the headline. */
+.chip {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  font-family: var(--font-ui);
+  font-size: .67rem;
+  font-weight: 800;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: #fff;
+  background: var(--sec-news);
+  padding: 5px 11px;
+  border-radius: 2px;
+}
+.chip--sm {
+  position: static;
+  display: inline-block;
+  margin-bottom: 7px;
+  font-size: .62rem;
+  padding: 3px 8px;
+}
+.chip--world    { background: var(--sec-world); }
+.chip--crypto   { background: var(--sec-crypto); }
+.chip--tech     { background: var(--sec-tech); }
+.chip--business { background: var(--sec-business); }
+.chip--pakistan { background: var(--sec-pakistan); }
+.chip--politics { background: var(--sec-politics); }
+.chip--sport    { background: var(--sec-sport); }
+
+/* ── Under the lead: two stories with thumbnails ──────────────── */
+.under-lead {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0;
+  margin-top: 26px;
+  border-top: 1px solid var(--rule);
+}
+@media (min-width: 660px) {
+  .under-lead { grid-template-columns: 1fr 1fr; gap: 28px; }
+}
+.mini {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 14px;
+  padding: 18px 0;
+  border-bottom: 1px solid var(--rule);
+}
+@media (min-width: 660px) {
+  .mini { border-bottom: 0; }
+  .mini + .mini { border-left: 1px solid var(--rule); padding-left: 28px; }
+}
+.mini-img {
+  width: 96px;
+  height: auto;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: 2px;
+  background: var(--paper-2);
+}
+.mini h3 {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.28;
+  letter-spacing: -.008em;
+  margin-bottom: 6px;
+  text-wrap: balance;
+}
+.mini:hover h3 { color: var(--accent); }
+.mini time { font-family: var(--font-ui); font-size: .72rem; color: var(--ink-4); }
+
+/* ── Ranked rail ──────────────────────────────────────────────── */
+.ranked { list-style: none; }
+.ranked li { border-bottom: 1px solid var(--rule); }
+.ranked li:last-child { border-bottom: 0; }
+.ranked a {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 15px 0;
+}
+/* Outlined numerals rather than filled: they order the list without
+   competing with the headlines they are numbering. */
+.rank {
+  font-family: var(--font-display);
+  font-size: 1.6rem;
+  font-weight: 700;
+  line-height: .9;
+  color: transparent;
+  -webkit-text-stroke: 1px var(--rule-2);
+}
+.ranked a:hover .rank { -webkit-text-stroke-color: var(--accent); }
+.ranked h3 {
+  font-family: var(--font-display);
+  font-size: .99rem;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -.006em;
+  margin-bottom: 5px;
+  text-wrap: balance;
+}
+.ranked a:hover h3 { color: var(--accent); }
+.ranked time { font-family: var(--font-ui); font-size: .71rem; color: var(--ink-4); }
+
+/* ── Section colour, carried onto the heading rule ────────────── */
+.section-head--world    { border-top-color: var(--sec-world); }
+.section-head--crypto   { border-top-color: var(--sec-crypto); }
+.section-head--tech     { border-top-color: var(--sec-tech); }
+.section-head--business { border-top-color: var(--sec-business); }
+.section-head--pakistan { border-top-color: var(--sec-pakistan); }
+.section-head--politics { border-top-color: var(--sec-politics); }
+.section-head--sport    { border-top-color: var(--sec-sport); }
+
+.section-head--world h2    { color: var(--sec-world); }
+.section-head--crypto h2   { color: var(--sec-crypto); }
+.section-head--tech h2     { color: var(--sec-tech); }
+.section-head--business h2 { color: var(--sec-business); }
+.section-head--pakistan h2 { color: var(--sec-pakistan); }
+.section-head--politics h2 { color: var(--sec-politics); }
+.section-head--sport h2    { color: var(--sec-sport); }
+
+/* The headline list gains the chip, so it scans by section too. */
+.headline-list .chip--sm { margin-bottom: 0; align-self: center; }

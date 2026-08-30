@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import Image from 'next/image';
 import type { Metadata } from 'next';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
@@ -11,9 +12,7 @@ export const metadata: Metadata = {
   alternates: { canonical: '/' },
 };
 
-/** How many sections get their own block on the front page. */
 const FRONT_SECTIONS = 4;
-/** Stories shown under each section heading. */
 const PER_SECTION = 3;
 
 function formatDate(value: string): string {
@@ -27,12 +26,28 @@ function formatDate(value: string): string {
 }
 
 /**
- * A story is only front-page material if it has a picture.
+ * "3 hours ago" rather than a date, for anything published today.
  *
- * A card with an empty image well is the single thing that makes a news site
- * look broken, and it is worse than the story simply not appearing — the
- * article is still reachable from its section page and from search.
+ * Recency is the whole proposition of a news site, and a bare date hides it:
+ * a story from this morning and one from this evening look identical.
  */
+function timeAgo(value: string): string {
+  try {
+    const then = new Date(value).getTime();
+    const mins = Math.floor((Date.now() - then) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins} min ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours} hr${hours === 1 ? '' : 's'} ago`;
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `${days} day${days === 1 ? '' : 's'} ago`;
+    return formatDate(value);
+  } catch {
+    return '';
+  }
+}
+
+/** A story is only front-page material if it has a picture. */
 function hasImage(a: Article): boolean {
   return Boolean((a.main_image_url || '').trim());
 }
@@ -42,9 +57,6 @@ export default async function HomePage() {
   const articles = all.filter(hasImage);
 
   if (articles.length === 0) {
-    // Deliberately says nothing about tables, environment variables or which
-    // agent is switched off. That belongs in the logs, not in front of a
-    // reader who wandered in from search.
     return (
       <>
         <Navbar />
@@ -61,12 +73,11 @@ export default async function HomePage() {
   }
 
   const [lead, ...rest] = articles;
-  const rail = rest.slice(0, 4);
-  const remainder = rest.slice(4);
+  const underLead = rest.slice(0, 2);      // thumbnails beneath the lead
+  const topStories = rest.slice(2, 7);     // the numbered rail
+  const remainder = rest.slice(7);
+  const ticker = articles.slice(0, 6);
 
-  // Group what is left by section, in order of how much each section has, so
-  // the front page leads with whatever the newsroom actually covered today
-  // rather than with a fixed running order.
   const bySection = new Map<string, Article[]>();
   for (const a of remainder) {
     const key = a.category || 'Latest';
@@ -81,48 +92,97 @@ export default async function HomePage() {
   const featured = new Set(
     sections.flatMap(([, items]) => items.slice(0, PER_SECTION).map((a) => a.slug)),
   );
-  const more = remainder.filter((a) => !featured.has(a.slug)).slice(0, 6);
+  const more = remainder.filter((a) => !featured.has(a.slug)).slice(0, 8);
 
   return (
     <>
       <Navbar />
-      <main className="main-container">
-        <section className="lead-grid">
-          <Link href={`/${lead.slug}`} className="lead">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={lead.main_image_url} alt="" className="lead-img" />
-            <div className="lead-body">
-              <span className="tag">{lead.category}</span>
-              <h1>{lead.title}</h1>
-              <p>{lead.summary}</p>
-              <div className="byline">
-                <time dateTime={lead.published_at}>{formatDate(lead.published_at)}</time>
-                {lead.reading_minutes ? (
-                  <><span aria-hidden="true">·</span><span>{lead.reading_minutes} min read</span></>
-                ) : null}
-              </div>
-            </div>
-          </Link>
 
-          <aside className="rail" aria-label="Also in the news">
-            <h2 className="rail-title">Also in the news</h2>
-            {rail.map((a: Article) => (
-              <Link key={a.slug} href={`/${a.slug}`} className="rail-item">
-                <span className="tag tag--quiet">{a.category}</span>
-                <h3>{a.title}</h3>
-                <time dateTime={a.published_at}>{formatDate(a.published_at)}</time>
+      {/* The wire strip. Every newsroom front page opens with one, and it is
+          what tells a reader at a glance that the site is alive. */}
+      <div className="ticker" aria-label="Latest headlines">
+        <div className="main-container ticker-inner">
+          <span className="ticker-flag">Latest</span>
+          <div className="ticker-track">
+            {ticker.map((a) => (
+              <Link key={a.slug} href={`/${a.slug}`}>
+                <span className="ticker-dot" aria-hidden="true" />
+                {a.title}
               </Link>
             ))}
+          </div>
+        </div>
+      </div>
+
+      <main className="main-container">
+        <section className="front">
+          <div className="front-main">
+            <Link href={`/${lead.slug}`} className="lead">
+              <div className="lead-imgwrap">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={lead.main_image_url} alt="" className="lead-img" />
+                <span className={`chip chip--${(lead.category || 'news').toLowerCase()}`}>
+                  {lead.category}
+                </span>
+              </div>
+              <div className="lead-body">
+                <h1>{lead.title}</h1>
+                <p>{lead.summary}</p>
+                <div className="byline">
+                  <time dateTime={lead.published_at}>{timeAgo(lead.published_at)}</time>
+                  {lead.reading_minutes ? (
+                    <><span aria-hidden="true">·</span><span>{lead.reading_minutes} min read</span></>
+                  ) : null}
+                  {lead.source_name ? (
+                    <><span aria-hidden="true">·</span><span>{lead.source_name}</span></>
+                  ) : null}
+                </div>
+              </div>
+            </Link>
+
+            <div className="under-lead">
+              {underLead.map((a) => (
+                <Link key={a.slug} href={`/${a.slug}`} className="mini">
+                  <Image src={a.main_image_url} alt="" width={220} height={150}
+                         className="mini-img" sizes="220px" />
+                  <div>
+                    <span className={`chip chip--${(a.category || 'news').toLowerCase()} chip--sm`}>
+                      {a.category}
+                    </span>
+                    <h3>{a.title}</h3>
+                    <time dateTime={a.published_at}>{timeAgo(a.published_at)}</time>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </div>
+
+          {/* Ranked by recency and labelled as such. There is no view data
+              yet, and a "Most read" list built from nothing is a fiction. */}
+          <aside className="rail" aria-label="Top stories">
+            <h2 className="rail-title">Top stories</h2>
+            <ol className="ranked">
+              {topStories.map((a, i) => (
+                <li key={a.slug}>
+                  <Link href={`/${a.slug}`}>
+                    <span className="rank" aria-hidden="true">{i + 1}</span>
+                    <div>
+                      <h3>{a.title}</h3>
+                      <time dateTime={a.published_at}>{timeAgo(a.published_at)}</time>
+                    </div>
+                  </Link>
+                </li>
+              ))}
+            </ol>
           </aside>
         </section>
 
         {sections.map(([name, items]) => (
           <section key={name} className="section-block">
-            <div className="section-head">
+            <div className={`section-head section-head--${name.toLowerCase()}`}>
               <h2>{name}</h2>
               <Link href={`/category/${encodeURIComponent(name)}`}>
-                All {name}
-                <span aria-hidden="true"> →</span>
+                All {name}<span aria-hidden="true"> →</span>
               </Link>
             </div>
             <div className="grid grid--ruled">
@@ -142,9 +202,11 @@ export default async function HomePage() {
               {more.map((a: Article) => (
                 <li key={a.slug}>
                   <Link href={`/${a.slug}`}>
-                    <span className="tag tag--quiet">{a.category}</span>
+                    <span className={`chip chip--${(a.category || 'news').toLowerCase()} chip--sm`}>
+                      {a.category}
+                    </span>
                     <h3>{a.title}</h3>
-                    <time dateTime={a.published_at}>{formatDate(a.published_at)}</time>
+                    <time dateTime={a.published_at}>{timeAgo(a.published_at)}</time>
                   </Link>
                 </li>
               ))}
