@@ -223,8 +223,12 @@ class PinterestPublisher:
             return None
         channel_id = channel["id"]
 
+        # serviceId, not id. Buffer's own board id is rejected by createPost
+        # with "Board not found" -- boardServiceId means the id Pinterest
+        # itself uses, which is what the serviceId field carries.
         query = ("query($id: ChannelId!) { channel(input: {id: $id}) { "
-                 "metadata { ... on PinterestMetadata { boards { id name } } } } }")
+                 "metadata { ... on PinterestMetadata { "
+                 "boards { id serviceId name } } } } }")
         data = await self._gql(query, {"id": channel_id})
         boards = (((data or {}).get("channel") or {}).get("metadata") or {}).get("boards") or []
 
@@ -237,12 +241,12 @@ class PinterestPublisher:
         for board in boards:
             if not name_contains or name_contains.lower() in (board.get("name") or "").lower():
                 logger.info(f"Using Pinterest board: {board.get('name')} "
-                            f"({board.get('id')})")
-                return board.get("id")
+                            f"({board.get('serviceId')})")
+                return board.get("serviceId")
 
         logger.warning(f"No board matched '{name_contains}'; using the first one: "
                        f"{boards[0].get('name')}")
-        return boards[0].get("id")
+        return boards[0].get("serviceId")
 
     async def ensure_board(self) -> bool:
         """

@@ -22,9 +22,28 @@ MODELS = {
     "social_caption":   "openrouter/free",  # Facebook / Buffer captions
 }
 
-# Fallback chain used when a model returns 404 / "not a valid model ID".
-# Model availability on OpenRouter's free tier changes over time, so we try
-# several rather than hardcoding one that can silently rot.
+# Groq's gpt-oss models reason before answering, and max_tokens covers the
+# reasoning AND the answer. At the budgets callers actually pass, reasoning ate
+# the whole allowance and the answer came back empty or truncated:
+#
+#   max_tokens=500,  default effort -> reasoning 2007 chars, content 0, "length"
+#   max_tokens=500,  effort "low"   -> reasoning  234 chars, content 416, "stop"
+#
+# Low effort also cuts total completion tokens roughly fourfold, which matters
+# against Groq's 8000-tokens-per-minute ceiling, and leaves less reasoning
+# around to leak into published copy.
+REASONING_EFFORT_MODELS = ("gpt-oss",)
+
+# Enough room for reasoning plus an answer, used only when effort cannot be
+# set and the caller's budget would otherwise be swallowed whole.
+REASONING_MIN_TOKENS = 1600
+
+# Models that exist in a provider catalogue but cannot hold a conversation.
+NON_CHAT_MARKERS = ("whisper", "tts", "embed", "guard", "orpheus", "moderation")
+
+# Last-resort chain for OpenRouter when its catalogue cannot be read. This is
+# NOT provider-neutral -- see _fallback_candidates, which prefers whatever the
+# configured provider actually serves. Sending these ids to Groq 404s.
 FALLBACK_MODELS = [
     "openrouter/free",
     "google/gemma-4-31b-it:free",
@@ -117,7 +136,10 @@ class AIEngine:
 
         self.api_keys = api_keys
         self.current_key_index = 0
-        self._model_cache = None          # provider catalogue, read once
+        self._model_cache = None
+        # Flipped off permanently if the provider rejects the parameter, so one
+        # unsupported deployment does not fail every later call.
+        self._reasoning_effort_ok = True          # provider catalogue, read once
         self._retired_reported = set()    # one warning per retired model
         self.notification_manager = None  # wired by main after construction
         self.db = db
@@ -226,8 +248,7 @@ class AIEngine:
         # Nothing preferred is available — take any chat-capable model rather
         # than fail outright.
         for candidate in sorted(catalogue):
-            if not any(x in candidate for x in
-                       ("whisper", "tts", "embed", "guard", "orpheus", "moderation")):
+            if not any(x in candidate for x in NON_CHAT_MARKERS):
                 logger.error(f"{self.label}: falling back to '{candidate}'.")
                 await self._warn_model_retired(wanted, candidate)
                 return candidate
@@ -359,16 +380,44 @@ class AIEngine:
         head = stripped[:400].lower()
         return any(marker in head for marker in cls._ECHO_MARKERS)
 
+    def _fallback_candidates(self) -> List[str]:
+        """
+        Models worth trying next, for THIS provider.
+
+        The hardcoded FALLBACK_MODELS list is OpenRouter's. Walking it while
+        configured for Groq sent `openrouter/free` to Groq and 404'd every
+        attempt, turning one bad answer into a total failure. So the
+        provider's own catalogue wins, exactly as it does in resolve_model.
+
+        Reads the catalogue cache rather than fetching: by the time anything
+        is falling back, a request has already been made and populated it, and
+        this has to stay callable from synchronous code.
+        """
+        catalogue = self._model_cache or set()
+        preferred = self.PREFERRED_MODELS.get(self.provider, [])
+
+        if not catalogue:
+            # Catalogue unreadable. Preferences are still provider-correct;
+            # the OpenRouter chain is only right when that is the provider.
+            chain = list(preferred) + (
+                FALLBACK_MODELS if self.provider == "openrouter" else [])
+            return list(dict.fromkeys(chain))
+
+        candidates = [m for m in preferred if m in catalogue]
+        candidates += [m for m in sorted(catalogue)
+                       if m not in candidates
+                       and not any(x in m for x in NON_CHAT_MARKERS)]
+        return candidates
+
     def _next_model(self, current: str, tried: set) -> str:
         """
         Picks a different model after a bad answer.
 
-        Retrying the same free-router model tends to reproduce the same
-        narration, so a rejected answer moves to the next fallback and only
-        rotates keys once the list is exhausted.
+        Retrying the same model tends to reproduce the same narration, so a
+        rejected answer moves on and only rotates keys once the list is spent.
         """
-        for candidate in FALLBACK_MODELS:
-            if candidate not in tried:
+        for candidate in self._fallback_candidates():
+            if candidate not in tried and candidate != current:
                 tried.add(candidate)
                 logger.info(f"Switching model to {candidate}.")
                 return candidate
@@ -434,18 +483,52 @@ class AIEngine:
 
         for attempt in range(max_attempts):
             try:
-                response = await self.client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    max_tokens=max_tokens,
-                    temperature=temperature
-                )
+                reasoning = any(m in model.lower() for m in REASONING_EFFORT_MODELS)
+                kwargs = {}
+                budget = max_tokens
+                if reasoning and self._reasoning_effort_ok:
+                    kwargs["extra_body"] = {"reasoning_effort": "low"}
+                elif reasoning:
+                    budget = max(max_tokens, REASONING_MIN_TOKENS)
 
-                content = response.choices[0].message.content
+                try:
+                    response = await self.client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        max_tokens=budget,
+                        temperature=temperature,
+                        **kwargs
+                    )
+                except Exception as e:
+                    if not kwargs or "reasoning_effort" not in str(e):
+                        raise
+                    # This deployment does not take the parameter. Buy the
+                    # answer room instead, and stop asking.
+                    logger.warning(f"{self.label}: provider rejected "
+                                   f"reasoning_effort; using a larger budget.")
+                    self._reasoning_effort_ok = False
+                    response = await self.client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt}
+                        ],
+                        max_tokens=max(max_tokens, REASONING_MIN_TOKENS),
+                        temperature=temperature
+                    )
+
+                choice = response.choices[0]
+                content = choice.message.content
                 if not content or not content.strip():
+                    if choice.finish_reason == "length":
+                        logger.warning(
+                            f"{self.label}: model '{model}' spent its whole "
+                            f"{max_tokens}-token budget before answering. "
+                            f"Retrying with more room.")
+                        max_tokens = max(max_tokens * 2, REASONING_MIN_TOKENS)
                     logger.warning(f"AI returned empty content on attempt {attempt + 1}. Retrying...")
                     self._rotate_key()
                     await self._backoff(attempt)
@@ -496,11 +579,13 @@ class AIEngine:
                     logger.warning("Authentication failed. Rotating API key...")
                     self._rotate_key()
                 elif "404" in last_error or "not a valid model" in lowered or "unavailable" in lowered:
-                    # Walk the fallback chain instead of a single hardcoded model.
-                    # A dedicated engine has no fallback list — its model is the
-                    # whole point — so it just retries.
-                    chain = FALLBACK_MODELS if self.default_model == DEFAULT_MODEL else []
-                    nxt = next((m for m in chain if m not in tried_models), None)
+                    # A 404 means the model is gone, not busy. A dedicated
+                    # engine used to be pinned to its model here and simply
+                    # retried, which turned every provider retirement into a
+                    # hard outage -- the failure resolve_model exists to stop.
+                    chain = self._fallback_candidates()
+                    nxt = next((m for m in chain
+                                if m not in tried_models and m != model), None)
                     if nxt:
                         logger.warning(f"Model '{model}' unavailable. Falling back to '{nxt}'.")
                         model = nxt
