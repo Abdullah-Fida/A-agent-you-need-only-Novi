@@ -74,13 +74,13 @@ worked. A separate account is the better choice anyway:
 
 8. **"A few more details"**:
    - *What's the focus of your brand?* → **Home**
-   - *What are your business goals?* (up to 3) → **Drive traffic to my
-     website**, then brand awareness, then grow my audience.
+   - *What are your business goals?* (up to 3) → **Drive traffic to your
+     site**, **Create content on Pinterest to grow an audience**, **Grow brand
+     awareness**.
 
-   The goal matters more than it looks. The revenue here is outbound clicks to
-   AliExpress, so traffic is the honest objective. Do not pick anything about
-   selling products on Pinterest: that implies a merchant catalogue and a
-   verified website, neither of which exists here.
+   Leave *Increase online sales* unticked. The revenue here is outbound clicks
+   to AliExpress, not sales on Pinterest, and claiming to sell implies a
+   merchant catalogue and a verified website that do not exist.
 9. **Confirm the email** Pinterest sends. Unverified accounts are limited and
    Buffer will not connect cleanly to one.
 10. Any screen asking for a **website** → skip. Any screen offering **ads** or a
