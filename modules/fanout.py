@@ -200,6 +200,15 @@ class Fanout:
         published = 0
         for item in due:
             title = (item["story"].get("title") or "")[:50]
+
+            # The scheduled run may well have picked up this same story while
+            # it sat in the queue. Without this check the retry writes it a
+            # second time and _unique_slug happily files it as "…-2".
+            if await self._already_published(item["story"].get("link", "")):
+                logger.info(f"Deferred article '{title}' was published in the "
+                            f"meantime; dropping the retry.")
+                continue
+
             logger.info(f"Retrying deferred article: '{title}' "
                         f"(attempt {item['attempts'] + 1}/{self.MAX_ARTICLE_ATTEMPTS})")
             try:

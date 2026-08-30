@@ -2141,5 +2141,110 @@ class TestWebsiteHasItsOwnSchedule(unittest.TestCase):
         self.assertNotIn("can_post", src)
 
 
+class TestNoDoublePublishing(unittest.TestCase):
+    """
+    A story must produce exactly one article.
+
+    Two things can create one -- the website's scheduled run and the deferred
+    retry -- and the Telegram fan-out must create none at all. If any two of
+    those ever overlap, the same story is filed twice and _unique_slug quietly
+    files the second as "...-2".
+    """
+
+    def _fanout(self, published_links=(), stories=None):
+        from modules.fanout import Fanout
+
+        class Brain:
+            website_module_active = True
+
+        class Agent:
+            retry_after_minutes = 0
+            last_skip_reason = ""
+            def __init__(self): self.written = []
+            async def generate_and_publish_article(self, story, main_image_url="", category=""):
+                self.written.append(story["link"])
+                return {"slug": "s" + str(len(self.written))}
+
+        class Scraper:
+            async def fetch_latest_news(self, category="all", force=False):
+                return list(stories or [{"title": "T", "link": "https://x/new"}])
+
+        seen = set(published_links)
+
+        class DB:
+            class client:
+                @staticmethod
+                def table(_):
+                    class Q:
+                        def select(self, *a): return self
+                        def eq(self, c, v): self.v = v; return self
+                        def limit(self, n): return self
+                        def execute(self):
+                            class R:
+                                data = [{"slug": "old"}] if self.v in seen else []
+                            return R()
+                    return Q()
+
+        agent = Agent()
+        return Fanout(brain=Brain(), db=DB(), article_agent=agent,
+                      scraper=Scraper(), pick_category=lambda: "crypto"), agent
+
+    def test_the_telegram_fanout_creates_no_articles(self):
+        # The single most important guard: if distribute() writes articles
+        # again, every story is published twice.
+        import inspect
+        from modules.fanout import Fanout
+        src = inspect.getsource(Fanout.distribute)
+        self.assertNotIn("generate_and_publish_article", src)
+
+    def test_a_story_already_written_up_is_skipped(self):
+        f, agent = self._fanout(
+            published_links={"https://x/old"},
+            stories=[{"title": "Old", "link": "https://x/old"},
+                     {"title": "New", "link": "https://x/new"}])
+        asyncio.run(f.publish_scheduled_article())
+        self.assertEqual(agent.written, ["https://x/new"])
+
+    def test_nothing_is_written_when_every_story_is_known(self):
+        f, agent = self._fanout(
+            published_links={"https://x/a"},
+            stories=[{"title": "A", "link": "https://x/a"}])
+        self.assertIsNone(asyncio.run(f.publish_scheduled_article()))
+        self.assertEqual(agent.written, [])
+
+    def test_a_retry_drops_if_the_story_was_published_meanwhile(self):
+        # The scheduled run picks stories independently, so it can easily
+        # publish the very story sitting in the retry queue.
+        f, agent = self._fanout(published_links={"https://x/queued"})
+        f._deferred = [{
+            "story": {"title": "Queued", "link": "https://x/queued"},
+            "image_url": "", "category": "crypto",
+            "due": datetime.now(timezone.utc) - timedelta(minutes=1),
+            "attempts": 1, "reason": "no hero image",
+        }]
+        published = asyncio.run(f.retry_due_articles())
+        self.assertEqual(published, 0)
+        self.assertEqual(agent.written, [], "the retry wrote a duplicate")
+
+    def test_a_retry_still_runs_when_the_story_is_genuinely_unpublished(self):
+        f, agent = self._fanout(published_links=set())
+        f._deferred = [{
+            "story": {"title": "Queued", "link": "https://x/queued"},
+            "image_url": "", "category": "crypto",
+            "due": datetime.now(timezone.utc) - timedelta(minutes=1),
+            "attempts": 1, "reason": "no hero image",
+        }]
+        self.assertEqual(asyncio.run(f.retry_due_articles()), 1)
+        self.assertEqual(agent.written, ["https://x/queued"])
+
+    def test_deduplication_uses_the_source_url_not_the_headline(self):
+        # The agent rewords headlines, so a title match would miss duplicates.
+        import inspect
+        from modules.fanout import Fanout
+        src = inspect.getsource(Fanout._already_published)
+        self.assertIn("source_url", src)
+        self.assertNotIn('"title"', src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
