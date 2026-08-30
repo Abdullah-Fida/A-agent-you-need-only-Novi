@@ -107,12 +107,13 @@ PIN_AI_PROVIDER=groq
 PIN_AI_MODEL=openai/gpt-oss-20b
 
 PIN_NICHE=home_kitchen
+PIN_BRAND=Tidy Nook         # consumer brand on the pin, not "Novi"
 PIN_MAX_PER_DAY=8           # clamped to 15, Pinterest's guidance
 PIN_MIN_GAP_MINUTES=45
 PIN_REQUIRE_REVIEW=true
 PIN_MIN_RATING=4.3
 PIN_MIN_ORDERS=100
-PIN_MIN_PRICE=3
+PIN_MIN_PRICE=12          # commission on a $4 product is not worth a pin
 PIN_MAX_PRICE=80
 ```
 

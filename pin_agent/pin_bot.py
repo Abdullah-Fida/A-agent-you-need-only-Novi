@@ -42,9 +42,9 @@ class PinAgent:
         self.selector = ProductSelector(
             min_rating=config.min_rating, min_orders=config.min_orders,
             min_price=config.min_price, max_price=config.max_price)
-        self.copywriter = PinCopywriter(ai_engine, brand=config.site_name,
+        self.copywriter = PinCopywriter(ai_engine, brand=config.pin_brand,
                                         niche=config.niche)
-        self.imaging = PinImageBuilder(image_dir, brand=config.site_name)
+        self.imaging = PinImageBuilder(image_dir, brand=config.pin_brand)
         self.gate = ComplianceGate()
         self.publisher = PinterestPublisher(
             access_token=config.buffer_token,

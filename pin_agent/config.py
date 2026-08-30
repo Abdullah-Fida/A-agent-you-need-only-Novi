@@ -81,9 +81,13 @@ class PinConfig:
     # ── Product filters ───────────────────────────────────────────
     min_rating: float = 4.3
     min_orders: int = 100
-    min_price: float = 3.0
+    min_price: float = 12.0
     max_price: float = 80.0
 
+    # The consumer-facing brand on the pin image and in the copy. Kept
+    # apart from Novi's SITE_NAME: a Pinterest shopper looking for kitchen
+    # storage has never heard of the news bot.
+    pin_brand: str = "Tidy Nook"
     site_name: str = "Novi"
     brand_handle: str = "@Novi_Network"
 
@@ -108,8 +112,9 @@ def load_pin_config() -> PinConfig:
             os.getenv("PIN_REQUIRE_REVIEW", "true")).lower() not in ("0", "false", "no"),
         min_rating=_float("PIN_MIN_RATING", 4.3),
         min_orders=_int("PIN_MIN_ORDERS", 100),
-        min_price=_float("PIN_MIN_PRICE", 3.0),
+        min_price=_float("PIN_MIN_PRICE", 12.0),
         max_price=_float("PIN_MAX_PRICE", 80.0),
+        pin_brand=_clean(os.getenv("PIN_BRAND", "")) or "Tidy Nook",
         site_name=_clean(os.getenv("SITE_NAME", "")) or "Novi",
         brand_handle=_clean(os.getenv("CHANNEL_USERNAME", "")) or "@Novi_Network",
     )
