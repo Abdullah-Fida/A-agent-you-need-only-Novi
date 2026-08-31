@@ -2487,8 +2487,9 @@ class TestSocialSyndicator(unittest.TestCase):
         syn = self._syn()
         link = syn.article_link(self.ARTICLE["slug"])
         self.assertEqual(link, "https://pressvane.com/bitcoin-halving-explained")
-        for service in ("facebook", "twitter"):
-            self.assertIn(link, syn.caption_for(service, self.ARTICLE, link))
+        for service in ("facebook", "twitter", "threads"):
+            self.assertIn(link, syn.caption_for(service, self.ARTICLE, link),
+                          f"{service} post has no link")
 
     def test_nothing_is_posted_when_there_is_no_link_to_give(self):
         """A post with no link is worse than no post: it spends the reach and
@@ -2562,6 +2563,68 @@ class TestSocialSyndicator(unittest.TestCase):
         syn = self._syn()
         link = syn.article_link(self.ARTICLE["slug"])
         self.assertIn(self.ARTICLE["title"], syn.x_caption(self.ARTICLE, link))
+
+    # ── Threads ──────────────────────────────────────────────────
+
+    def test_threads_caption_fits_500_characters(self):
+        syn = self._syn()
+        link = syn.article_link(self.ARTICLE["slug"])
+        text = syn.threads_caption(self.ARTICLE, link)
+        self.assertLessEqual(len(text), syn.THREADS_MAX_CHARS)
+        self.assertIn(link, text)
+        self.assertIn(self.ARTICLE["title"], text)
+
+    def test_threads_charges_the_link_at_its_real_length(self):
+        """
+        There is no t.co on Threads. A 200-character URL costs 200
+        characters, so budgeting it at X's flat 23 would overrun.
+        """
+        syn = self._syn()
+        long_link = "https://pressvane.com/" + "a" * 200
+        text = syn.threads_caption(self.ARTICLE, long_link)
+        self.assertLessEqual(len(text), syn.THREADS_MAX_CHARS)
+        self.assertIn(long_link, text)
+
+    def test_threads_carries_more_than_x_but_less_than_facebook(self):
+        """Each platform gets copy sized for it, not one text truncated."""
+        syn = self._syn()
+        article = dict(self.ARTICLE, content=(
+            "<p>" + ("A sentence of the article body that runs on. " * 6) + "</p>"
+            "<p>" + ("A second paragraph continuing the story here. " * 8) + "</p>"))
+        link = syn.article_link("s")
+        x = syn.x_caption(article, link)
+        threads = syn.threads_caption(article, link)
+        facebook = syn.facebook_caption(article, link)
+        self.assertLess(syn.x_length(x, link), len(threads))
+        self.assertLess(len(threads), len(facebook))
+
+    def test_a_threads_post_never_ends_mid_sentence(self):
+        syn = self._syn()
+        article = dict(self.ARTICLE, content=(
+            "<p>" + ("A sentence of the article body that runs on and on. " * 20)
+            + "</p>"))
+        text = syn.threads_caption(article, syn.article_link("s"))
+        body = text.split("\n\n")[1] if "\n\n" in text else text
+        self.assertTrue(body.rstrip().endswith((".", "!", "?", "\u2026", '"')),
+                        f"ends: {body[-40:]!r}")
+
+    def test_an_enormous_headline_still_leaves_room_for_the_link(self):
+        syn = self._syn()
+        article = dict(self.ARTICLE, title="Breaking " * 90)
+        link = syn.article_link("s")
+        text = syn.threads_caption(article, link)
+        self.assertLessEqual(len(text), syn.THREADS_MAX_CHARS)
+        self.assertIn(link, text)
+
+    def test_threads_needs_no_metadata(self):
+        """
+        Every field on ThreadsPostMetadataInput is optional -- checked
+        against the live schema. Facebook is the one that rejects a post
+        without a type, and sending Facebook's metadata to Threads is an
+        error.
+        """
+        from modules.buffer_broadcaster import BufferBroadcaster
+        self.assertNotIn("threads", BufferBroadcaster._TYPED_SERVICES)
 
     # ── Facebook ─────────────────────────────────────────────────
 
@@ -2905,10 +2968,13 @@ class TestSocialSyndicator(unittest.TestCase):
         channels = [{"id": "tw", "service": "twitter", "name": "x",
                      "isDisconnected": False},
                     {"id": "fb", "service": "facebook", "name": "f",
+                     "isDisconnected": False},
+                    {"id": "th", "service": "threads", "name": "t",
                      "isDisconnected": False}]
 
-        buf = BufferBroadcaster(access_token="t",
-                                enabled_services=["facebook", "twitter"])
+        buf = BufferBroadcaster(
+            access_token="t",
+            enabled_services=["facebook", "twitter", "threads"])
 
         async def fake_gql(query, variables=None, timeout=30):
             calls.append(query)
@@ -2926,16 +2992,16 @@ class TestSocialSyndicator(unittest.TestCase):
         self.assertEqual(start_up, 2, "start-up is one account + one channels call")
 
         syn = SocialSyndicator(buffer=buf, site_url="https://pressvane.com",
-                               services=["facebook", "twitter"])
+                               services=["facebook", "twitter", "threads"])
         syn._slot_is_allowed = lambda *a: True
         asyncio.run(syn.syndicate(
             {"slug": "s", "title": "A headline that is long enough here",
              "summary": "A whole sentence.", "main_image_url": "https://x/y.jpg"}))
 
         per_article = len(calls) - start_up
-        self.assertEqual(per_article, 2, "one request per channel, nothing else")
+        self.assertEqual(per_article, 3, "one request per channel, nothing else")
 
-        # Six posts a day on two channels, plus start-up.
+        # Six posts a day on three channels, plus start-up.
         day = start_up + 6 * per_article
         self.assertLessEqual(day, 50, f"a day costs {day} requests; the "
                                       f"allowance is 500")
@@ -3128,6 +3194,14 @@ class TestSocialSwitches(unittest.TestCase):
         results = asyncio.run(syn.syndicate(self.ARTICLE))
         self.assertFalse(results["facebook"])
         self.assertTrue(results["twitter"])
+
+    def test_threads_can_be_switched_off_alone(self):
+        brain = make_brain()
+        brain.social_module_active = True
+        brain.threads_active = False
+        self.assertFalse(brain.social_enabled("threads"))
+        self.assertTrue(brain.social_enabled("facebook"))
+        self.assertTrue(brain.social_enabled("twitter"))
 
     def test_x_can_be_switched_off_alone(self):
         brain = make_brain()

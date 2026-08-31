@@ -496,14 +496,18 @@ async def toggle_social_platform(platform: str, request: Request):
 
     field = {"facebook": "facebook_active",
              "twitter": "twitter_active",
-             "x": "twitter_active"}.get(platform.strip().lower())
+             "x": "twitter_active",
+             "threads": "threads_active"}.get(platform.strip().lower())
     if not field:
-        raise HTTPException(status_code=400,
-                            detail="Platform must be 'facebook' or 'twitter'.")
+        raise HTTPException(
+            status_code=400,
+            detail="Platform must be 'facebook', 'twitter' or 'threads'.")
 
     setattr(brain, field, await _desired_state(request, getattr(brain, field)))
     on = getattr(brain, field)
-    label = "Facebook" if field == "facebook_active" else "X / Twitter"
+    label = {"facebook_active": "Facebook",
+             "twitter_active": "X / Twitter",
+             "threads_active": "Threads"}[field]
     status = "ACTIVE" if on else "DEACTIVATED"
 
     if brain.db:

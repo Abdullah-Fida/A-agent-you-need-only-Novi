@@ -154,9 +154,10 @@ class BotBrain:
         # being rebuilt, and taking that platform off should not stop the
         # other one or stop the website publishing. All start OFF — they post
         # publicly under your name.
-        self.social_module_active = False   # the master switch for both
+        self.social_module_active = False   # the master switch for all three
         self.facebook_active = True         # only meaningful while social is on
         self.twitter_active = True
+        self.threads_active = True
         # The first day either of them posted, "YYYY-MM-DD". Recorded on the
         # first post and persisted, so the warm-up ramp starts itself and
         # survives a redeploy. Nobody has to remember to set a date.
@@ -369,6 +370,8 @@ class BotBrain:
             return self.facebook_active
         if platform in ("twitter", "x"):
             return self.twitter_active
+        if platform == "threads":
+            return self.threads_active
         return False
 
     def note_social_start(self) -> str:
@@ -521,6 +524,7 @@ class BotBrain:
             "social_module_active": self.social_module_active,
             "facebook_active": self.facebook_active,
             "twitter_active": self.twitter_active,
+            "threads_active": self.threads_active,
             "social_started_on": self.social_started_on,
             "master_kill": self.master_kill,
             "is_paused": self.is_paused,
@@ -566,6 +570,7 @@ class BotBrain:
         self.social_module_active = bool(saved.get("social_module_active", False))
         self.facebook_active = bool(saved.get("facebook_active", True))
         self.twitter_active = bool(saved.get("twitter_active", True))
+        self.threads_active = bool(saved.get("threads_active", True))
         self.social_started_on = str(saved.get("social_started_on", "") or "")
         self.master_kill = bool(saved.get("master_kill", False))
         self.is_paused = bool(saved.get("is_paused", False))

@@ -1,5 +1,5 @@
 """
-Buffer transport — Facebook and X/Twitter.
+Buffer transport — Facebook, X/Twitter and Threads.
 
 Uses Buffer's GraphQL API at https://api.buffer.com/graphql.
 
@@ -29,6 +29,10 @@ api.bufferapp.com rejects modern public tokens and retires 2027-02-01):
     queue, so the limit does not apply to us at all.
   * X/Twitter needs no such metadata, but its text is hard-capped at 280
     characters and Buffer rejects anything longer outright.
+  * Threads needs no metadata either -- every field on
+    ThreadsPostMetadataInput is optional, checked against the live schema --
+    but its limit is 500 characters and it charges a URL at its real length,
+    so it gets its own caption rather than a truncated Facebook one.
 
 REQUEST BUDGET
 --------------
@@ -36,10 +40,11 @@ Buffer's API allows 100 requests per 15 minutes, 500 per 24 hours and 10,000
 per 30 days, shared across every key and integration on the account. The
 live responses carry it as `ratelimit: "100-in-15min"`.
 
-A full day of publishing costs about fourteen requests: two at start-up
-(account, then channels) and one per post. Six posts on two channels is
-twelve. That is under 3% of the daily allowance, and the largest burst in
-any fifteen minutes is two -- one article, one request per channel.
+A full day of publishing costs about twenty requests: two at start-up
+(account, then channels) and one per post. Six posts on three channels --
+Facebook, X and Threads -- is eighteen. That is 4% of the daily allowance,
+and the largest burst in any fifteen minutes is three: one article, one
+request per channel.
 
 The one thing that moves the number is running with a service enabled whose
 channel is not connected: `ensure_channels` then rechecks, at most once per
@@ -81,7 +86,7 @@ _ACCOUNT = "query { account { id email organizations { id name } } }"
 
 
 class BufferBroadcaster:
-    """Publishes to Facebook and X/Twitter through Buffer."""
+    """Publishes to Facebook, X/Twitter and Threads through Buffer."""
 
     # Services needing an explicit post type in metadata
     _TYPED_SERVICES = {"facebook": "post", "instagram": "post"}
@@ -101,8 +106,9 @@ class BufferBroadcaster:
         self.db = db
         self.organization_id = (organization_id or "").strip()
         # Which Buffer services we post to.
-        self.enabled_services = [self.canonical_service(s)
-                                 for s in (enabled_services or ["facebook", "twitter"])]
+        self.enabled_services = [
+            self.canonical_service(s)
+            for s in (enabled_services or ["facebook", "twitter", "threads"])]
 
         self.channels: List[Dict] = []
         self._connected = False

@@ -1,5 +1,6 @@
 """
-Social syndication — Facebook and X/Twitter, driven by the article agent.
+Social syndication — Facebook, X/Twitter and Threads, driven by the article
+agent.
 
 Every published article is announced on both, at the moment it goes live,
 always with a link back to the site. That link is the entire point: these
@@ -104,6 +105,12 @@ class SocialSyndicator:
     X_MAX_CHARS = 280
     FACEBOOK_MAX_CHARS = 5000
 
+    # Threads is 500 characters and counts a URL at its REAL length -- there
+    # is no t.co equivalent, so a long slug genuinely costs what it reads.
+    # Long enough for a proper paragraph, which is why it gets its own
+    # caption rather than the Facebook one truncated.
+    THREADS_MAX_CHARS = 500
+
     # Words that make a bad hashtag on their own.
     _TAG_STOP = {"the", "a", "an", "and", "or", "of", "in", "on", "for", "to",
                  "with", "how", "what", "why", "is", "are", "it", "its",
@@ -118,8 +125,9 @@ class SocialSyndicator:
         self.growth = growth
         self.brain = brain
         self.site_url = (site_url or "").rstrip("/")
-        self.services = [s for s in (services or ["facebook", "twitter"]) if s]
-        self.caps = {"facebook": 6, "twitter": 6}
+        self.services = [s for s in
+                         (services or ["facebook", "twitter", "threads"]) if s]
+        self.caps = {"facebook": 6, "twitter": 6, "threads": 6}
         self.caps.update(caps or {})
         self.start_date = self._parse_date(start_date)
 
@@ -427,9 +435,49 @@ class SocialSyndicator:
             text = f"{self._trim(title, self.X_MAX_CHARS - self.X_LINK_LENGTH - 3)}\n\n{link}"
         return text
 
+    def threads_caption(self, article: Dict, link: str) -> str:
+        """
+        500 characters, and the link is charged at its real length.
+
+        Sized to what is left after the link and the hashtags rather than
+        written and then cut, so the post always ends on a whole sentence.
+        """
+        title = " ".join((article.get("title") or "").split())
+        tags = self.hashtags(article.get("seo_keywords"), 2)
+        tag_line = " ".join(tags)
+
+        overhead = len(link) + 2
+        if tag_line:
+            overhead += len(tag_line) + 2
+        budget = self.THREADS_MAX_CHARS - overhead
+
+        if len(title) > budget:
+            title = self._trim(title, budget)
+            body = ""
+        else:
+            spare = budget - len(title) - 2
+            body = self.article_excerpt(article, spare) if spare >= 80 else ""
+            if not body and spare >= 80:
+                body = self._blurb(article, spare)
+
+        parts = [p for p in (title, body) if p]
+        parts.append(link)
+        if tag_line:
+            parts.append(tag_line)
+        text = "\n\n".join(parts)
+
+        if len(text) > self.THREADS_MAX_CHARS:      # belt and braces
+            logger.warning("Threads caption overran; falling back to the "
+                           "headline and link.")
+            text = f"{self._trim(title, self.THREADS_MAX_CHARS - len(link) - 3)}" \
+                   f"\n\n{link}"
+        return text
+
     def caption_for(self, service: str, article: Dict, link: str) -> str:
         if service == "twitter":
             return self.x_caption(article, link)
+        if service == "threads":
+            return self.threads_caption(article, link)
         return self.facebook_caption(article, link)
 
     # ── publishing ───────────────────────────────────────────────

@@ -197,7 +197,8 @@ async def main():
         site_url=config.site_url,
         services=config.buffer_services,
         caps={"facebook": config.social_max_per_day_facebook,
-              "twitter": config.social_max_per_day_twitter},
+              "twitter": config.social_max_per_day_twitter,
+              "threads": config.social_max_per_day_threads},
         start_date=config.social_start_date,
         # The brain owns the on/off switches and the date the accounts first
         # posted, so both survive a redeploy.

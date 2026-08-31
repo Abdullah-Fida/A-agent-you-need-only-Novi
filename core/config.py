@@ -60,7 +60,8 @@ class BotConfig:
     # Buffer (Facebook and X/Twitter)
     buffer_access_token: str = ""
     buffer_organization_id: str = ""
-    buffer_services: List[str] = field(default_factory=lambda: ["facebook", "twitter"])
+    buffer_services: List[str] = field(
+        default_factory=lambda: ["facebook", "twitter", "threads"])
 
     # Social syndication — one post per published article, per platform.
     # Eight articles are published a day and six of them are announced; the
@@ -69,6 +70,7 @@ class BotConfig:
     # published and indexed — only the social post is skipped.
     social_max_per_day_facebook: int = 6
     social_max_per_day_twitter: int = 6
+    social_max_per_day_threads: int = 6
     # The day the social accounts opened, YYYY-MM-DD. Set it and the volume
     # ramps 4 -> 6 -> 8 over the first fortnight, which is what keeps a
     # brand-new page from reading as a link farm. Leave it empty and the
@@ -211,9 +213,10 @@ def load_config() -> BotConfig:
         twitter_email=os.getenv("TWITTER_EMAIL", ""),
         buffer_access_token=_clean(os.getenv("BUFFER_ACCESS_TOKEN", "")),
         buffer_organization_id=_clean(os.getenv("BUFFER_ORGANIZATION_ID", "")),
-        buffer_services=_csv("BUFFER_SERVICES") or ["facebook", "twitter"],
+        buffer_services=_csv("BUFFER_SERVICES") or ["facebook", "twitter", "threads"],
         social_max_per_day_facebook=_int_env("SOCIAL_MAX_PER_DAY_FACEBOOK", 6, lo=0, hi=8),
         social_max_per_day_twitter=_int_env("SOCIAL_MAX_PER_DAY_TWITTER", 6, lo=0, hi=8),
+        social_max_per_day_threads=_int_env("SOCIAL_MAX_PER_DAY_THREADS", 6, lo=0, hi=8),
         social_start_date=_clean(os.getenv("SOCIAL_START_DATE", "")),
         site_url=_clean(os.getenv("SITE_URL", "")),
         site_name=_clean(os.getenv("SITE_NAME", "")) or "PressVane",

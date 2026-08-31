@@ -61,10 +61,11 @@ class TestBufferBroadcaster(unittest.TestCase):
         ]
         self.assertEqual([c["id"] for c in bb.target_channels], ["1"])
 
-    def test_both_services_are_enabled_by_default(self):
-        # Facebook and X both run through Buffer now.
+    def test_all_three_services_are_enabled_by_default(self):
+        # Facebook, X and Threads all run through Buffer.
         bb = BufferBroadcaster(access_token="tok")
-        self.assertEqual(sorted(bb.enabled_services), ["facebook", "twitter"])
+        self.assertEqual(sorted(bb.enabled_services),
+                         ["facebook", "threads", "twitter"])
 
     def test_x_and_twitter_are_the_same_channel(self):
         """Buffer's API says 'twitter'; their UI says 'X'. Accept either."""
