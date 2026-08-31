@@ -56,6 +56,14 @@ class PinConfig:
     # This is a SECOND Buffer account, separate from the one Novi uses for
     # Facebook, so the two do not share the free plan's channel and queue
     # allowance.
+    # Its OWN Supabase project, when one is configured. The free tier gives
+    # 1 GB of file storage per project, and article heroes at eight a day
+    # beside pin images at four a day fill a shared bucket inside a year.
+    # Two projects give each a full gigabyte, and a problem with one cannot
+    # reach the other. Falls back to Novi's project when unset.
+    supabase_url: str = ""
+    supabase_key: str = ""
+
     buffer_token: str = ""
     buffer_organization_id: str = ""
     buffer_board_id: str = ""          # Pinterest board every pin goes to
@@ -100,6 +108,8 @@ def load_pin_config() -> PinConfig:
         ali_app_key=_clean(os.getenv("ALI_APP_KEY", "")),
         ali_app_secret=_clean(os.getenv("ALI_APP_SECRET", "")),
         ali_tracking_id=_clean(os.getenv("ALI_TRACKING_ID", "")),
+        supabase_url=_clean(os.getenv("PIN_SUPABASE_URL", "")),
+        supabase_key=_clean(os.getenv("PIN_SUPABASE_KEY", "")),
         buffer_token=_clean(os.getenv("PIN_BUFFER_TOKEN", "")),
         buffer_organization_id=_clean(os.getenv("PIN_BUFFER_ORG_ID", "")),
         buffer_board_id=_clean(os.getenv("PIN_BOARD_ID", "")),

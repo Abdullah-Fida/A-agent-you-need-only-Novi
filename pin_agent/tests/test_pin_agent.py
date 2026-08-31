@@ -92,6 +92,42 @@ class TestDisclosureAndText(unittest.TestCase):
         self.assertIsNotNone(self.gate.check_text(
             "Herb Scissors Deal", "Only $8.99 today, grab it now. #ad"))
 
+    def test_every_shape_of_stale_claim_is_refused(self):
+        """
+        The old check was a currency symbol followed by a digit, which let
+        "20 USD", "50% off" and "half price" through untouched. Anything that
+        stops being true while the pin is still being seen is refused --
+        AliExpress prices move constantly and a pin outlives them by months.
+        """
+        for copy in ("Just 20 USD and it fits any drawer",
+                     "USD 15 for the whole rack",
+                     "Grab it for 9 dollars today",
+                     "50% off this week only",
+                     "Now 30 percent off",
+                     "Half price right now",
+                     "On sale until Friday",
+                     "Clearance on this one",
+                     "The cheapest organizer we have found",
+                     "Lowest price of the year",
+                     "Costs €9.99 delivered"):
+            self.assertIsNotNone(
+                self.gate.check_text("A perfectly fine title", f"{copy} #ad"),
+                f"not refused: {copy!r}")
+
+    def test_a_permanent_quality_is_not_a_price_claim(self):
+        """
+        "Affordable" never expires, so it is not the thing this rule exists
+        to stop. Refusing it would cost pins for nothing.
+        """
+        for copy in ("An affordable way to double your cabinet space",
+                     "Budget-friendly storage for a small kitchen",
+                     "Holds up to 12 mugs without stacking",
+                     "Ready in under 5 minutes, no tools needed",
+                     "Fits under most standard sinks and holds the bottles"):
+            self.assertIsNone(
+                self.gate.check_text("A perfectly fine title", f"{copy} #ad"),
+                f"wrongly refused: {copy!r}")
+
     def test_reasonable_copy_passes(self):
         self.assertIsNone(self.gate.check_text(
             "5 Kitchen Gadgets That Save Time",

@@ -18,6 +18,21 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger("PinAgent.Compliance")
 
+# Claims that stop being true while the pin is still being seen. A permanent
+# quality is fine -- "affordable", "budget-friendly" -- because it does not
+# expire. A NUMBER does, and so does a sale.
+_PRICE_CLAIM = re.compile(
+    r"[$£€¥₹]\s?\d"                                        # $20, €9.99
+    r"|\b\d[\d,.]*\s?(?:usd|eur|gbp|pkr|aud|cad)\b"        # 20 USD
+    r"|\b(?:usd|eur|gbp|pkr|aud|cad)\s?\d"                  # USD 20
+    r"|\b\d[\d,.]*\s?(?:dollars?|euros?|pounds?|bucks?|rupees?)\b"
+    r"|\b\d{1,3}\s?(?:%|percent)\s?(?:off|discount|cheaper|less)\b"
+    r"|\bhalf[\s-]price\b"
+    r"|\b(?:on sale|sale price|flash sale|clearance|markdown"
+    r"|lowest price|best price|cheapest)\b",
+    re.I,
+)
+
 # Any of these in a destination URL means the affiliate link was wrapped or
 # shortened. Pinterest treats that as cloaking and flags the account.
 SHORTENER_HOSTS = {
@@ -99,11 +114,18 @@ class ComplianceGate:
         if len(description) > MAX_DESCRIPTION:
             return f"description over {MAX_DESCRIPTION} characters"
 
-        # A price in the copy goes stale: AliExpress prices move constantly and
-        # a pin outlives them by months, so a stated price becomes a false
-        # claim rather than a selling point.
-        if re.search(r"[$£€]\s?\d", title + " " + description):
-            return "price stated in the copy - it will go stale and mislead"
+        # Anything that GOES STALE is refused. AliExpress prices move
+        # constantly and a pin outlives them by months, so a stated price --
+        # or a discount, or "on sale" -- stops being true long before the pin
+        # stops being seen, and an untrue claim on an affiliate pin is the
+        # thing that actually costs an account.
+        #
+        # The old check was a currency symbol followed by a digit, which let
+        # "20 USD", "50% off" and "half price" straight through.
+        stale = _PRICE_CLAIM.search(f"{title} {description}")
+        if stale:
+            return (f"the copy states something that will go stale "
+                    f"({stale.group(0).strip()!r})")
         return None
 
     # ── dedupe ───────────────────────────────────────────────────

@@ -1,11 +1,17 @@
 """
 Persistence for the pin agent.
 
-Shares Novi's Supabase project but keeps its own tables, so the two agents
-never contend over the same rows. Every call is wrapped in asyncio.to_thread
-because supabase-py is synchronous — awaiting it directly returns a coroutine
-that is silently discarded, which is how scraped users and articles went
-missing on the news side for weeks.
+Runs against its OWN Supabase project when PIN_SUPABASE_URL is set, and
+falls back to Novi's otherwise. Two projects rather than one for a practical
+reason: the free tier gives 1 GB of file storage per project, and article
+heroes at eight a day plus pin images at four a day fill a shared bucket in
+about a year. Separate projects give each a full gigabyte, and a problem
+with one cannot reach the other.
+
+Every call is wrapped in asyncio.to_thread because supabase-py is
+synchronous — awaiting it directly returns a coroutine that is silently
+discarded, which is how scraped users and articles went missing on the news
+side for weeks.
 """
 import asyncio
 import logging

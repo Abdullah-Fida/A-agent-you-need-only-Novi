@@ -348,15 +348,34 @@ async def main():
             pin_ai = ai_engine
             logger.info("Pinterest agent shares the News AI (no PIN_AI_KEYS configured).")
 
+        # The pin agent gets its OWN Supabase project when one is configured.
+        # The free tier allows 1 GB of file storage per project, and article
+        # heroes at eight a day beside pin images at four a day fill a shared
+        # bucket inside a year. Two projects give each a full gigabyte, and a
+        # problem with one cannot reach the other.
+        pin_db = db
+        if pin_config.supabase_url and pin_config.supabase_key:
+            pin_db = SupabaseDB(pin_config.supabase_url, pin_config.supabase_key)
+            await pin_db.initialize()
+            if pin_db._initialized:
+                logger.info("Pinterest agent has its own Supabase project.")
+            else:
+                logger.error("PIN_SUPABASE_URL is set but the project could "
+                             "not be reached. Falling back to the shared one.")
+                pin_db = db
+        else:
+            logger.info("Pinterest agent shares Novi's Supabase "
+                        "(PIN_SUPABASE_URL not set).")
+
         async def _upload_pin_image(path: str) -> str:
             # Buffer fetches the image itself, so a pin cannot publish until
             # its picture is hosted somewhere public.
-            return await db.upload_image(path, bucket="pin-images")
+            return await pin_db.upload_image(path, bucket="pin-images")
 
         pin_agent = PinAgent(
             config=pin_config,
             ai_engine=pin_ai,
-            supabase_client=getattr(db, "client", None),
+            supabase_client=getattr(pin_db, "client", None),
             notification_manager=notification_manager,
             image_dir=os.path.join(os.path.dirname(__file__), "assets", "pins"),
             upload_image=_upload_pin_image,
