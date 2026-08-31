@@ -255,6 +255,65 @@ Turn OFF, under Settings:
 
 
 --------------------------------------------------------------------------------
+6c. THE BLUESKY PROFILE, FIELD BY FIELD
+--------------------------------------------------------------------------------
+Bluesky is the only one of the four that does NOT demote a post for carrying
+an outbound link. Every post here exists to carry one, so per follower it is
+worth more to us than X or Facebook.
+
+Handle        pressvane.com          <-- USE THE DOMAIN, not a bsky.social name
+
+              Bluesky lets you use a domain you own as your handle, free.
+              The account reads @pressvane.com instead of
+              @pressvane.bsky.social, which is the difference between looking
+              like a publication and looking like somebody's side project.
+              It is also a verification: only the owner of the domain can
+              claim it, so it does the job the old blue tick did.
+
+              Settings -> Account -> Handle -> "I have my own domain".
+              Bluesky shows a DNS record. Add it at Hostinger:
+
+                  Type  : TXT
+                  Name  : _atproto
+                  Value : did=did:plc:<the string Bluesky shows you>
+                  TTL   : default
+
+              Wait a few minutes, press Verify. Nothing about the website
+              changes -- it is one extra TXT record beside the ones already
+              there. (The alternative is a file at
+              /.well-known/atproto-did on the site, which needs a deploy.
+              DNS is simpler.)
+
+Display name  PressVane
+
+Bio           World, crypto, tech and business news, reported plainly.
+              Six stories a day, plus explainers on the things everyone
+              pretends to understand already.
+              (147 characters. Bluesky allows 256.)
+
+Avatar        assets/brand/pressvane_avatar_400.png
+              The same mark as X, Threads and Facebook.
+
+Banner        assets/brand/pressvane_x_banner_1500x500.png
+              Bluesky wants 3:1 and 1500x500 is exactly 3:1, so the X banner
+              is used unchanged.
+
+First post    Bluesky has no pinned posts, so this only matters for a day,
+              but post it before anything automated goes out:
+
+                  PressVane covers world, crypto, tech and business news,
+                  plus Pakistan.
+
+                  Every story is written up in full at pressvane.com --
+                  never a headline and a link.
+
+Worth doing while you are there:
+  * Add the account to a starter pack or two in news/crypto if you find one
+    accepting submissions. It is the fastest way to a first few hundred
+    followers on Bluesky and has no equivalent on the other platforms.
+
+
+--------------------------------------------------------------------------------
 7. THE FACEBOOK PAGE, FIELD BY FIELD
 --------------------------------------------------------------------------------
 Page name     PressVane
@@ -358,12 +417,26 @@ a different subject, in the site's largest section.
   granted to a public token -- so the number ten comes from the error message
   the API returned on the old account, not from a guess.
 
-* Buffer's free plan allows THREE channels, and Facebook + X + Threads is
-  exactly three. THE ACCOUNT IS NOW FULL. Adding a fourth -- LinkedIn,
-  Bluesky, Mastodon, anything -- means paying, or disconnecting one of these.
-  This is also why the Pinterest agent runs on a separate Buffer account
-  rather than spending a slot here; that decision was made before Threads and
-  turns out to have been the one that made Threads possible.
+* CHANNEL COUNT. Buffer's published free plan is three channels. That number
+  could NOT be read back from the API -- organizations{limits} returns
+  FORBIDDEN to a public token -- so it comes from Buffer's pricing page, not
+  from this account. You find out for certain when you connect the fourth.
+
+  Wanted: X, Threads, Bluesky, Facebook = four. If Buffer refuses the fourth,
+  the order to keep them in is Bluesky > Threads > X > Facebook, by traffic
+  per post: Bluesky does not demote links at all, Threads has the best reach
+  for a new account, X demotes links, and a new Facebook page has almost no
+  organic reach whatsoever.
+
+  The Pinterest agent runs on a SEPARATE Buffer account, so its channel does
+  not compete for these slots.
+
+* ANY CHANNEL IS CONFIGURATION, NOT CODE. Connect it at buffer.com, add its
+  name to BUFFER_SERVICES, and SERVICE_LIMITS in social_syndicator.py sizes
+  the caption. The table holds Bluesky 300, Threads and Mastodon 500,
+  LinkedIn 3000, Facebook 5000 and the rest. An unknown service gets the
+  TIGHTEST limit rather than the most generous -- too short is a worse post,
+  too long is no post at all.
 
 * API REQUEST limits are a SEPARATE thing from the post queue, and are the
   ones shown on buffer.com under Settings -> API:
@@ -378,11 +451,11 @@ a different subject, in the site's largest section.
   Measured cost of a full day, by counting the requests the code makes:
 
       start-up (account + channels)                     2
-      six posts x three channels                       18
+      six posts x four channels                        24
                                                        --
-      a settled day                                    20   4.0% of 500
-      a month                                         600   6.0% of 10,000
-      largest burst in any 15 minutes                   3   3.0% of 100
+      a settled day                                    26   5.2% of 500
+      a month                                         780   7.8% of 10,000
+      largest burst in any 15 minutes                   4   4.0% of 100
 
   Running with a service enabled whose channel is NOT connected costs more,
   because the missing-channel recheck fires: 24 requests a day, still under
@@ -417,8 +490,13 @@ a different subject, in the site's largest section.
   [x] Create the new Buffer account          abdullahfida645@gmail.com
   [x] Connect X to it                        @press_vane, verified live
   [ ] Create the new Facebook page and connect it to the same Buffer
-  [ ] Create the Threads account (via Instagram) and connect it to the same
-      Buffer. That takes the account to its three-channel limit.
+  [x] Create the Threads account and connect it     @pressvane_offical
+      NOTE: the handle is spelled "offical", missing the i in official.
+      Worth fixing now while the account has no followers; later it means
+      breaking every link to it.
+  [ ] Create the Bluesky account, claim pressvane.com as the handle, connect
+      it to the same Buffer
+  [ ] Find out whether Buffer's free plan accepts a fourth channel
   [ ] Update BUFFER_ACCESS_TOKEN in Render, and DELETE BUFFER_ORGANIZATION_ID
       (the old value belongs to the retired account)
   [ ] Turn the master switch on:  POST /api/social/toggle {"active": true}
