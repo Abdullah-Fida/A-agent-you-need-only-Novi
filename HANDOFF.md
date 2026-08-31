@@ -20,7 +20,8 @@ An autonomous news operation run by one Python bot ("Novi"):
 | News website (Next.js) | Vercel, root `website` | `https://a-agent-you-need-only-novi-jh45.vercel.app` |
 | Database + image storage | Supabase | project `romytbehhwgpbzdtvesf` |
 | Telegram channel | — | `@Novi_Network` |
-| Facebook | via Buffer | page "Zindagi Ke Rang" |
+| Facebook | via Buffer | page being replaced — connect the new page at buffer.com |
+| X / Twitter | via Buffer | account being created — connect it at buffer.com |
 
 One monorepo holds all three. Render builds from `/`, the two Vercel projects
 build from their own subdirectories.
@@ -37,6 +38,36 @@ website module    ON    4 articles written
 buffer/facebook   ON    1 channel
 database          connected
 ```
+
+---
+
+## 2b. Facebook and X
+
+Both go through Buffer, and both are triggered by the **article agent**, never
+by the Telegram schedule. When an article publishes, `modules/social_syndicator.py`
+announces it on each connected channel with a link back to the page.
+
+Telegram is a separate thing and shares nothing with this. `Fanout.distribute()`
+(the Telegram fan-out) handles only Reddit and the opt-in browser-driven X
+account; Facebook was removed from it, because after the website got its own
+schedule the two clocks carried different stories, so a post fired from the
+Telegram side had no article to link to.
+
+* **Volume** — one post per article, so 8 a day on each platform (6 news +
+  2 explainers).
+* **Warm-up** — set `SOCIAL_START_DATE=YYYY-MM-DD` on a new account and it
+  ramps 4/day for week one, 6/day for week two, all 8 from week three. The
+  articles that survive the cap are chosen by audience, best hours first:
+  18:00 and 21:00 PKT are 09:00 and 12:00 in New York.
+* **Every post carries the article link.** If `SITE_URL` is unset nothing is
+  posted at all — a link-less post spends the reach and sends nobody to the
+  site.
+* **Connecting a channel** — do it at buffer.com. A running bot picks it up
+  within half an hour; no redeploy needed.
+
+Environment variables: `BUFFER_ACCESS_TOKEN`, `BUFFER_ORGANIZATION_ID`,
+`BUFFER_SERVICES=facebook,twitter`, `SOCIAL_MAX_PER_DAY_FACEBOOK`,
+`SOCIAL_MAX_PER_DAY_TWITTER`, `SOCIAL_START_DATE`, and `SITE_URL`.
 
 ---
 
