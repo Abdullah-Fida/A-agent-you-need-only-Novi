@@ -2746,6 +2746,90 @@ class TestSocialSyndicator(unittest.TestCase):
                         "facebook", "twitter"):
             self.assertIn(service, syn.SERVICE_LIMITS)
 
+    # ── two Buffer accounts ──────────────────────────────────────
+
+    def _acct(self, services, email="a@b.c"):
+        """A fake Buffer account holding channels for `services` only."""
+        buf = MagicMock()
+        buf.account_email = email
+        buf.last_error = ""
+        buf.sent = []
+
+        async def ensure(service):
+            return ([{"id": f"{service}-id", "service": service}]
+                    if service in services else [])
+
+        async def send(channel, text, image_url="", article_slug="",
+                       first_comment=""):
+            buf.sent.append(channel["service"])
+            return True
+
+        buf.ensure_channels = AsyncMock(side_effect=ensure)
+        buf.send = AsyncMock(side_effect=send)
+        return buf
+
+    def _multi(self, *accounts, **kw):
+        from modules.social_syndicator import SocialSyndicator
+        syn = SocialSyndicator(buffers=list(accounts),
+                               site_url="https://pressvane.com",
+                               services=kw.get("services",
+                                               ["facebook", "twitter",
+                                                "threads", "bluesky"]))
+        syn._slot_is_allowed = lambda *a: True
+        return syn
+
+    def test_a_channel_on_the_second_account_is_found(self):
+        """
+        Buffer caps channels per account, so Bluesky sits on the login the
+        Pinterest agent uses. Nothing is told which account owns what.
+        """
+        news = self._acct({"facebook", "twitter", "threads"}, "news@x.com")
+        pins = self._acct({"bluesky"}, "pins@x.com")
+        syn = self._multi(news, pins)
+
+        results = asyncio.run(syn.syndicate(self.ARTICLE))
+        self.assertTrue(all(results.values()), results)
+        self.assertEqual(sorted(news.sent), ["facebook", "threads", "twitter"])
+        self.assertEqual(pins.sent, ["bluesky"])
+
+    def test_a_channel_on_both_accounts_posts_once(self):
+        """First match wins. Posting to every match would publish twice."""
+        first = self._acct({"bluesky"}, "first@x.com")
+        second = self._acct({"bluesky"}, "second@x.com")
+        syn = self._multi(first, second, services=["bluesky"])
+
+        asyncio.run(syn.syndicate(self.ARTICLE))
+        self.assertEqual(first.sent, ["bluesky"])
+        self.assertEqual(second.sent, [], "the story went out twice")
+
+    def test_a_service_on_no_account_is_skipped_quietly(self):
+        news = self._acct({"twitter"}, "news@x.com")
+        syn = self._multi(news, services=["twitter", "linkedin"])
+        results = asyncio.run(syn.syndicate(self.ARTICLE))
+        self.assertTrue(results["twitter"])
+        self.assertFalse(results["linkedin"])
+
+    def test_one_account_failing_does_not_hide_the_other(self):
+        broken = MagicMock()
+        broken.account_email = "broken@x.com"
+        broken.last_error = ""
+        broken.ensure_channels = AsyncMock(side_effect=RuntimeError("token dead"))
+        good = self._acct({"bluesky"}, "good@x.com")
+        syn = self._multi(broken, good, services=["bluesky"])
+
+        results = asyncio.run(syn.syndicate(self.ARTICLE))
+        self.assertTrue(results["bluesky"])
+        self.assertEqual(good.sent, ["bluesky"])
+
+    def test_a_single_account_still_works_the_old_way(self):
+        news = self._acct({"twitter"}, "news@x.com")
+        from modules.social_syndicator import SocialSyndicator
+        syn = SocialSyndicator(buffer=news, site_url="https://pressvane.com",
+                               services=["twitter"])
+        syn._slot_is_allowed = lambda *a: True
+        self.assertIs(syn.buffer, news)
+        self.assertTrue(asyncio.run(syn.syndicate(self.ARTICLE))["twitter"])
+
     def test_bluesky_can_be_switched_off_alone(self):
         brain = make_brain()
         brain.social_module_active = True

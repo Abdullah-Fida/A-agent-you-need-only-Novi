@@ -185,13 +185,29 @@ async def main():
         except Exception as e:
             logger.error(f"Buffer connect failed: {e}")
 
+    # A second Buffer login. Buffer's free plan caps channels per account,
+    # so Bluesky lives on the account the Pinterest agent already uses. The
+    # syndicator searches both and posts through whichever holds the channel,
+    # so nothing here has to know which login owns what.
+    buffer_secondary = None
+    if config.buffer_secondary_token and \
+            config.buffer_secondary_token != config.buffer_access_token:
+        buffer_secondary = BufferBroadcaster(
+            access_token=config.buffer_secondary_token,
+            enabled_services=config.buffer_services,
+            db=db)
+        try:
+            await buffer_secondary.connect()
+        except Exception as e:
+            logger.error(f"Second Buffer account connect failed: {e}")
+
     # 7c. Social syndication — Facebook and X announce every article the
     # moment it publishes, always with a link back to it. Driven by the
     # ARTICLE schedule, never by the Telegram one: the two carry different
     # stories, so a post fired on the Telegram clock would have nothing to
     # link to. Telegram is not involved here at all.
     syndicator = SocialSyndicator(
-        buffer=buffer_broadcaster,
+        buffers=[b for b in (buffer_broadcaster, buffer_secondary) if b],
         db=db,
         growth=growth_engine,
         site_url=config.site_url,

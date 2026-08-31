@@ -8,6 +8,23 @@ Bluesky is the one worth having beyond the obvious three, because it is the
 only one of them that does NOT demote a post for carrying an outbound link
 -- and every post here exists to carry one.
 
+MORE THAN ONE BUFFER ACCOUNT
+----------------------------
+Buffer's free plan caps the channels per account, so the four channels are
+split across two logins: the news account carries Facebook, X and Threads,
+and Bluesky sits on the account the Pinterest agent already uses, where
+there was room.
+
+Each account is searched in turn for the service being posted to, and the
+FIRST one holding a live channel wins. Nothing has to be told which login
+owns what, so moving a channel between accounts needs no change here.
+First-match-wins rather than posting to every match, because a channel
+connected on both logins by accident would otherwise publish the story
+twice.
+
+A side benefit: rate limits are per account, so splitting the channels
+splits the request budget too.
+
 Every published article is announced on both, at the moment it goes live,
 always with a link back to the site. That link is the entire point: these
 accounts are not the product, they are a road to the product. A post that
@@ -163,8 +180,11 @@ class SocialSyndicator:
     def __init__(self, buffer=None, db=None, growth=None, site_url: str = "",
                  services: Optional[List[str]] = None,
                  caps: Optional[Dict[str, int]] = None,
-                 start_date: str = "", brain=None):
-        self.buffer = buffer
+                 start_date: str = "", brain=None, buffers=None):
+        # One account or several. `buffer` stays for the single-account case,
+        # which is most callers and every test that predates the split.
+        self.buffers = [b for b in (list(buffers) if buffers
+                                    else ([buffer] if buffer else [])) if b]
         self.db = db
         self.growth = growth
         self.brain = brain
@@ -188,6 +208,31 @@ class SocialSyndicator:
             logger.info(f"Social syndication live at the full cap "
                         f"({self.caps}). Set SOCIAL_START_DATE to ramp a new "
                         f"account up gradually instead.")
+
+    @property
+    def buffer(self):
+        """The first Buffer account. Callers that assume one still work."""
+        return self.buffers[0] if self.buffers else None
+
+    async def find_channels(self, service: str):
+        """
+        The first Buffer account holding a live channel for this service.
+
+        Returns (broadcaster, channels), or (None, []) if no account has it.
+        """
+        for buf in self.buffers:
+            try:
+                if hasattr(buf, "ensure_channels"):
+                    found = await buf.ensure_channels(service)
+                else:
+                    found = buf.channels_for(service)
+            except Exception as e:
+                logger.warning(f"Buffer account lookup failed for {service}: "
+                               f"{type(e).__name__}: {e}")
+                continue
+            if found:
+                return buf, found
+        return None, []
 
     # ── time and volume ──────────────────────────────────────────
 
@@ -583,7 +628,7 @@ class SocialSyndicator:
 
     @property
     def is_ready(self) -> bool:
-        return bool(self.buffer and self.site_url and self.services)
+        return bool(self.buffers and self.site_url and self.services)
 
     @property
     def is_on(self) -> bool:
@@ -608,7 +653,7 @@ class SocialSyndicator:
         published, and one platform failing never touches the other.
         """
         results: Dict[str, bool] = {}
-        if not (article and self.buffer):
+        if not (article and self.buffers):
             return results
 
         if not self.is_on:
@@ -647,16 +692,14 @@ class SocialSyndicator:
             logger.info(f"{service} is switched off — skipping.")
             return False
 
-        # ensure_channels, not channels_for: a page connected at buffer.com
-        # after this process started is otherwise invisible until a deploy.
-        if hasattr(self.buffer, "ensure_channels"):
-            channels = await self.buffer.ensure_channels(service)
-        else:
-            channels = self.buffer.channels_for(service)
+        # Searched across every Buffer account, and through ensure_channels
+        # rather than channels_for: a channel connected at buffer.com after
+        # this process started is otherwise invisible until a deploy.
+        buf, channels = await self.find_channels(service)
         if not channels:
-            logger.info(f"No connected {service} channel in Buffer — skipping. "
-                        f"Connect it at buffer.com and it is picked up "
-                        f"automatically.")
+            logger.info(f"No connected {service} channel on any Buffer "
+                        f"account — skipping. Connect it at buffer.com and "
+                        f"it is picked up automatically.")
             return False
 
         cap = self.daily_cap(service)
@@ -688,9 +731,9 @@ class SocialSyndicator:
 
         any_ok = False
         for channel in channels:
-            ok = await self.buffer.send(channel, text, image_url=image,
-                                        article_slug=slug,
-                                        first_comment=comment)
+            ok = await buf.send(channel, text, image_url=image,
+                                article_slug=slug,
+                                first_comment=comment)
             any_ok = any_ok or ok
             await asyncio.sleep(1)          # be gentle with the API
 
@@ -709,7 +752,7 @@ class SocialSyndicator:
                 except Exception:
                     pass
         else:
-            self.last_error = getattr(self.buffer, "last_error", "") or "post rejected"
+            self.last_error = getattr(buf, "last_error", "") or "post rejected"
         return any_ok
 
     @property
@@ -718,6 +761,8 @@ class SocialSyndicator:
         return {
             "ready": self.is_ready,
             "active": self.is_on,
+            "buffer_accounts": [getattr(b, "account_email", "") or "?"
+                                for b in self.buffers],
             "platforms_on": {s: self.platform_is_on(s) for s in self.services},
             "services": list(self.services),
             "site_url": self.site_url,

@@ -166,9 +166,22 @@ Facebook             page not created yet. The old "Zindagi Ke Rang" page
 
 Buffer (news)        abdullahfida645@gmail.com
                      Org id : 6a954ec4a54fe3cad5f33bfb
-                     Separate from the Pinterest agent's Buffer account,
-                     which is on abdullahkhan646khan@gmail.com.
-                     Free plan: 3 channels, and see the queue note below.
+                     Carries Facebook, X and Threads.
+
+Buffer (second)      abdullahkhan646khan@gmail.com
+                     The Pinterest agent's account. Carries BLUESKY too,
+                     because the free plan caps channels per login and the
+                     news account is full at three.
+
+                     The bot reads it from BUFFER_ACCESS_TOKEN_2, which
+                     falls back to PIN_BUFFER_TOKEN -- so setting that one
+                     variable serves both agents. NEITHER IS SET YET:
+                     /api/health reports the pin publisher unconfigured.
+
+                     Each service is looked up across every account and the
+                     FIRST holding a live channel wins, so nothing is told
+                     which login owns what. A channel connected on both by
+                     accident posts once, not twice.
 
 WHEN YOU SWAP THE BUFFER ACCOUNT: update BUFFER_ACCESS_TOKEN in Render and
 DELETE or update BUFFER_ORGANIZATION_ID. A new token beside the old

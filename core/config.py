@@ -57,9 +57,14 @@ class BotConfig:
     twitter_password: str = ""
     twitter_email: str = ""
     
-    # Buffer (Facebook and X/Twitter)
+    # Buffer (Facebook, X/Twitter, Threads, Bluesky)
     buffer_access_token: str = ""
     buffer_organization_id: str = ""
+    # A SECOND Buffer login. The free plan caps channels per account, so the
+    # four are split: Facebook, X and Threads on the news account, Bluesky on
+    # the account the Pinterest agent already uses, where there was room.
+    # Defaults to PIN_BUFFER_TOKEN so nothing new has to be set.
+    buffer_secondary_token: str = ""
     buffer_services: List[str] = field(
         default_factory=lambda: ["facebook", "twitter", "threads", "bluesky"])
 
@@ -214,6 +219,8 @@ def load_config() -> BotConfig:
         twitter_email=os.getenv("TWITTER_EMAIL", ""),
         buffer_access_token=_clean(os.getenv("BUFFER_ACCESS_TOKEN", "")),
         buffer_organization_id=_clean(os.getenv("BUFFER_ORGANIZATION_ID", "")),
+        buffer_secondary_token=(_clean(os.getenv("BUFFER_ACCESS_TOKEN_2", ""))
+                                or _clean(os.getenv("PIN_BUFFER_TOKEN", ""))),
         buffer_services=(_csv("BUFFER_SERVICES")
                          or ["facebook", "twitter", "threads", "bluesky"]),
         social_max_per_day_facebook=_int_env("SOCIAL_MAX_PER_DAY_FACEBOOK", 6, lo=0, hi=8),
