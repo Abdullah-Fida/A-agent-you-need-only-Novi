@@ -2246,5 +2246,60 @@ class TestNoDoublePublishing(unittest.TestCase):
         self.assertNotIn('"title"', src)
 
 
+class TestWebsiteRunIsNotGatedBySleep(unittest.TestCase):
+    """
+    The website block must sit ABOVE the sleep check in the main loop.
+
+    This is the bug that made the whole decoupling useless in production. The
+    schedule was right, get_due_article_slot correctly ignored the sleep
+    window, and there was a test asserting exactly that -- but the CALLER sat
+    below `if brain.is_sleep_time(): continue`, so during 23:00-07:00 PKT the
+    loop restarted before ever reaching it. The 01:00 and 04:00 slots, which
+    are the entire reason the website has its own schedule, could never run.
+
+    Testing the brain method was testing the wrong layer. This tests the order
+    of the loop itself.
+    """
+
+    def setUp(self):
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "main.py"), encoding="utf-8") as fh:
+            self.src = fh.read()
+
+    def _index(self, needle):
+        i = self.src.find(needle)
+        self.assertNotEqual(i, -1, f"could not find {needle!r} in main.py")
+        return i
+
+    def test_article_run_comes_before_the_sleep_gate(self):
+        article = self._index("publish_scheduled_article()")
+        sleep_gate = self._index("if brain.is_sleep_time():")
+        self.assertLess(article, sleep_gate,
+                        "the website's publishing run sits below the sleep "
+                        "gate, so it cannot fire during the sleep window -- "
+                        "which is where two of its six slots live")
+
+    def test_deferred_retry_comes_before_the_sleep_gate(self):
+        retry = self._index("retry_due_articles()")
+        sleep_gate = self._index("if brain.is_sleep_time():")
+        self.assertLess(retry, sleep_gate,
+                        "a deferred article cannot be retried during the "
+                        "sleep window")
+
+    def test_the_telegram_slots_stay_below_the_sleep_gate(self):
+        # The channel must still sleep. Only the website is exempt.
+        sleep_gate = self._index("if brain.is_sleep_time():")
+        telegram = self._index("brain.get_next_post_slot()")
+        self.assertLess(sleep_gate, telegram,
+                        "the Telegram schedule escaped the sleep window")
+
+    def test_master_kill_still_stops_the_website(self):
+        # Exempt from sleep is not exempt from the kill switch.
+        kill = self._index("if brain.master_kill:")
+        article = self._index("publish_scheduled_article()")
+        self.assertLess(kill, article)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

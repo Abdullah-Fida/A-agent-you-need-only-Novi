@@ -517,10 +517,6 @@ async def main():
                 await asyncio.sleep(60)
                 continue
                 
-            if brain.is_sleep_time():
-                await asyncio.sleep(300)
-                continue
-            
             # ---- The website's own publishing run ----
             # Independent of the Telegram slots and of the sleep window: a web
             # page has no plausible-hours problem, and tying articles to the
@@ -552,6 +548,18 @@ async def main():
             except Exception as e:
                 logger.error(f"Deferred article pass failed: {type(e).__name__}: {e}")
 
+            # ---- Sleep applies to TELEGRAM ONLY, from here down ----
+            # The website runs ABOVE this line deliberately. The sleep window
+            # exists so the Telegram account looks like a person who goes to
+            # bed; a web page has no such problem, and two of the website's six
+            # slots (01:00 and 04:00 PKT) live inside this window. Moving the
+            # website block below this gate silently disables them -- which is
+            # exactly what happened, and is why there is now a test on the
+            # ORDER of this loop rather than only on the brain method.
+            if brain.is_sleep_time():
+                await asyncio.sleep(300)
+                continue
+            
             # ---- News Agent Post Slot (only if news_module_active) ----
             if brain.news_module_active:
                 slot = brain.get_next_post_slot()
