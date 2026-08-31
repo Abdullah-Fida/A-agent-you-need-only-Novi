@@ -193,28 +193,57 @@ CREATE POLICY "novi_all" ON social_posts  FOR ALL USING (true) WITH CHECK (true)
 --  article images are uploaded here and served from Supabase's CDN.
 --  Public read; the bot writes with the anon key, hence the open policies.
 -- =====================================================================
-INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-VALUES ('article-images', 'article-images', true, 10485760,
-        ARRAY['image/jpeg','image/png','image/webp'])
-ON CONFLICT (id) DO UPDATE
-  SET public             = true,
-      file_size_limit    = 10485760,
-      allowed_mime_types = ARRAY['image/jpeg','image/png','image/webp'];
+--  NOT every Supabase project lets the SQL editor manage storage. A newer
+--  one answers with either
+--      ERROR: 42P01: relation "storage.buckets" does not exist
+--      ERROR: 42501: must be owner of table objects
+--  and an uncaught error there aborts the whole script, taking the TABLES
+--  above down with it. Wrapped so it cannot, and so the notice tells you to
+--  use the dashboard instead:
+--      Storage > New bucket > name it article-images > Public bucket ON.
+DO $$
+BEGIN
+    INSERT INTO storage.buckets (id, name, public, file_size_limit,
+                                 allowed_mime_types)
+    VALUES ('article-images', 'article-images', true, 10485760,
+            ARRAY['image/jpeg','image/png','image/webp'])
+    ON CONFLICT (id) DO UPDATE
+      SET public             = true,
+          file_size_limit    = 10485760,
+          allowed_mime_types = ARRAY['image/jpeg','image/png','image/webp'];
+    RAISE NOTICE 'bucket article-images: created or already public.';
+EXCEPTION
+    WHEN insufficient_privilege OR undefined_table OR undefined_object THEN
+        RAISE NOTICE
+          'COULD NOT CREATE THE BUCKET FROM SQL. Dashboard > Storage > '
+          'New bucket > name it exactly article-images > Public bucket ON.';
+END $$;
 
-DROP POLICY IF EXISTS "novi_images_read"   ON storage.objects;
-DROP POLICY IF EXISTS "novi_images_write"  ON storage.objects;
-DROP POLICY IF EXISTS "novi_images_update" ON storage.objects;
+DO $$
+BEGIN
+    DROP POLICY IF EXISTS "novi_images_read"   ON storage.objects;
+    DROP POLICY IF EXISTS "novi_images_write"  ON storage.objects;
+    DROP POLICY IF EXISTS "novi_images_update" ON storage.objects;
 
-CREATE POLICY "novi_images_read" ON storage.objects
-  FOR SELECT USING (bucket_id = 'article-images');
+    CREATE POLICY "novi_images_read" ON storage.objects
+      FOR SELECT USING (bucket_id = 'article-images');
 
-CREATE POLICY "novi_images_write" ON storage.objects
-  FOR INSERT WITH CHECK (bucket_id = 'article-images');
+    CREATE POLICY "novi_images_write" ON storage.objects
+      FOR INSERT WITH CHECK (bucket_id = 'article-images');
 
--- Needed because uploads use upsert
-CREATE POLICY "novi_images_update" ON storage.objects
-  FOR UPDATE USING (bucket_id = 'article-images')
-           WITH CHECK (bucket_id = 'article-images');
+    -- Needed because uploads use upsert
+    CREATE POLICY "novi_images_update" ON storage.objects
+      FOR UPDATE USING (bucket_id = 'article-images')
+               WITH CHECK (bucket_id = 'article-images');
+    RAISE NOTICE 'storage policies for article-images: created.';
+EXCEPTION
+    WHEN insufficient_privilege OR undefined_table OR undefined_object THEN
+        RAISE NOTICE
+          'COULD NOT CREATE STORAGE POLICIES FROM SQL. A PUBLIC bucket is '
+          'usually enough; if an upload fails with "violates row-level '
+          'security", add an INSERT policy for anon in the dashboard with '
+          'the definition  bucket_id = ''article-images''.';
+END $$;
 
 
 -- =====================================================================
