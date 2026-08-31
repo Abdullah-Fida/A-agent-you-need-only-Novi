@@ -70,8 +70,28 @@ Settled speed: SIX a day on each platform, out of eight articles. And it
 starts lower than that and climbs by itself:
 
   days 1-10    3 posts/day
-  days 11-20   4 posts/day
-  day 21+      6 posts/day
+  day 11+      6 posts/day
+
+NOT EVERY POST CARRIES THE LINK
+--------------------------------------------------------------------------------
+X and Threads both demote a post for carrying an outbound link, and neither
+offers a first comment to hide it in the way Facebook does. An account that
+only ever posts links is throttled into a room with nobody in it -- and then
+even the linked posts reach no one.
+
+So one post in every three on those two goes out bare: headline and a fuller
+extract, using the room the URL freed. That is a real post rather than an
+advert, and it buys the reach that makes the LINKED posts land. Nothing is
+wasted -- the profile carries the site, and a follower gained on a bare post
+sees every future link.
+
+  bluesky    LINK ALWAYS   the only one of the four with no link penalty
+  facebook   LINK ALWAYS   the link is in the first comment, so it costs nothing
+  twitter    2 in 3        one bare post per cycle
+  threads    2 in 3        one bare post per cycle
+
+Which post is bare is decided by the count already sent today, so it is
+deterministic and testable rather than random.
 
 Which slots survive the cap, by phase:
 

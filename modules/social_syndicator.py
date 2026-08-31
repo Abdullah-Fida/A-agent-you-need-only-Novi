@@ -48,8 +48,7 @@ Eight articles a day are published (six news, two explainers), and SIX of
 them are announced. The volume starts lower still and climbs on its own:
 
     days 1-10    3 posts/day
-    days 11-20   4 posts/day
-    day 21+      6 posts/day
+    day 11+      6 posts/day
 
 The ceiling is six rather than eight deliberately. Six is comfortably
 ordinary for a news brand on either platform, and the last two posts of the
@@ -112,9 +111,9 @@ class SocialSyndicator:
     # Volume during the account warm-up: (day threshold, posts allowed).
     # Read in order; the first threshold the account is younger than wins.
     # Past the last one the configured cap applies, which is six.
-    # days_live() is zero-based: age 0 is day one. So `age < 10` is the
-    # first TEN days, and day eleven is the first to see four.
-    RAMP = ((10, 3), (20, 4))
+    # days_live() is zero-based: age 0 is day one, so `age < 10` is the
+    # first TEN days and day eleven is the first to see six.
+    RAMP = ((10, 3),)
 
     # How much of the article a Facebook post carries. Long enough to be
     # worth reading on its own -- someone who never clicks should still come
@@ -126,10 +125,34 @@ class SocialSyndicator:
     # demote one whose link sits in the first comment. That is the whole
     # reason for the split: the reach lost by putting the URL in the body is
     # larger than anything else on this page.
-    #
-    # X and Threads do not get this treatment. Neither supports a first
-    # comment through Buffer, and on both a link in the post is normal.
     FACEBOOK_LINK_IN_FIRST_COMMENT = True
+
+    # WHICH POSTS CARRY A LINK.
+    #
+    # X and Threads both demote a post for carrying an outbound link, and
+    # neither offers a first comment to hide it in the way Facebook does. An
+    # account that only ever posts links is throttled into a room with nobody
+    # in it, and then even the linked posts reach no one.
+    #
+    # So on those two, some posts go out with no link at all: headline and a
+    # fuller extract, which is a real post rather than an advert. It earns the
+    # reach that makes the LINKED posts land. The unlinked ones are not
+    # wasted -- the profile carries the site, and a follower gained there sees
+    # every future link.
+    #
+    #   always -- every post carries it
+    #     bluesky   the only platform of the four with no link penalty at all
+    #     facebook  the link is in the first comment, so the post is unpenalised
+    #   most   -- two posts in every three
+    #     twitter, threads
+    LINK_POLICY = {
+        "bluesky": "always",
+        "facebook": "always",
+        "twitter": "most",
+        "threads": "most",
+    }
+    # One post in every LINK_CYCLE goes out bare on a "most" platform.
+    LINK_CYCLE = 3
 
     # X counts every link as exactly this many characters, whatever its
     # real length, because it rewrites them through t.co.
@@ -508,7 +531,7 @@ class SocialSyndicator:
 
         # Everything except the headline is fixed cost: the link, the blank
         # line before it, and the hashtags on their own line.
-        overhead = self.X_LINK_LENGTH + 2
+        overhead = (self.X_LINK_LENGTH + 2) if link else 0
         if tag_line:
             overhead += len(tag_line) + 2
         budget = self.X_MAX_CHARS - overhead
@@ -526,7 +549,7 @@ class SocialSyndicator:
             if blurb:
                 headline = f"{headline}\n{blurb}"
 
-        text = f"{headline}\n\n{link}"
+        text = f"{headline}\n\n{link}" if link else headline
         if tag_line:
             text = f"{text}\n\n{tag_line}"
 
@@ -564,7 +587,7 @@ class SocialSyndicator:
                              3 if limit >= self.LONG_FORM_ABOVE else 2)
         tag_line = " ".join(tags)
 
-        overhead = self.link_cost(service, link) + 2
+        overhead = (self.link_cost(service, link) + 2) if link else 0
         if tag_line:
             overhead += len(tag_line) + 2
         budget = limit - overhead
@@ -582,13 +605,14 @@ class SocialSyndicator:
                 body = self._blurb(article, room)
 
         parts = [p for p in (title, body) if p]
-        parts.append(link)
+        if link:
+            parts.append(link)
         if tag_line:
             parts.append(tag_line)
         text = "\n\n".join(parts)
 
         measured = len(text) - len(link) + self.link_cost(service, link) \
-            if link in text else len(text)
+            if link and link in text else len(text)
         if measured > limit:            # belt and braces
             logger.warning(f"{service} caption overran its {limit}-character "
                            f"budget; falling back to the headline and link.")
@@ -599,6 +623,20 @@ class SocialSyndicator:
     def threads_caption(self, article: Dict, link: str) -> str:
         """Threads: 500 characters, link charged at its real length."""
         return self.sized_caption("threads", article, link)
+
+    def wants_link(self, service: str) -> bool:
+        """
+        Whether THIS post carries the link.
+
+        Counted off the posts already sent today, so it is deterministic and
+        testable rather than random: on a 'most' platform the third post of
+        each cycle goes out bare.
+        """
+        policy = self.LINK_POLICY.get(service, "always")
+        if policy == "always":
+            return True
+        sent = self.sent_today.get(service, 0)
+        return (sent % self.LINK_CYCLE) != (self.LINK_CYCLE - 1)
 
     def caption_for(self, service: str, article: Dict, link: str) -> str:
         """
@@ -718,16 +756,23 @@ class SocialSyndicator:
                         f"account is still warming up.")
             return False
 
-        text = self.caption_for(service, article, link)
-        comment = self.first_comment_for(service, link)
+        # Some posts on X and Threads deliberately go out with no link, to
+        # buy back the reach those platforms take away from link posts.
+        carries_link = self.wants_link(service)
+        text = self.caption_for(service, article, link if carries_link else "")
+        comment = self.first_comment_for(service, link) if carries_link else ""
         slug = article.get("slug", "")
 
-        # The link has to reach the reader by one route or the other. If it
-        # is in neither the post nor a comment, the post is pointless and is
-        # not worth sending at all.
-        if link not in text and link not in comment:
-            logger.error(f"{service}: the post would carry no link. Skipping.")
+        # When the post is MEANT to carry a link, it must actually carry one
+        # by some route. A post that was supposed to link and does not is a
+        # bug; one that was never meant to is the policy working.
+        if carries_link and link not in text and link not in comment:
+            logger.error(f"{service}: the post should carry a link and does "
+                         f"not. Skipping.")
             return False
+        if not carries_link:
+            logger.info(f"{service}: posting without a link "
+                        f"(1 in {self.LINK_CYCLE}, to keep the account's reach).")
 
         any_ok = False
         for channel in channels:
@@ -768,6 +813,7 @@ class SocialSyndicator:
             "site_url": self.site_url,
             "days_live": self.days_live(),
             "caps_today": {s: self.daily_cap(s) for s in self.services},
+            "next_post_links": {s: self.wants_link(s) for s in self.services},
             "sent_today": dict(self.sent_today),
             "skipped_today": dict(self.skipped_today),
             "last_error": self.last_error,

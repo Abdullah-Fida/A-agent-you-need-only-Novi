@@ -465,10 +465,30 @@ async def toggle_social(request: Request):
     status = "ACTIVE" if brain.social_module_active else "DEACTIVATED"
 
     if nm:
-        await nm.notify_module_status(
-            "Facebook + X", status,
-            f"Social announcing has been turned "
-            f"{'ON' if brain.social_module_active else 'OFF'} from the dashboard.")
+        # Name the platforms and the volume in the email. "Social is ON" tells
+        # you nothing you can act on; knowing THREE of four are live and that
+        # today's cap is three posts each is the difference between a
+        # notification and a report.
+        sy = getattr(request.app.state, 'syndicator', None)
+        detail = (f"Social announcing has been turned "
+                  f"{'ON' if brain.social_module_active else 'OFF'} "
+                  f"from the dashboard.")
+        if sy and brain.social_module_active:
+            st = sy.status
+            live = [p for p, on in (st.get("platforms_on") or {}).items() if on]
+            caps = st.get("caps_today") or {}
+            day = st.get("days_live")
+            detail += (
+                f"\n\nPlatforms live: {', '.join(live) or 'none'}"
+                f"\nToday's limit: "
+                f"{', '.join(f'{p} {c}' for p, c in caps.items())}"
+                f"\nAccount age: "
+                f"{'day ' + str(day + 1) if day is not None else 'not tracked yet'}"
+                f"\nSite: {st.get('site_url') or '(not set)'}"
+                f"\n\nEach article published from now on is announced on those "
+                f"platforms, at the moment it goes live.")
+        await nm.notify_module_status("Social (Facebook, X, Threads, Bluesky)",
+                                      status, detail)
 
     if brain.db:
         await brain.db.log_metric("social_module_status",
@@ -516,6 +536,14 @@ async def toggle_social_platform(platform: str, request: Request):
     if brain.db:
         await brain.db.log_metric(f"{field}_status", 1 if on else 0,
                                   {"action": "toggled", "new_status": status})
+
+    nm = getattr(request.app.state, 'notification_manager', None)
+    if nm:
+        await nm.notify_module_status(
+            label, status,
+            f"{label} was turned {'ON' if on else 'OFF'} from the dashboard."
+            + ("" if brain.social_module_active else
+               " The social master switch is still OFF, so nothing posts yet."))
 
     await brain.save_state()
     note = ("" if brain.social_module_active else

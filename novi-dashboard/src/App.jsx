@@ -55,6 +55,8 @@ literally says "toggle" without saying which way.
 37. "clear" — Dismiss the data panel. Use when he says "hide", "clear", "dismiss".
 38. "news_toggle" — Turn the News Agent ON or OFF. ONLY for explicit commands: "turn on news", "stop news", "disable the news agent". NEVER for "report of the news agent", "how is the news agent", "is news working" — those are questions, use "health".
 38c. "pin_toggle" — Turn the Pinterest Agent (AliExpress products to Pinterest) ON or OFF. ONLY for explicit commands: "turn on pinterest", "start pinning", "stop the pin agent". NEVER for questions about it — use "health" for those.
+38d. "social_toggle" — The MASTER switch for Facebook, X, Threads and Bluesky together. Use for "turn on social", "start posting to facebook and twitter", "stop the social posts", "turn on the social module". This does NOT touch Telegram, which is a separate thing.
+38e. "social_facebook_toggle" / "social_twitter_toggle" / "social_threads_toggle" / "social_bluesky_toggle" — ONE platform each. Use when he names a single platform: "turn off twitter", "stop posting to facebook", "turn on bluesky". Remember the master switch still has to be ON for any of them to post.
 38d. "pin_now" — Build one Pinterest pin immediately instead of waiting for the schedule. Use when he says "make a pin", "post a pin now", "pin something".
 38b. "website_toggle" — Toggle the Website / auto-blogging module ON or OFF. Default is OFF. While OFF no articles are written at all. Use when he says "turn on the website", "start blogging", "stop writing articles", "enable auto blogging".
 39. "signal_toggle" — Toggle Whale Tracker VIP Signal Copier ON or OFF. Use when he says "toggle signal copier", "start whale tracker", "stop copying signals".
@@ -785,11 +787,16 @@ function App() {
             const err = await apiRes.json().catch(() => ({}));
             textToSpeak = `I could not publish the post. ${err.detail || 'Make sure you generated a post first.'}`;
           }
-        } else if (['news_toggle', 'website_toggle', 'pin_toggle', 'signal_toggle', 'stealth_reply_toggle', 'stealth_invite_toggle', 'master_kill'].includes(response.action)) {
+        } else if (['news_toggle', 'website_toggle', 'pin_toggle', 'signal_toggle', 'stealth_reply_toggle', 'stealth_invite_toggle', 'master_kill', 'social_toggle', 'social_facebook_toggle', 'social_twitter_toggle', 'social_threads_toggle', 'social_bluesky_toggle'].includes(response.action)) {
           let endpoint = '';
           if (response.action === 'news_toggle') endpoint = '/api/news/toggle';
           if (response.action === 'website_toggle') endpoint = '/api/website/toggle';
           if (response.action === 'pin_toggle') endpoint = '/api/pins/toggle';
+          if (response.action === 'social_toggle') endpoint = '/api/social/toggle';
+          if (response.action === 'social_facebook_toggle') endpoint = '/api/social/facebook/toggle';
+          if (response.action === 'social_twitter_toggle') endpoint = '/api/social/twitter/toggle';
+          if (response.action === 'social_threads_toggle') endpoint = '/api/social/threads/toggle';
+          if (response.action === 'social_bluesky_toggle') endpoint = '/api/social/bluesky/toggle';
           if (response.action === 'signal_toggle') endpoint = '/api/signal_copier/toggle';
           if (response.action === 'stealth_reply_toggle') endpoint = '/api/stealth/toggle_reply';
           if (response.action === 'stealth_invite_toggle') endpoint = '/api/stealth/toggle_invite';
@@ -1016,6 +1023,16 @@ function App() {
                   on: health?.modules?.website?.active },
                 { label: '📌 PINTEREST', action: 'pin_toggle', color: '198, 106, 58',
                   on: health?.modules?.pin_agent?.active },
+                { label: '📣 SOCIAL', action: 'social_toggle', color: '236, 72, 153',
+                  on: health?.social?.active },
+                { label: '📘 FACEBOOK', action: 'social_facebook_toggle', color: '24, 119, 242',
+                  on: health?.social?.platforms_on?.facebook },
+                { label: '𝕏 TWITTER', action: 'social_twitter_toggle', color: '120, 120, 130',
+                  on: health?.social?.platforms_on?.twitter },
+                { label: '🧵 THREADS', action: 'social_threads_toggle', color: '90, 90, 100',
+                  on: health?.social?.platforms_on?.threads },
+                { label: '🦋 BLUESKY', action: 'social_bluesky_toggle', color: '0, 133, 255',
+                  on: health?.social?.platforms_on?.bluesky },
                 { label: '🐳 SIGNAL COPIER', action: 'signal_toggle', color: '245, 158, 11',
                   on: health?.modules?.signal_copier?.active },
                 { label: '💬 STEALTH REPLY', action: 'stealth_reply_toggle', color: '139, 92, 246',
@@ -1034,6 +1051,11 @@ function App() {
                       let endpoint = '';
                       if (btn.action === 'news_toggle') endpoint = '/api/news/toggle';
                       if (btn.action === 'pin_toggle') endpoint = '/api/pins/toggle';
+                      if (btn.action === 'social_toggle') endpoint = '/api/social/toggle';
+                      if (btn.action === 'social_facebook_toggle') endpoint = '/api/social/facebook/toggle';
+                      if (btn.action === 'social_twitter_toggle') endpoint = '/api/social/twitter/toggle';
+                      if (btn.action === 'social_threads_toggle') endpoint = '/api/social/threads/toggle';
+                      if (btn.action === 'social_bluesky_toggle') endpoint = '/api/social/bluesky/toggle';
                       if (btn.action === 'website_toggle') endpoint = '/api/website/toggle';
                       if (btn.action === 'signal_toggle') endpoint = '/api/signal_copier/toggle';
                       if (btn.action === 'stealth_reply_toggle') endpoint = '/api/stealth/toggle_reply';

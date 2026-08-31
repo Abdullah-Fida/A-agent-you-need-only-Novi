@@ -2830,6 +2830,91 @@ class TestSocialSyndicator(unittest.TestCase):
         self.assertIs(syn.buffer, news)
         self.assertTrue(asyncio.run(syn.syndicate(self.ARTICLE))["twitter"])
 
+    # ── which posts carry a link ─────────────────────────────────
+
+    def test_bluesky_and_facebook_always_carry_the_link(self):
+        """
+        Neither is penalised for it: Bluesky has no link penalty at all, and
+        Facebook's link sits in the first comment where it costs nothing.
+        """
+        syn = self._syn()
+        for service in ("bluesky", "facebook"):
+            for sent in range(9):
+                syn.sent_today[service] = sent
+                self.assertTrue(syn.wants_link(service),
+                                f"{service} dropped a link at post {sent}")
+
+    def test_x_and_threads_post_bare_one_time_in_three(self):
+        """
+        Both demote link posts and neither offers a first comment. An account
+        that only ever posts links gets throttled into an empty room, and then
+        the linked posts reach nobody either.
+        """
+        syn = self._syn()
+        for service in ("twitter", "threads"):
+            pattern = []
+            for sent in range(6):
+                syn.sent_today[service] = sent
+                pattern.append(syn.wants_link(service))
+            self.assertEqual(pattern, [True, True, False, True, True, False],
+                             f"{service}: {pattern}")
+
+    def test_a_bare_post_still_fits_and_reads_as_a_post(self):
+        syn = self._syn()
+        for service in ("twitter", "threads", "bluesky"):
+            text = syn.caption_for(service, self.ARTICLE, "")
+            self.assertNotIn("http", text, f"{service} leaked a link")
+            self.assertIn(self.ARTICLE["title"][:20], text)
+            self.assertLessEqual(len(text), syn.limit_for(service))
+            self.assertTrue(text.strip())
+
+    def test_the_bare_post_uses_the_room_the_link_freed(self):
+        """A post with no URL has ~60 more characters to say something with."""
+        syn = self._syn()
+        article = dict(self.ARTICLE, content=(
+            "<p>" + ("A sentence of the article body that runs on. " * 20) + "</p>"))
+        link = syn.article_link(article["slug"])
+        with_link = syn.caption_for("threads", article, link)
+        without = syn.caption_for("threads", article, "")
+        self.assertGreater(len(without), len(with_link) - len(link))
+
+    def test_a_post_that_should_link_and_does_not_is_refused(self):
+        """
+        The policy dropping a link is intended. A BUG dropping one is not,
+        and the two must not look the same.
+        """
+        buf = MagicMock()
+        buf.ensure_channels = AsyncMock(
+            return_value=[{"id": "c1", "service": "bluesky"}])
+        buf.send = AsyncMock(return_value=True)
+        buf.last_error = ""
+        syn = self._syn(buffer=buf, services=["bluesky"])
+        syn._slot_is_allowed = lambda *a: True
+        syn.caption_for = lambda *a, **k: "a post with no link in it at all"
+
+        results = asyncio.run(syn.syndicate(self.ARTICLE))
+        self.assertFalse(results["bluesky"])
+        buf.send.assert_not_awaited()
+
+    def test_the_bare_post_is_sent_not_skipped(self):
+        """The guard must not mistake a deliberate bare post for a failure."""
+        buf = MagicMock()
+        buf.ensure_channels = AsyncMock(
+            return_value=[{"id": "c1", "service": "twitter"}])
+        buf.send = AsyncMock(return_value=True)
+        buf.last_error = ""
+        syn = self._syn(buffer=buf, services=["twitter"])
+        syn._slot_is_allowed = lambda *a: True
+        # _roll_day() zeroes the counters on the first call, so stamp the day
+        # BEFORE seeding it or the seed is wiped inside syndicate().
+        syn._roll_day()
+        syn.sent_today["twitter"] = 2          # the bare slot in the cycle
+
+        self.assertFalse(syn.wants_link("twitter"))
+        results = asyncio.run(syn.syndicate(self.ARTICLE))
+        self.assertTrue(results["twitter"])
+        self.assertNotIn("http", buf.send.await_args.args[1])
+
     def test_bluesky_can_be_switched_off_alone(self):
         brain = make_brain()
         brain.social_module_active = True
@@ -2935,8 +3020,7 @@ class TestSocialSyndicator(unittest.TestCase):
 
     def test_a_new_account_ramps_up_on_its_own(self):
         today = (datetime.now(timezone.utc) + PKT).date()
-        for days, expected in ((0, 3), (9, 3), (10, 4), (19, 4),
-                               (20, 6), (400, 6)):
+        for days, expected in ((0, 3), (9, 3), (10, 6), (400, 6)):
             syn = self._syn(start_date=str(today - timedelta(days=days)))
             self.assertEqual(syn.daily_cap("facebook"), expected,
                              f"day {days + 1} of the account should allow {expected}")
