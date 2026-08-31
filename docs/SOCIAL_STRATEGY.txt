@@ -1,0 +1,284 @@
+================================================================================
+SOCIAL STRATEGY  --  Facebook and X / Twitter
+================================================================================
+Last updated: 2026-08-31
+
+NO PASSWORDS OR API KEYS IN THIS FILE. It is committed to git.
+
+Telegram is NOT part of this. It has its own schedule, its own sleep window and
+its own reasons, and nothing in this file touches it.
+
+
+--------------------------------------------------------------------------------
+1. THE ONE IDEA
+--------------------------------------------------------------------------------
+These accounts are not the product. The website is. Every post exists to send
+one more person to pressvane.com, and the link is what does that.
+
+So two rules sit above everything else:
+
+  * Every post carries the article link. If a link cannot be built the post is
+    not sent at all -- a link-less post spends the reach and sends nobody
+    anywhere, which is worse than staying quiet.
+
+  * The post is worth reading on its own. A headline and a bare link asks for a
+    click and gives nothing back, and neither platform rewards that. A Facebook
+    post carries the opening paragraphs of the article: someone who never clicks
+    still learns what happened, and someone who does knows why it is worth the
+    trip.
+
+
+--------------------------------------------------------------------------------
+2. WHEN THINGS POST
+--------------------------------------------------------------------------------
+The trigger is the ARTICLE, not a clock of its own. The moment an article goes
+live on the site, Facebook and X announce it. There is nothing to keep in sync,
+because there is only one schedule.
+
+Eight articles a day: six news, two explainers.
+
+  PKT     UTC    London   New York   what
+  -----------------------------------------------------------------------
+  01:00   20:00  21:00    16:00      news        US afternoon
+  04:00   23:00  00:00    19:00      news        US evening
+  11:30   06:30  07:30    02:30      news        UK commute
+  13:00   08:00  09:00    04:00      explainer   UK morning
+  15:00   10:00  11:00    06:00      news        US wakes
+  18:00   13:00  14:00    09:00      news        US PEAK
+  19:30   14:30  15:30    10:30      explainer   US morning
+  21:00   16:00  17:00    12:00      news        US lunch
+
+London and New York above are summer time (BST / EDT). In winter both slide an
+hour further behind PKT.
+
+The hours look strange from Pakistan and that is the point. The readers are in
+the UK and the United States, and the site was deliberately cut loose from the
+Telegram schedule so it could publish through the small hours here, which is
+the whole American afternoon and evening. Two of the eight slots -- 01:00 and
+04:00 PKT -- sit inside the Telegram sleep window and are the best US hours of
+the day.
+
+
+--------------------------------------------------------------------------------
+3. HOW MANY, AND THE WARM-UP
+--------------------------------------------------------------------------------
+At full speed: 8 a day on each platform. One post per article, because the
+writing is already paid for and an article that is not shared is pure loss.
+8 a day is unremarkable for a news brand -- real ones run 20 to 40.
+
+The risk is not volume. It is volume on day one. An account whose first day of
+life includes eight outbound links reads as a link farm, and that reach penalty
+is the kind you do not recover from. So it starts small and climbs by itself:
+
+  days 1-4     3 posts/day
+  days 5-10    5 posts/day
+  days 11-17   6 posts/day
+  day 18+      8 posts/day     every article
+
+Which slots survive the cap, by phase:
+
+  PKT     New York    d1-4   d5-10   d11-17   d18+
+  ---------------------------------------------------------
+  01:00   16:00        yes    yes     yes      yes
+  04:00   19:00         -     yes     yes      yes
+  11:30   02:30         -      -       -       yes
+  13:00   04:00         -      -       -       yes
+  15:00   06:00         -      -      yes      yes
+  18:00   09:00        yes    yes     yes      yes
+  19:30   10:30         -     yes     yes      yes
+  21:00   12:00        yes    yes     yes      yes
+  ---------------------------------------------------------
+  totals                3      5       6        8
+
+They are chosen by AUDIENCE, not by whichever article happened to publish
+first. "The first three of the day" would hand every share to 01:00, 04:00 and
+11:30 PKT -- and 11:30 PKT is half past two in the morning in New York. The
+priority order lives in modules/social_syndicator.py as SLOT_PRIORITY, and a
+test asserts every hour in it is an hour the website actually publishes at.
+
+Day one stamps itself on the first post that actually leaves, and is persisted
+with the rest of the brain state, so the ramp starts on its own, cannot be
+forgotten, and survives a redeploy. SOCIAL_START_DATE overrides it if needed.
+
+
+--------------------------------------------------------------------------------
+4. THE SWITCHES
+--------------------------------------------------------------------------------
+Three, and all default OFF.
+
+  POST /api/social/toggle             both platforms          master
+  POST /api/social/facebook/toggle    Facebook only
+  POST /api/social/twitter/toggle     X only
+
+Body {"active": true} or {"active": false}. An empty body inverts, which is
+only safe because NOVI always sends the explicit form -- it once read "give me
+the report of the news agent" as a toggle and switched the news agent off.
+
+Three rather than one because they fail for different reasons: an X account
+gets restricted, a Facebook page is mid-rebuild. Losing one is no reason to
+lose the other.
+
+Separate from the WEBSITE switch on purpose. Turning social off does not stop
+articles being written or published; it withholds the announcement and nothing
+else. The master kill switch beats all of them.
+
+
+--------------------------------------------------------------------------------
+5. THE ACCOUNTS
+--------------------------------------------------------------------------------
+X / Twitter          abudllahkhan646khan@gmail.com
+                     Handle : @press_vane
+                     Name   : PressVane
+
+                     @pressvane without the underscore is registered to
+                     somebody else, which is why X offered the underscore
+                     form. This is not a problem worth solving: the handle is
+                     the address, the DISPLAY NAME is what people read in the
+                     timeline, and that is "PressVane" either way. Reuters is
+                     @Reuters but plenty of serious outlets carry an
+                     underscore. Do not add filler like "official" or "hq" to
+                     avoid one -- that reads more amateur than the underscore
+                     does.
+
+Facebook             being replaced. The old page "Zindagi Ke Rang" is on the
+                     old Buffer account and is being retired.
+
+Buffer               being replaced. Both channels connect through ONE Buffer
+                     account, separate from the Pinterest agent's Buffer.
+
+WHEN YOU SWAP THE BUFFER ACCOUNT: update BUFFER_ACCESS_TOKEN in Render and
+DELETE or update BUFFER_ORGANIZATION_ID. A new token beside the old
+organisation id used to query a stranger's organisation, find nothing, and
+report "No channels connected in Buffer" while buffer.com plainly showed them
+connected. The code now detects that and ignores the stale id, but the
+variable should still be corrected. /api/health names the Buffer login in use.
+
+
+--------------------------------------------------------------------------------
+6. THE X PROFILE, FIELD BY FIELD
+--------------------------------------------------------------------------------
+Name          PressVane
+
+Username      press_vane
+
+Bio           World, crypto, tech and business news — reported plainly, eight
+              times a day. Explainers on the things everyone pretends to
+              understand already.
+
+              (154 characters. X allows 160.)
+
+Location      Islamabad, Pakistan
+              Real, and it is an asset rather than something to hide. A
+              Pakistan dateline is a reason to read the Pakistan coverage.
+
+Website       https://pressvane.com
+
+Birth date    Leave blank. It is a publication, not a person.
+
+Profile photo assets/brand/pressvane_avatar_400.png
+              (pressvane_avatar_1000.png if a larger upload is wanted)
+
+Header        assets/brand/pressvane_x_banner_1500x500.png
+
+Pinned post   Post this once and pin it. It is the first thing a visitor reads
+              after the bio:
+
+                  PressVane covers world, crypto, tech and business news, plus
+                  Pakistan.
+
+                  Eight stories a day. Every one is a full piece on the site,
+                  not a headline and a link.
+
+                  Start here: https://pressvane.com
+
+Settings worth changing at once:
+  * Privacy and safety -> Photo tagging: off
+  * Privacy and safety -> Discoverability by email/phone: off
+  * Security -> two-factor authentication: ON. An authenticator app, not SMS.
+    SMS was already unreliable on this number during the GoDaddy purchase.
+
+
+--------------------------------------------------------------------------------
+7. THE FACEBOOK PAGE, FIELD BY FIELD
+--------------------------------------------------------------------------------
+Page name     PressVane
+Category      News & Media Website   (NOT "Media/News Company" -- the
+              Website variant is what gets the link preview treatment)
+Username      @pressvane if free, else @pressvane.news
+Bio (short)   World, crypto, tech and business news. Eight stories a day.
+About         PressVane reports world, crypto, technology and business news,
+              with dedicated coverage of Pakistan. Every story is written up
+              in full at pressvane.com — eight a day, plus explainers on the
+              subjects everyone pretends to understand already.
+Website       https://pressvane.com
+Email         the address the page is created on
+Profile photo assets/brand/pressvane_avatar_400.png
+Cover photo   assets/brand/pressvane_fb_cover_1640x624.png
+
+
+--------------------------------------------------------------------------------
+8. HOW A POST IS BUILT
+--------------------------------------------------------------------------------
+No model is called. The article was already written and already passed the
+quality gate; paying a model to paraphrase it adds latency, cost, and one more
+way to publish nonsense, for nothing.
+
+FACEBOOK
+    headline
+    the opening paragraphs of the article, whole paragraphs only, up to
+      about 700 characters -- headings and photo credits excluded
+    "Read the full story: <link>"
+    three hashtags from the article's own SEO keywords
+
+X
+    headline
+    the first sentence of the summary, but only if a WHOLE sentence fits
+    <link>
+    two hashtags
+
+    Hard limit 280. The link is priced at 23 characters no matter how long
+    it really is, because X rewrites every URL through t.co, and measuring
+    the raw string wastes the budget.
+
+The picture is the article's own hero -- the same photograph the reader sees
+when they follow the link. It is already a public URL on our storage, so
+nothing is re-hosted.
+
+Hashtags come from the article's SEO keywords, and compound terms are kept
+whole: "on-chain analysis" is #OnChainAnalysis. Splitting on the hyphen left
+"on" looking like a stop word standing alone and published #ChainAnalysis --
+a different subject, in the site's largest section.
+
+
+--------------------------------------------------------------------------------
+9. THINGS LEARNED THE HARD WAY
+--------------------------------------------------------------------------------
+* Buffer's free plan holds only TEN posts in a channel's queue. Eight articles
+  a day fills that in a day and a half, after which every post fails with
+  "Scheduled posts limit reached" -- which is exactly the state the old account
+  was found in. Posts now use ShareMode "shareNow", which publishes on the spot
+  and never enters the queue. Confirmed against the live schema: the enum is
+  addToQueue | customScheduled | shareNext | shareNow.
+
+* Facebook used to hang off the TELEGRAM fan-out. Once the website got its own
+  schedule the two clocks carried different stories, so a Facebook post fired
+  from the Telegram side had no article to link to and went out bare; when the
+  schedules did collide, the same story went to Facebook twice. Facebook and X
+  are now triggered only by the article.
+
+* The channel list is read once at start-up. A page connected at buffer.com
+  afterwards is now picked up within half an hour, without a redeploy.
+
+* Buffer's API still calls the X channel "twitter". Both names are accepted, so
+  a rename on their side cannot silently drop the channel.
+
+
+--------------------------------------------------------------------------------
+10. OUTSTANDING
+--------------------------------------------------------------------------------
+  [ ] Create the new Facebook page
+  [ ] Create the new Buffer account, connect Facebook and X to it
+  [ ] Update BUFFER_ACCESS_TOKEN in Render, and delete BUFFER_ORGANIZATION_ID
+  [ ] Turn the master switch on:  POST /api/social/toggle {"active": true}
+  [ ] Watch the first day. Three posts is the whole of day one, and they land
+      at 01:00, 18:00 and 21:00 PKT.

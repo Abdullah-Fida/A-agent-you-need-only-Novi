@@ -22,6 +22,12 @@ ORIGINAL_BLUEPRINT.txt    the original Daily Pulse PK / Novi ecosystem plan,
                           Historical -- the build has moved past parts of it --
                           but it records what this was meant to be.
 
+SOCIAL_STRATEGY.txt       Facebook and X in full: the posting times and what
+                          each one is in London and New York, the warm-up ramp,
+                          the three switches, the profile copy for both
+                          accounts, how a post is built, and the Buffer traps.
+                          Telegram is deliberately NOT in it.
+
 PINTEREST_STRATEGY.txt    the Pinterest module in full: why this category and
                           not decor, the economics, the profile copy, all six
                           boards with their Pinterest serviceIds, the sixteen
@@ -65,4 +71,5 @@ ONE FILE PER MODULE, as each is finished
   [ ] NEWS_STRATEGY.txt        the news agent and the Telegram channel
   [ ] ARTICLE_STRATEGY.txt     the article agent and the website
   [ ] SIGNALS_STRATEGY.txt     the signal copier
-  [ ] SOCIAL_STRATEGY.txt      Facebook, and Twitter and Reddit when unblocked
+  [x] SOCIAL_STRATEGY.txt      Facebook and X. Reddit is not in it -- that
+                               still hangs off the Telegram fan-out.
