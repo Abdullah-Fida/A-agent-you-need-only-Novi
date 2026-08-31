@@ -113,6 +113,41 @@ class StockPhotoFinder:
         if not self.enabled or not query.strip():
             return None, ""
 
+        # A three-word query is precise and often finds nothing openly
+        # licensed: "hardware wallet security" returns an empty pool while
+        # "hardware wallet" and then "wallet" do not. Broaden a step at a
+        # time rather than jumping straight to a generated illustration.
+        for attempt in self._query_ladder(query):
+            found, credit = await self._search(attempt)
+            if found:
+                return found, credit
+
+        self.misses += 1
+        logger.info(f"No usable stock photo for '{query[:40]}'; the generator "
+                    f"will draw one instead.")
+        return None, ""
+
+    @staticmethod
+    def _query_ladder(query: str) -> List[str]:
+        """
+        The query, then two decisively broader versions of it.
+
+        Widening one word at a time and then truncating the list meant a
+        four-word query never reached its single-word fallback: "laptop remote
+        work desk" only ever tried "laptop remote work" and "laptop remote",
+        both as empty as the original. The steps jump straight to two words
+        and then one, which is where the openly-licensed pool actually is.
+        """
+        words = query.split()
+        ladder = [query]
+        for cut in (2, 1):
+            candidate = " ".join(words[:cut])
+            if candidate and candidate not in ladder:
+                ladder.append(candidate)
+        return ladder
+
+    async def _search(self, query: str) -> Tuple[Optional[str], str]:
+        """One search pass across the licence tiers."""
         import httpx
         for licences in LICENCE_TIERS:
             try:
@@ -144,9 +179,6 @@ class StockPhotoFinder:
                                 f"{' (credit required)' if credit else ''}")
                     return item["url"], credit
 
-        self.misses += 1
-        logger.info(f"No usable stock photo for '{query[:40]}'; the generator "
-                    f"will draw one instead.")
         return None, ""
 
     @property
