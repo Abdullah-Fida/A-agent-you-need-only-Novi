@@ -2391,8 +2391,29 @@ class TestEvergreenDesk(unittest.TestCase):
     def test_enough_topics_for_the_schedule(self):
         from core.brain import BotBrain
         per_day = len(BotBrain.SCHEDULE["evergreen_slots"])
-        self.assertGreaterEqual(len(self.bank) / per_day, 10,
-                                "fewer than ten days of explainers in the bank")
+        self.assertGreaterEqual(len(self.bank) / per_day, 30,
+                                "fewer than thirty days of explainers in the bank")
+
+    def test_photo_queries_are_concrete_nouns(self):
+        # A photo archive can answer "office workspace" and cannot answer
+        # "productivity". Abstract queries are what drove the hit rate down.
+        abstract = {"productivity", "innovation", "strategy", "growth",
+                    "success", "future", "digital", "modern"}
+        for t in self.bank:
+            words = set(t["photo"].lower().split())
+            self.assertFalse(words <= abstract,
+                             f"{t['photo']!r} is too abstract to photograph")
+
+    def test_the_desk_replenishes_rather_than_stopping(self):
+        # 77 curated topics is 38 days. A pipeline that silently halts after
+        # five weeks is not a pipeline.
+        import inspect
+        src = inspect.getsource(self.D.next_topic)
+        self.assertIn("_invent_topic", src)
+
+    def test_low_stock_threshold_is_reached_before_empty(self):
+        self.assertGreater(self.D.LOW_STOCK, 0)
+        self.assertLess(self.D.LOW_STOCK, len(self.bank))
 
     def test_the_bank_covers_every_section(self):
         sections = {t["category"] for t in self.bank}
