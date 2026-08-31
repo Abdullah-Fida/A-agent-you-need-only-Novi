@@ -429,11 +429,18 @@ class ArticleAgent:
         """
         Returns a publicly reachable hero image URL for the article.
 
-        Order: the outlet's own photo, then whatever was already made for the
-        Telegram post, then a generated image. The outlet's photo comes first
-        because it shows the actual event, and because it costs one download
-        rather than a minute of generation. The image generator applies that
-        order itself, so this method only has to host whatever it returns.
+        Exactly two sources, in this order, and no third:
+
+            1. The photograph the outlet published with the story.
+            2. An openly-licensed photograph of the subject.
+
+        If neither yields a picture the article is DEFERRED, not illustrated.
+        Nothing generated ever reaches the website.
+
+        `provided_url` -- the picture already made for the Telegram post -- is
+        deliberately ignored. It short-circuited both tiers above, and on
+        Telegram that picture may be a generated one, so honouring it here was
+        a route for synthetic imagery onto the site.
 
         Everything is RE-HOSTED, never hot-linked. Returning the outlet's URL
         directly worked on the day and broke months later when they rotated a
@@ -445,26 +452,22 @@ class ArticleAgent:
         publish in that case -- an article with an empty image well is the one
         thing that makes a news site look broken.
         """
-        # The picture already made and hosted for the Telegram post, so a
-        # story is never illustrated twice.
-        if provided_url:
-            return provided_url
-
-        # No wire photo. Before generating one, look for a real photograph of
-        # the subject. The generator tries whatever URL it is handed first, so
-        # passing a stock photo here inserts real photography ahead of the
-        # synthetic tier without touching the chain itself.
+        # 2. Only when the story arrived without a picture. The generator tries
+        #    whatever URL it is handed first, so putting the stock photo here
+        #    keeps tier 1 ahead of it without touching the chain itself.
         if not story_image_url and self.photos:
             try:
                 found, _ = await self.photos.find(self._photo_query(title, category))
                 if found:
+                    logger.info("No wire photo; using an openly-licensed photograph.")
                     story_image_url = found
             except Exception as e:
                 logger.warning(f"Stock photo lookup skipped: {type(e).__name__}: {e}")
 
-        # allow_card=False: a drawn headline card is fine on Telegram, where
-        # the alternative is no post, but on the website it is a placeholder
-        # and we would rather wait and retry.
+        if not story_image_url:
+            logger.warning("Neither a wire photo nor a stock photo was found.")
+            return ""
+
         if not self.image_gen:
             logger.warning("ArticleAgent has no image generator.")
             return ""
