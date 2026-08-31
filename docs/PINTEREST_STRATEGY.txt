@@ -176,23 +176,57 @@ purchases rather than opinions, so catching an invented feature before it
 publishes is cheap insurance.
 
 
-8. STATE, as of 2026-08-30
+8. STATE, as of 2026-08-31
 --------------------------------------------------------------------------------
 WORKING, proven end to end with a real pin published on 2026-08-30:
   source -> copy -> image -> hosting -> compliance -> publish
   Pin id 6a93e2fd4322eea1c975757f, "Herb scissors gift for the culinary lover".
 
-STILL TO DO:
-  [ ] AliExpress keys: ALI_APP_KEY, ALI_APP_SECRET, ALI_TRACKING_ID.
-      Apply at portals.aliexpress.com -> Tools -> Dropshipping and Affiliates
-      developer API. TURN THE VPN OFF -- AliExpress blocks datacentre IPs.
-      Until these exist the agent runs on sample products.
-  [ ] Run database/pin_schema.sql in Supabase. pin_posts and the pin-images
-      bucket do not exist yet, so nothing is being recorded and the dedupe
-      history is empty every run. The live test borrowed article-images.
-  [ ] Board routing by product type. Every pin currently goes to ONE board,
-      which wastes the six-board structure above.
-  [ ] Render env: PIN_BUFFER_TOKEN, PIN_CHANNEL_ID, PIN_MAX_PER_DAY=4.
+Re-verified 2026-08-31 on sample products, publishing nothing: selection,
+copywriting, image, compliance and disclosure all pass.
 
-NOT NEEDED: a separate Groq key. The pin agent runs fine on the Novi one. Add
-one only if rate limits start biting.
+DONE since:
+  [x] Board routing by product type -- pin_agent/boards.py, six boards, routed
+      on board NAME because Buffer's board ids change on reconnect.
+  [x] Its own Supabase project, PIN_SUPABASE_URL / PIN_SUPABASE_KEY.
+      Project dpnsqkwoyrtplazabbur, US-hosted. pin_posts EXISTS and the anon
+      key can insert and delete -- both verified against the live project.
+  [x] Buffer connected: tidynookideas, on abdullahkhan646khan@gmail.com.
+      That account also carries the Bluesky channel for the news side.
+
+BLOCKED ON ALIEXPRESS -- applied 2026-08-31, quoted 2-5 working days
+--------------------------------------------------------------------------------
+  Applied through portals.aliexpress.com -> Tools -> API -> Apply Now, which
+  hands off to openservice.aliexpress.com. Two separate systems on the same
+  login, which is the confusing part: the Portals affiliate account already
+  existed, the Open Platform developer account had to be created.
+
+  Submitted as:  Affiliates (individual), Pakistan, CNIC uploaded.
+  Account:       abdullahkhan646khan@gmail.com
+
+  HOW APPROVAL ARRIVES: email to that address -- CHECK PROMOTIONS AND SPAM,
+  AliExpress mail lands there -- and the "Progress query" panel on the
+  application page moves from Under Review. Then Portals -> Tools -> API ->
+  Step 2 "Get app key".
+
+  The Tracking ID is NOT on the Open Platform. It is in Portals, under
+  Account, and it is what attributes commission -- without it every click
+  earns nothing.
+
+STILL TO DO:
+  [ ] ALI_APP_KEY, ALI_APP_SECRET, ALI_TRACKING_ID in Render once approved.
+      TURN THE VPN OFF when using the portal -- AliExpress blocks datacentre
+      IPs. Until these exist the agent runs on sample products.
+  [ ] Supabase STORAGE on the pin project. Storage is not provisioned there
+      at all -- the API answers "TenantNotFound", which is also why
+      storage.buckets does not exist in that project's SQL editor. Open
+      Dashboard -> Storage once to provision it, then New bucket, named
+      exactly pin-images, Public ON. THIS IS THE REAL BLOCKER: without it no
+      pin image can be hosted, and Buffer fetches the image itself, so
+      nothing could publish even with the AliExpress keys in place.
+  [ ] PIN_MAX_PER_DAY=4 in Render. Start at four, not eight.
+
+NOT NEEDED:
+  - A separate Groq key. The pin agent runs fine on the Novi one.
+  - PIN_CHANNEL_ID. It resolves tidynookideas on its own; only needed if a
+    SECOND Pinterest account is ever connected to the same Buffer.
