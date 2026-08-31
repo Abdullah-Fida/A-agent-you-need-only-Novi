@@ -99,6 +99,15 @@ class SocialSyndicator:
     # collapse it behind "See more" before the point is made.
     FACEBOOK_BODY_CHARS = 700
 
+    # Facebook demotes a post that carries an outbound link, and does not
+    # demote one whose link sits in the first comment. That is the whole
+    # reason for the split: the reach lost by putting the URL in the body is
+    # larger than anything else on this page.
+    #
+    # X and Threads do not get this treatment. Neither supports a first
+    # comment through Buffer, and on both a link in the post is normal.
+    FACEBOOK_LINK_IN_FIRST_COMMENT = True
+
     # X counts every link as exactly this many characters, whatever its
     # real length, because it rewrites them through t.co.
     X_LINK_LENGTH = 23
@@ -364,7 +373,8 @@ class SocialSyndicator:
             return cls._trim(out[0], limit)
         return "\n\n".join(out)
 
-    def facebook_caption(self, article: Dict, link: str) -> str:
+    def facebook_caption(self, article: Dict, link: str,
+                         link_in_body: bool = True) -> str:
         """
         Built from the article itself, not rewritten by a model.
 
@@ -373,7 +383,8 @@ class SocialSyndicator:
         to publish nonsense, for nothing.
 
         The opening of the piece is carried in full so the post is worth
-        reading on its own; the link is there for the rest of it.
+        reading on its own. `link_in_body` decides whether the URL goes here
+        or into the first comment -- see facebook_first_comment.
         """
         title = (article.get("title") or "").strip()
         body = self.article_excerpt(article, self.FACEBOOK_BODY_CHARS)
@@ -384,10 +395,20 @@ class SocialSyndicator:
         tags = self.hashtags(article.get("seo_keywords"), 3)
 
         parts = [p for p in (title, body) if p]
-        parts.append(f"📖 Read the full story: {link}")
+        if link_in_body:
+            parts.append(f"📖 Read the full story: {link}")
         if tags:
             parts.append(" ".join(tags))
         return "\n\n".join(parts)[:self.FACEBOOK_MAX_CHARS]
+
+    def facebook_first_comment(self, link: str) -> str:
+        """
+        The comment posted under a Facebook post, carrying the link.
+
+        Kept to one line. A comment is read at a glance or not at all, and
+        anything longer starts competing with the post above it.
+        """
+        return f"📖 Read the full story: {link}" if link else ""
 
     def x_length(self, text: str, link: str) -> int:
         """The length X will actually count, with the link priced at 23."""
@@ -478,7 +499,15 @@ class SocialSyndicator:
             return self.x_caption(article, link)
         if service == "threads":
             return self.threads_caption(article, link)
-        return self.facebook_caption(article, link)
+        return self.facebook_caption(
+            article, link,
+            link_in_body=not self.FACEBOOK_LINK_IN_FIRST_COMMENT)
+
+    def first_comment_for(self, service: str, link: str) -> str:
+        """The comment to post underneath, if the service supports one."""
+        if service == "facebook" and self.FACEBOOK_LINK_IN_FIRST_COMMENT:
+            return self.facebook_first_comment(link)
+        return ""
 
     # ── publishing ───────────────────────────────────────────────
 
@@ -577,12 +606,21 @@ class SocialSyndicator:
             return False
 
         text = self.caption_for(service, article, link)
+        comment = self.first_comment_for(service, link)
         slug = article.get("slug", "")
+
+        # The link has to reach the reader by one route or the other. If it
+        # is in neither the post nor a comment, the post is pointless and is
+        # not worth sending at all.
+        if link not in text and link not in comment:
+            logger.error(f"{service}: the post would carry no link. Skipping.")
+            return False
 
         any_ok = False
         for channel in channels:
             ok = await self.buffer.send(channel, text, image_url=image,
-                                        article_slug=slug)
+                                        article_slug=slug,
+                                        first_comment=comment)
             any_ok = any_ok or ok
             await asyncio.sleep(1)          # be gentle with the API
 

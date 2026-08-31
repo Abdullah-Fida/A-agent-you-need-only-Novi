@@ -283,8 +283,22 @@ FACEBOOK
     headline
     the opening paragraphs of the article, whole paragraphs only, up to
       about 700 characters -- headings and photo credits excluded
-    "Read the full story: <link>"
     three hashtags from the article's own SEO keywords
+    ...and the LINK IN THE FIRST COMMENT, not in the post.
+
+    Facebook demotes a post carrying an outbound link and does not demote a
+    comment, so the reach lost by putting the URL in the body is the largest
+    single cost on the page. Buffer carries it as
+    metadata.facebook.firstComment. Facebook is the ONLY service with the
+    field, so X and Threads keep their link in the post, where it is normal.
+
+    Never set metadata.facebook.linkAttachment beside it: Buffer's schema
+    says it is "mutually exclusive with a non-empty assets array -- input
+    providing both is rejected", and every post carries the photograph.
+
+    Flip FACEBOOK_LINK_IN_FIRST_COMMENT in social_syndicator.py to put it
+    back in the body. A guard refuses to send a post whose link is in
+    neither place.
 
 THREADS
     headline

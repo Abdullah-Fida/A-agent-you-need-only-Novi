@@ -33,6 +33,12 @@ api.bufferapp.com rejects modern public tokens and retires 2027-02-01):
     ThreadsPostMetadataInput is optional, checked against the live schema --
     but its limit is 500 characters and it charges a URL at its real length,
     so it gets its own caption rather than a truncated Facebook one.
+  * `metadata.facebook.firstComment` posts a comment under the post. It is
+    how the article link reaches a Facebook audience without the post itself
+    being demoted for carrying an outbound link.
+  * `metadata.facebook.linkAttachment` is documented as "mutually exclusive
+    with a non-empty assets array -- input providing both is rejected". Every
+    post we send carries the article photograph, so it must never be set.
 
 REQUEST BUDGET
 --------------
@@ -308,12 +314,18 @@ class BufferBroadcaster:
     FALLBACK_MODE = "addToQueue"
 
     async def send(self, channel: Dict, text: str, image_url: str = "",
-                   article_slug: str = "") -> bool:
+                   article_slug: str = "", first_comment: str = "") -> bool:
         """
         Queues one post on one Buffer channel.
 
         This is the whole public surface for publishing. Callers build the
         text; this decides how the request has to be shaped for the service.
+
+        `first_comment` is honoured on Facebook only -- it is the only
+        service whose metadata carries the field. Anywhere else it is
+        ignored rather than silently dropped into the post body, because a
+        caller that asked for a comment and got a different post than it
+        expected is worse than one that got no comment.
         """
         if not self.token or not channel:
             return False
@@ -347,6 +359,15 @@ class BufferBroadcaster:
         # Facebook/Instagram reject posts without an explicit type
         if service in self._TYPED_SERVICES:
             post_input["metadata"] = {service: {"type": self._TYPED_SERVICES[service]}}
+
+        # Only Facebook has a first comment. Never set linkAttachment beside
+        # it: Buffer rejects that outright whenever `assets` is non-empty,
+        # and every post here carries the article photograph.
+        if first_comment and service == "facebook":
+            post_input["metadata"]["facebook"]["firstComment"] = first_comment[:8000]
+        elif first_comment:
+            logger.warning(f"Buffer: {service} has no first comment; the text "
+                           f"passed for one was dropped.")
 
         if not assets:
             logger.warning(f"Buffer: posting to {service} without an image "

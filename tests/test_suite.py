@@ -2484,12 +2484,81 @@ class TestSocialSyndicator(unittest.TestCase):
     # ── the link is the entire point ─────────────────────────────
 
     def test_every_post_carries_the_article_link(self):
+        """
+        By one route or the other. On X and Threads the link is in the post;
+        on Facebook it is in the first comment, because Facebook demotes a
+        post that carries an outbound link and does not demote a comment.
+        """
         syn = self._syn()
         link = syn.article_link(self.ARTICLE["slug"])
         self.assertEqual(link, "https://pressvane.com/bitcoin-halving-explained")
         for service in ("facebook", "twitter", "threads"):
-            self.assertIn(link, syn.caption_for(service, self.ARTICLE, link),
-                          f"{service} post has no link")
+            reaches = (link in syn.caption_for(service, self.ARTICLE, link)
+                       or link in syn.first_comment_for(service, link))
+            self.assertTrue(reaches, f"{service} post has no link anywhere")
+
+    def test_the_facebook_link_sits_in_the_first_comment(self):
+        syn = self._syn()
+        link = syn.article_link(self.ARTICLE["slug"])
+        post = syn.caption_for("facebook", self.ARTICLE, link)
+        comment = syn.first_comment_for("facebook", link)
+
+        self.assertNotIn(link, post, "the post itself must stay link-free")
+        self.assertIn(link, comment)
+        # The post still carries the story, so it stands on its own.
+        self.assertIn(self.ARTICLE["title"], post)
+
+    def test_x_and_threads_keep_their_link_in_the_post(self):
+        """Neither supports a first comment through Buffer, and on both a
+        link in the post is ordinary."""
+        syn = self._syn()
+        link = syn.article_link(self.ARTICLE["slug"])
+        for service in ("twitter", "threads"):
+            self.assertIn(link, syn.caption_for(service, self.ARTICLE, link))
+            self.assertEqual(syn.first_comment_for(service, link), "")
+
+    def test_the_comment_is_only_ever_sent_to_facebook(self):
+        """
+        Buffer's metadata carries firstComment on Facebook alone. Passing it
+        anywhere else would be silently dropped, so it is never passed.
+        """
+        sent = {}
+
+        async def send(channel, text, image_url="", article_slug="",
+                       first_comment=""):
+            sent[channel["service"]] = first_comment
+            return True
+
+        buf = MagicMock()
+        buf.ensure_channels = AsyncMock(
+            side_effect=lambda s: [{"id": s, "service": s}])
+        buf.send = AsyncMock(side_effect=send)
+        buf.last_error = ""
+        syn = self._syn(buffer=buf, services=["facebook", "twitter", "threads"])
+        syn._slot_is_allowed = lambda *a: True
+        asyncio.run(syn.syndicate(self.ARTICLE))
+
+        self.assertTrue(sent["facebook"], "Facebook should get a comment")
+        self.assertEqual(sent["twitter"], "")
+        self.assertEqual(sent["threads"], "")
+
+    def test_a_post_with_no_link_by_either_route_is_not_sent(self):
+        """
+        The link is the entire point. If a change ever removed it from both
+        the body and the comment, the post is pointless and must not go.
+        """
+        buf = MagicMock()
+        buf.ensure_channels = AsyncMock(
+            return_value=[{"id": "c1", "service": "facebook"}])
+        buf.send = AsyncMock(return_value=True)
+        buf.last_error = ""
+        syn = self._syn(buffer=buf, services=["facebook"])
+        syn._slot_is_allowed = lambda *a: True
+        syn.first_comment_for = lambda service, link: ""      # both routes gone
+
+        results = asyncio.run(syn.syndicate(self.ARTICLE))
+        self.assertFalse(results["facebook"])
+        buf.send.assert_not_awaited()
 
     def test_nothing_is_posted_when_there_is_no_link_to_give(self):
         """A post with no link is worse than no post: it spends the reach and
@@ -2901,7 +2970,8 @@ class TestSocialSyndicator(unittest.TestCase):
             side_effect=lambda s: [{"id": s, "service": s}])
         buf.last_error = ""
 
-        async def send(channel, text, image_url="", article_slug=""):
+        async def send(channel, text, image_url="", article_slug="",
+                       first_comment=""):
             if channel["service"] == "facebook":
                 raise RuntimeError("facebook down")
             return True
@@ -3132,7 +3202,8 @@ class TestSocialSyndicator(unittest.TestCase):
         buf.last_error = ""
         handed = []
 
-        async def send(channel, text, image_url="", article_slug=""):
+        async def send(channel, text, image_url="", article_slug="",
+                       first_comment=""):
             handed.append((channel["service"], image_url))
             return True
 
