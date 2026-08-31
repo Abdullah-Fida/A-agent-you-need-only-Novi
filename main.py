@@ -355,7 +355,10 @@ async def main():
         # problem with one cannot reach the other.
         pin_db = db
         if pin_config.supabase_url and pin_config.supabase_key:
-            pin_db = SupabaseDB(pin_config.supabase_url, pin_config.supabase_key)
+            # Only pin_posts lives there. Checking Novi's eight tables in
+            # the pin project would report every one of them missing.
+            pin_db = SupabaseDB(pin_config.supabase_url, pin_config.supabase_key,
+                                required_tables=["pin_posts"])
             await pin_db.initialize()
             if pin_db._initialized:
                 logger.info("Pinterest agent has its own Supabase project.")

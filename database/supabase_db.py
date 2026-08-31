@@ -29,9 +29,16 @@ IMAGE_BUCKET = "article-images"
 class SupabaseDB:
     """All database access. Never blocks the event loop."""
 
-    def __init__(self, url: str, key: str):
+    def __init__(self, url: str, key: str, required_tables: List[str] = None):
         self.url = url
         self.key = key
+        # Which tables this connection expects. The pin agent runs against
+        # its OWN project holding only pin_posts, and checking Novi's eight
+        # there printed a MISSING TABLES banner on every start-up for tables
+        # that were never supposed to exist -- a false alarm loud enough to
+        # hide a real one.
+        self.required_tables = list(
+            required_tables if required_tables is not None else REQUIRED_TABLES)
         self.client = None
         self._initialized = False
         self.missing_tables: List[str] = []
@@ -71,10 +78,10 @@ class SupabaseDB:
         this reports the problem once, clearly, with the fix.
         """
         if not self._initialized:
-            return REQUIRED_TABLES
+            return list(self.required_tables)
 
         missing = []
-        for table in REQUIRED_TABLES:
+        for table in self.required_tables:
             try:
                 await asyncio.to_thread(
                     lambda t=table: self.client.table(t).select("*").limit(1).execute()
