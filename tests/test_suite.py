@@ -2830,6 +2830,48 @@ class TestSocialSyndicator(unittest.TestCase):
         self.assertFalse(results["facebook"])
         self.assertTrue(results["twitter"])
 
+    def test_an_org_id_from_another_buffer_account_is_discarded(self):
+        """
+        Swapping Buffer accounts leaves a new token beside the OLD
+        organisation id. Trusting it queries a stranger's organisation, gets
+        nothing, and reports only "No channels connected" -- which sends you
+        to buffer.com, where everything is plainly connected.
+        """
+        from modules.buffer_broadcaster import BufferBroadcaster
+        bb = BufferBroadcaster(access_token="new-token",
+                               organization_id="old-org-from-previous-account")
+        asked = []
+
+        async def fake_gql(query, variables=None, timeout=30):
+            if "account" in query:
+                return {"account": {"id": "a", "email": "new@example.com",
+                                    "organizations": [{"id": "new-org",
+                                                       "name": "Mine"}]}}
+            asked.append(variables["i"]["organizationId"])
+            return {"channels": [{"id": "c1", "service": "facebook",
+                                  "name": "Page", "isDisconnected": False}]}
+
+        bb._gql = fake_gql
+        self.assertTrue(asyncio.run(bb.connect()))
+        self.assertEqual(bb.organization_id, "new-org")
+        self.assertEqual(asked, ["new-org"])
+        self.assertEqual(bb.account_email, "new@example.com")
+
+    def test_an_org_id_the_account_does_own_is_kept(self):
+        from modules.buffer_broadcaster import BufferBroadcaster
+        bb = BufferBroadcaster(access_token="t", organization_id="second")
+
+        async def fake_gql(query, variables=None, timeout=30):
+            if "account" in query:
+                return {"account": {"id": "a", "email": "me@example.com",
+                                    "organizations": [{"id": "first", "name": "A"},
+                                                      {"id": "second", "name": "B"}]}}
+            return {"channels": []}
+
+        bb._gql = fake_gql
+        asyncio.run(bb.connect())
+        self.assertEqual(bb.organization_id, "second")
+
     def test_posts_are_published_now_not_queued(self):
         """
         Two reasons, and the live account had already hit the second: a post

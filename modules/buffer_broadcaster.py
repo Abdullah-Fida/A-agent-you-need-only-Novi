@@ -86,6 +86,9 @@ class BufferBroadcaster:
         self.channels: List[Dict] = []
         self._connected = False
         self._loaded_at = 0.0
+        # Which Buffer login these channels came from. Shown in /api/health so
+        # a token swap is visible without opening buffer.com.
+        self.account_email = ""
         self.posts_sent = 0
         self.last_error = ""
 
@@ -146,6 +149,7 @@ class BufferBroadcaster:
         return {
             "configured": bool(self.token),
             "connected": self._connected,
+            "account": self.account_email,
             "organization_id": self.organization_id,
             "channels": [{"name": c.get("name"), "service": c.get("service"),
                           "connected": not c.get("isDisconnected")} for c in self.channels],
@@ -202,21 +206,44 @@ class BufferBroadcaster:
     # ── connection ───────────────────────────────────────────────
 
     async def connect(self) -> bool:
-        """Verifies the token and loads the connected channels."""
+        """
+        Verifies the token and loads the connected channels.
+
+        The organisation is ALWAYS read from the account the token belongs
+        to, and a configured BUFFER_ORGANIZATION_ID is only honoured if that
+        account actually owns it. Swapping to a different Buffer account
+        means a new token beside an organisation id left over from the old
+        one, and the old code trusted that id blindly: the query then asked a
+        stranger's organisation for its channels, got nothing back, and said
+        only "No channels connected in Buffer" -- which sends you looking at
+        buffer.com, where everything is plainly connected.
+        """
         if not self.token:
             return False
 
-        if not self.organization_id:
-            data = await self._gql(_ACCOUNT)
-            account = (data or {}).get("account") or {}
-            orgs = account.get("organizations") or []
-            if not orgs:
-                self.last_error = "Buffer account has no organizations."
-                logger.error(self.last_error)
-                return False
-            self.organization_id = orgs[0]["id"]
-            logger.info(f"Buffer connected as {account.get('email')} "
+        data = await self._gql(_ACCOUNT)
+        account = (data or {}).get("account") or {}
+        orgs = account.get("organizations") or []
+
+        if orgs:
+            owned = {o["id"] for o in orgs}
+            if self.organization_id and self.organization_id not in owned:
+                logger.warning(
+                    f"BUFFER_ORGANIZATION_ID={self.organization_id} does not "
+                    f"belong to {account.get('email')}. It is left over from "
+                    f"another Buffer account; using {orgs[0]['id']} instead. "
+                    f"Update or remove the variable.")
+                self.organization_id = ""
+            if not self.organization_id:
+                self.organization_id = orgs[0]["id"]
+            self.account_email = account.get("email", "")
+            logger.info(f"Buffer connected as {self.account_email} "
                         f"(org: {orgs[0].get('name')})")
+        elif not self.organization_id:
+            self.last_error = ("Buffer token rejected, or the account has no "
+                               "organisation.")
+            logger.error(self.last_error)
+            return False
 
         data = await self._gql(_CHANNELS, {"i": {"organizationId": self.organization_id}})
         self.channels = ((data or {}).get("channels") or [])
