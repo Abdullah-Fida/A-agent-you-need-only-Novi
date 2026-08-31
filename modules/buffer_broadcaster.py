@@ -16,6 +16,13 @@ api.bufferapp.com rejects modern public tokens and retires 2027-02-01):
     with an error variant, never as an HTTP error status.
   * Facebook posts REQUIRE `metadata.facebook.type` ("post" | "reel" | "story").
     Omitting it fails with "Facebook posts require a type".
+  * `mode` is the ShareMode enum: addToQueue | customScheduled | shareNext |
+    shareNow. We use `shareNow`, for two reasons. The post has to go out at
+    the moment its article publishes, which is the whole design; and the free
+    plan allows only TEN posts sitting in a channel's queue, which eight
+    articles a day fill in a day and a half. The live account was already
+    jammed at "10 scheduled posts out of 10 allowed" and had stopped
+    accepting anything. Nothing published immediately ever enters that queue.
   * X/Twitter needs no such metadata, but its text is hard-capped at 280
     characters and Buffer rejects anything longer outright.
 """
@@ -238,6 +245,13 @@ class BufferBroadcaster:
     X_LINK_LENGTH = 23
     X_MAX_CHARS = 280
 
+    # Publish on the spot. See the module docstring for why queueing is not
+    # an option: it is both the wrong time and a cap of ten.
+    PUBLISH_MODE = "shareNow"
+    # Only if the account will not publish immediately. Queueing late beats
+    # losing the post, and the queue-full error then says so in the log.
+    FALLBACK_MODE = "addToQueue"
+
     async def send(self, channel: Dict, text: str, image_url: str = "",
                    article_slug: str = "") -> bool:
         """
@@ -267,8 +281,8 @@ class BufferBroadcaster:
             "channelId": channel["id"],
             "text": text,
             "assets": assets,
-            "mode": "addToQueue",           # respects your Buffer schedule
-            "schedulingType": "automatic",  # Buffer publishes it for us
+            "mode": self.PUBLISH_MODE,      # straight out, not into the queue
+            "schedulingType": "automatic",  # Buffer's workers send it
             "needsApproval": False,
             "saveToDraft": False,
             "aiAssisted": True,
@@ -286,6 +300,18 @@ class BufferBroadcaster:
         data = await self._gql(_CREATE_POST, {"i": post_input})
         result = (data or {}).get("createPost") or {}
         kind = result.get("__typename")
+
+        # Some accounts refuse to publish on the spot. Queueing is the wrong
+        # time and risks the ten-post cap, but it still beats dropping the
+        # post, so it is tried once and the reason is logged either way.
+        if kind not in ("PostActionSuccess", None) and self.FALLBACK_MODE:
+            logger.warning(f"Buffer refused to publish to {service} "
+                           f"immediately ({result.get('message')}); "
+                           f"falling back to the queue.")
+            post_input["mode"] = self.FALLBACK_MODE
+            data = await self._gql(_CREATE_POST, {"i": post_input})
+            result = (data or {}).get("createPost") or {}
+            kind = result.get("__typename")
 
         if kind == "PostActionSuccess":
             post = result.get("post") or {}

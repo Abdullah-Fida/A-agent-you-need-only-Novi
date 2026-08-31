@@ -2761,6 +2761,61 @@ class TestSocialSyndicator(unittest.TestCase):
         self.assertFalse(results["facebook"])
         self.assertTrue(results["twitter"])
 
+    def test_posts_are_published_now_not_queued(self):
+        """
+        Two reasons, and the live account had already hit the second: a post
+        must go out when its article does, and Buffer's free plan holds only
+        TEN posts in a channel queue -- which eight articles a day fill in a
+        day and a half. The account was stuck at "10 of 10 allowed" and had
+        stopped accepting posts entirely.
+        """
+        from modules.buffer_broadcaster import BufferBroadcaster
+        bb = BufferBroadcaster(access_token="tok")
+        captured = {}
+
+        async def fake_gql(query, variables=None, timeout=30):
+            captured.update(variables or {})
+            return {"createPost": {"__typename": "PostActionSuccess",
+                                   "post": {"id": "p", "status": "sent"}}}
+
+        bb._gql = fake_gql
+        asyncio.run(bb.send({"id": "c", "service": "facebook"}, "hi"))
+        self.assertEqual(captured["i"]["mode"], "shareNow")
+        self.assertEqual(captured["i"]["schedulingType"], "automatic")
+
+    def test_an_account_that_will_not_publish_now_falls_back_to_the_queue(self):
+        """Queueing at the wrong time still beats losing the post."""
+        from modules.buffer_broadcaster import BufferBroadcaster
+        bb = BufferBroadcaster(access_token="tok")
+        modes = []
+
+        async def fake_gql(query, variables=None, timeout=30):
+            modes.append(variables["i"]["mode"])
+            if variables["i"]["mode"] == "shareNow":
+                return {"createPost": {"__typename": "InvalidInputError",
+                                       "message": "cannot publish immediately"}}
+            return {"createPost": {"__typename": "PostActionSuccess",
+                                   "post": {"id": "p", "status": "queued"}}}
+
+        bb._gql = fake_gql
+        self.assertTrue(asyncio.run(bb.send({"id": "c", "service": "facebook"}, "hi")))
+        self.assertEqual(modes, ["shareNow", "addToQueue"])
+
+    def test_the_fallback_is_tried_once_not_in_a_loop(self):
+        from modules.buffer_broadcaster import BufferBroadcaster
+        bb = BufferBroadcaster(access_token="tok")
+        calls = []
+
+        async def fake_gql(query, variables=None, timeout=30):
+            calls.append(variables["i"]["mode"])
+            return {"createPost": {"__typename": "LimitReachedError",
+                                   "message": "Scheduled posts limit reached."}}
+
+        bb._gql = fake_gql
+        self.assertFalse(asyncio.run(bb.send({"id": "c", "service": "facebook"}, "hi")))
+        self.assertEqual(len(calls), 2)
+        self.assertIn("limit reached", bb.last_error)
+
     def test_a_channel_connected_after_start_up_is_picked_up(self):
         """
         The channel list is read once at boot. The user is connecting a brand
