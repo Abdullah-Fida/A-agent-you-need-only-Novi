@@ -1,5 +1,5 @@
 """
-Buffer transport — Facebook, X/Twitter and Threads.
+Buffer transport — Facebook, X/Twitter, Threads and Bluesky.
 
 Uses Buffer's GraphQL API at https://api.buffer.com/graphql.
 
@@ -92,7 +92,7 @@ _ACCOUNT = "query { account { id email organizations { id name } } }"
 
 
 class BufferBroadcaster:
-    """Publishes to Facebook, X/Twitter and Threads through Buffer."""
+    """Publishes to any channel Buffer can connect."""
 
     # Services needing an explicit post type in metadata
     _TYPED_SERVICES = {"facebook": "post", "instagram": "post"}
@@ -114,7 +114,8 @@ class BufferBroadcaster:
         # Which Buffer services we post to.
         self.enabled_services = [
             self.canonical_service(s)
-            for s in (enabled_services or ["facebook", "twitter", "threads"])]
+            for s in (enabled_services
+                      or ["facebook", "twitter", "threads", "bluesky"])]
 
         self.channels: List[Dict] = []
         self._connected = False

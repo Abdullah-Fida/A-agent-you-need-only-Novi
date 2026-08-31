@@ -2685,6 +2685,75 @@ class TestSocialSyndicator(unittest.TestCase):
         self.assertLessEqual(len(text), syn.THREADS_MAX_CHARS)
         self.assertIn(link, text)
 
+    # ── any Buffer channel, sized from one table ─────────────────
+
+    def test_every_service_gets_a_caption_inside_its_own_limit(self):
+        """
+        The fallback used to be the FACEBOOK caption, which runs to 5,000
+        characters. Connecting Bluesky, whose limit is 300, would have
+        produced a post rejected on every single article, with nothing but a
+        Buffer error to explain why.
+        """
+        syn = self._syn()
+        link = syn.article_link(self.ARTICLE["slug"])
+        long_article = dict(self.ARTICLE, content=(
+            "<p>" + ("A sentence of the article body that keeps going. " * 40)
+            + "</p>"))
+        for service, limit in syn.SERVICE_LIMITS.items():
+            text = syn.caption_for(service, long_article, link)
+            measured = (len(text) - len(link) + syn.link_cost(service, link)
+                        if link in text else len(text))
+            self.assertLessEqual(
+                measured, limit,
+                f"{service} caption is {measured} chars against a {limit} limit")
+
+    def test_bluesky_gets_300_characters_not_facebooks_5000(self):
+        syn = self._syn()
+        link = syn.article_link(self.ARTICLE["slug"])
+        self.assertEqual(syn.limit_for("bluesky"), 300)
+        text = syn.caption_for("bluesky", self.ARTICLE, link)
+        self.assertLessEqual(len(text), 300)
+        self.assertIn(link, text)
+
+    def test_only_x_shortens_a_link(self):
+        """
+        X rewrites URLs through t.co at a flat 23 characters. Nowhere else
+        does, so budgeting a long slug at 23 would overrun the real limit.
+        """
+        syn = self._syn()
+        long_link = "https://pressvane.com/" + "a" * 120
+        self.assertEqual(syn.link_cost("twitter", long_link), 23)
+        for service in ("bluesky", "threads", "mastodon", "linkedin"):
+            self.assertEqual(syn.link_cost(service, long_link), len(long_link))
+
+    def test_an_unknown_service_gets_the_tightest_limit(self):
+        """Too short is a worse post. Too long is no post at all."""
+        syn = self._syn()
+        self.assertEqual(syn.limit_for("some-new-network"),
+                         syn.DEFAULT_LIMIT)
+        self.assertLessEqual(syn.DEFAULT_LIMIT, 300)
+        text = syn.caption_for("some-new-network", self.ARTICLE,
+                               syn.article_link("s"))
+        self.assertLessEqual(len(text), syn.DEFAULT_LIMIT)
+
+    def test_a_new_channel_needs_no_code(self):
+        """
+        Connect it at buffer.com, name it in BUFFER_SERVICES, done. Every
+        service Buffer offers that is worth posting news to is in the table.
+        """
+        syn = self._syn()
+        for service in ("bluesky", "mastodon", "linkedin", "threads",
+                        "facebook", "twitter"):
+            self.assertIn(service, syn.SERVICE_LIMITS)
+
+    def test_bluesky_can_be_switched_off_alone(self):
+        brain = make_brain()
+        brain.social_module_active = True
+        brain.bluesky_active = False
+        self.assertFalse(brain.social_enabled("bluesky"))
+        self.assertTrue(brain.social_enabled("threads"))
+        self.assertTrue(brain.social_enabled("twitter"))
+
     def test_threads_needs_no_metadata(self):
         """
         Every field on ThreadsPostMetadataInput is optional -- checked

@@ -1,6 +1,12 @@
 """
-Social syndication — Facebook, X/Twitter and Threads, driven by the article
-agent.
+Social syndication — Facebook, X/Twitter, Threads and Bluesky, driven by the
+article agent.
+
+Adding another channel is configuration, not code: connect it at buffer.com,
+name it in BUFFER_SERVICES, and SERVICE_LIMITS below sizes the caption.
+Bluesky is the one worth having beyond the obvious three, because it is the
+only one of them that does NOT demote a post for carrying an outbound link
+-- and every post here exists to carry one.
 
 Every published article is announced on both, at the moment it goes live,
 always with a link back to the site. That link is the entire point: these
@@ -120,6 +126,35 @@ class SocialSyndicator:
     # caption rather than the Facebook one truncated.
     THREADS_MAX_CHARS = 500
 
+    # Every service Buffer can connect, and what it will accept. Adding a
+    # channel at buffer.com and naming it in BUFFER_SERVICES is then the
+    # whole job -- no code.
+    #
+    # This table exists because the fallback used to be the FACEBOOK caption,
+    # which runs to 5,000 characters. Connecting Bluesky, whose limit is 300,
+    # would have produced a post rejected outright on every article, with
+    # nothing but a Buffer error to explain it.
+    SERVICE_LIMITS = {
+        "twitter":        280,
+        "bluesky":        300,
+        "threads":        500,
+        "mastodon":       500,   # the usual instance default; some allow more
+        "pinterest":      500,   # the pin description
+        "googlebusiness": 1500,
+        "instagram":     2200,
+        "tiktok":        2200,
+        "linkedin":      3000,
+        "facebook":      5000,
+    }
+
+    # An unknown service gets the tightest limit in common use rather than
+    # the most generous. Too short is a worse post; too long is no post.
+    DEFAULT_LIMIT = 300
+
+    # Above this a caption is written long-form -- several paragraphs, the
+    # shape Facebook and LinkedIn reward. Below it, one paragraph at most.
+    LONG_FORM_ABOVE = 1500
+
     # Words that make a bad hashtag on their own.
     _TAG_STOP = {"the", "a", "an", "and", "or", "of", "in", "on", "for", "to",
                  "with", "how", "what", "why", "is", "are", "it", "its",
@@ -134,9 +169,9 @@ class SocialSyndicator:
         self.growth = growth
         self.brain = brain
         self.site_url = (site_url or "").rstrip("/")
-        self.services = [s for s in
-                         (services or ["facebook", "twitter", "threads"]) if s]
-        self.caps = {"facebook": 6, "twitter": 6, "threads": 6}
+        self.services = [s for s in (services or ["facebook", "twitter",
+                                                   "threads", "bluesky"]) if s]
+        self.caps = {"facebook": 6, "twitter": 6, "threads": 6, "bluesky": 6}
         self.caps.update(caps or {})
         self.start_date = self._parse_date(start_date)
 
@@ -456,30 +491,50 @@ class SocialSyndicator:
             text = f"{self._trim(title, self.X_MAX_CHARS - self.X_LINK_LENGTH - 3)}\n\n{link}"
         return text
 
-    def threads_caption(self, article: Dict, link: str) -> str:
-        """
-        500 characters, and the link is charged at its real length.
+    def limit_for(self, service: str) -> int:
+        """How many characters this service will accept."""
+        return self.SERVICE_LIMITS.get(service, self.DEFAULT_LIMIT)
 
-        Sized to what is left after the link and the hashtags rather than
-        written and then cut, so the post always ends on a whole sentence.
+    def link_cost(self, service: str, link: str) -> int:
         """
+        What the link costs against the limit.
+
+        X is the only one that rewrites URLs, through t.co, at a flat 23
+        characters however long the real one is. Everywhere else a long slug
+        genuinely costs what it reads, and budgeting it at 23 overruns.
+        """
+        return self.X_LINK_LENGTH if service == "twitter" else len(link)
+
+    def sized_caption(self, service: str, article: Dict, link: str) -> str:
+        """
+        A caption built to fit one service, whatever its limit.
+
+        The body is sized to what is left AFTER the link and the hashtags,
+        rather than written and then cut, so the post always ends on a whole
+        sentence instead of stopping mid-word.
+        """
+        limit = self.limit_for(service)
         title = " ".join((article.get("title") or "").split())
-        tags = self.hashtags(article.get("seo_keywords"), 2)
+        tags = self.hashtags(article.get("seo_keywords"),
+                             3 if limit >= self.LONG_FORM_ABOVE else 2)
         tag_line = " ".join(tags)
 
-        overhead = len(link) + 2
+        overhead = self.link_cost(service, link) + 2
         if tag_line:
             overhead += len(tag_line) + 2
-        budget = self.THREADS_MAX_CHARS - overhead
+        budget = limit - overhead
 
         if len(title) > budget:
-            title = self._trim(title, budget)
+            # Nothing but the headline will fit, and even that has to be cut.
+            title = self._trim(title, max(1, budget))
             body = ""
         else:
             spare = budget - len(title) - 2
-            body = self.article_excerpt(article, spare) if spare >= 80 else ""
-            if not body and spare >= 80:
-                body = self._blurb(article, spare)
+            room = min(spare, self.FACEBOOK_BODY_CHARS) \
+                if limit >= self.LONG_FORM_ABOVE else spare
+            body = self.article_excerpt(article, room) if room >= 80 else ""
+            if not body and room >= 80:
+                body = self._blurb(article, room)
 
         parts = [p for p in (title, body) if p]
         parts.append(link)
@@ -487,21 +542,36 @@ class SocialSyndicator:
             parts.append(tag_line)
         text = "\n\n".join(parts)
 
-        if len(text) > self.THREADS_MAX_CHARS:      # belt and braces
-            logger.warning("Threads caption overran; falling back to the "
-                           "headline and link.")
-            text = f"{self._trim(title, self.THREADS_MAX_CHARS - len(link) - 3)}" \
-                   f"\n\n{link}"
+        measured = len(text) - len(link) + self.link_cost(service, link) \
+            if link in text else len(text)
+        if measured > limit:            # belt and braces
+            logger.warning(f"{service} caption overran its {limit}-character "
+                           f"budget; falling back to the headline and link.")
+            head = self._trim(title, max(1, limit - self.link_cost(service, link) - 3))
+            text = f"{head}\n\n{link}"
         return text
 
+    def threads_caption(self, article: Dict, link: str) -> str:
+        """Threads: 500 characters, link charged at its real length."""
+        return self.sized_caption("threads", article, link)
+
     def caption_for(self, service: str, article: Dict, link: str) -> str:
+        """
+        The post text for one service.
+
+        Facebook and X have their own builders because each has a rule
+        nothing else shares: Facebook can put the link in a comment, and X
+        prices every URL at a flat 23 characters. Every other service --
+        Threads today, Bluesky or LinkedIn or Mastodon the day one is
+        connected -- is sized from SERVICE_LIMITS with no code to write.
+        """
         if service == "twitter":
             return self.x_caption(article, link)
-        if service == "threads":
-            return self.threads_caption(article, link)
-        return self.facebook_caption(
-            article, link,
-            link_in_body=not self.FACEBOOK_LINK_IN_FIRST_COMMENT)
+        if service == "facebook":
+            return self.facebook_caption(
+                article, link,
+                link_in_body=not self.FACEBOOK_LINK_IN_FIRST_COMMENT)
+        return self.sized_caption(service, article, link)
 
     def first_comment_for(self, service: str, link: str) -> str:
         """The comment to post underneath, if the service supports one."""
