@@ -20,19 +20,24 @@ anything in this file.
 
 POSTING VOLUME
 --------------
-Eight articles a day are published (six news, two explainers) and every one
-of them is worth announcing — the writing is already paid for, and skipping
-the share is pure loss.
+Eight articles a day are published (six news, two explainers), and SIX of
+them are announced. The volume starts lower still and climbs on its own:
 
-Brand-new accounts are the exception. An account whose first day of life
-includes eight outbound links reads as a link farm to both platforms, and
-the reach penalty for that is the kind you do not recover from. So the
-volume starts small and climbs on its own:
+    days 1-10    3 posts/day
+    days 11-20   4 posts/day
+    day 21+      6 posts/day
 
-    days 1-4    3 posts/day
-    days 5-10   5 posts/day
-    days 11-17  6 posts/day
-    day 18+     8 posts/day  (every article)
+The ceiling is six rather than eight deliberately. Six is comfortably
+ordinary for a news brand on either platform, and the last two posts of the
+day would have been the 11:30 and 13:00 PKT slots -- half past two and four
+in the morning in New York, which is where the readers are. Those two
+articles lose nothing that matters: they are still written, still published,
+still indexed by Google, and search is where the traffic comes from. The
+social post is the small half of their value.
+
+The WEBSITE stays at eight. Nothing penalises a news site for publishing
+often -- more indexed pages is the whole growth mechanism -- and the risk
+being managed here belongs to the social accounts, not to the site.
 
 Day one stamps itself on the first post ever sent and is persisted with the
 rest of the brain's state, so the ramp needs no configuration, cannot be
@@ -82,7 +87,10 @@ class SocialSyndicator:
 
     # Volume during the account warm-up: (day threshold, posts allowed).
     # Read in order; the first threshold the account is younger than wins.
-    RAMP = ((5, 3), (11, 5), (18, 6))
+    # Past the last one the configured cap applies, which is six.
+    # days_live() is zero-based: age 0 is day one. So `age < 10` is the
+    # first TEN days, and day eleven is the first to see four.
+    RAMP = ((10, 3), (20, 4))
 
     # How much of the article a Facebook post carries. Long enough to be
     # worth reading on its own -- someone who never clicks should still come
@@ -111,7 +119,7 @@ class SocialSyndicator:
         self.brain = brain
         self.site_url = (site_url or "").rstrip("/")
         self.services = [s for s in (services or ["facebook", "twitter"]) if s]
-        self.caps = {"facebook": 8, "twitter": 8}
+        self.caps = {"facebook": 6, "twitter": 6}
         self.caps.update(caps or {})
         self.start_date = self._parse_date(start_date)
 

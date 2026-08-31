@@ -62,39 +62,46 @@ the day.
 --------------------------------------------------------------------------------
 3. HOW MANY, AND THE WARM-UP
 --------------------------------------------------------------------------------
-At full speed: 8 a day on each platform. One post per article, because the
-writing is already paid for and an article that is not shared is pure loss.
-8 a day is unremarkable for a news brand -- real ones run 20 to 40.
+Settled speed: SIX a day on each platform, out of eight articles. And it
+starts lower than that and climbs by itself:
 
-The risk is not volume. It is volume on day one. An account whose first day of
-life includes eight outbound links reads as a link farm, and that reach penalty
-is the kind you do not recover from. So it starts small and climbs by itself:
-
-  days 1-4     3 posts/day
-  days 5-10    5 posts/day
-  days 11-17   6 posts/day
-  day 18+      8 posts/day     every article
+  days 1-10    3 posts/day
+  days 11-20   4 posts/day
+  day 21+      6 posts/day
 
 Which slots survive the cap, by phase:
 
-  PKT     New York    d1-4   d5-10   d11-17   d18+
-  ---------------------------------------------------------
-  01:00   16:00        yes    yes     yes      yes
-  04:00   19:00         -     yes     yes      yes
-  11:30   02:30         -      -       -       yes
-  13:00   04:00         -      -       -       yes
-  15:00   06:00         -      -      yes      yes
-  18:00   09:00        yes    yes     yes      yes
-  19:30   10:30         -     yes     yes      yes
-  21:00   12:00        yes    yes     yes      yes
-  ---------------------------------------------------------
-  totals                3      5       6        8
+  PKT     New York    d1-10   d11-20   d21+
+  -----------------------------------------------
+  01:00   16:00         yes     yes     yes
+  04:00   19:00          -       -      yes
+  11:30   02:30          -       -       -
+  13:00   04:00          -       -       -
+  15:00   06:00          -       -      yes
+  18:00   09:00         yes     yes     yes
+  19:30   10:30          -      yes     yes
+  21:00   12:00         yes     yes     yes
+  -----------------------------------------------
+  totals                 3       4       6
 
 They are chosen by AUDIENCE, not by whichever article happened to publish
 first. "The first three of the day" would hand every share to 01:00, 04:00 and
 11:30 PKT -- and 11:30 PKT is half past two in the morning in New York. The
 priority order lives in modules/social_syndicator.py as SLOT_PRIORITY, and a
 test asserts every hour in it is an hour the website actually publishes at.
+
+WHY SIX AND NOT EIGHT. The two left out are the 11:30 and 13:00 PKT slots --
+02:30 and 04:00 in New York, the two worst hours of the eight. Those articles
+lose very little: they are still written, still published, still indexed by
+Google, and search is where the traffic comes from. The social post is the
+smaller half of an article's value, and the two skipped would have been the
+two fewest people saw.
+
+WHY THE WEBSITE STAYS AT EIGHT. Nothing penalises a news site for publishing
+often. More indexed pages is the entire growth mechanism, and Google does not
+count posts per day against you the way a social platform's spam heuristics
+do. The risk being managed here belongs to the accounts, not to the site, so
+the site was not cut back to match.
 
 Day one stamps itself on the first post that actually leaves, and is persisted
 with the rest of the brain state, so the ramp starts on its own, cannot be
@@ -129,6 +136,9 @@ else. The master kill switch beats all of them.
 X / Twitter          abudllahkhan646khan@gmail.com
                      Handle : @press_vane
                      Name   : PressVane
+                     CONNECTED to Buffer, verified 2026-08-31.
+                     Buffer channel id 6a95570f065799be465ccce1
+                     X serviceId      2094143928027291648
 
                      @pressvane without the underscore is registered to
                      somebody else, which is why X offered the underscore
@@ -140,11 +150,14 @@ X / Twitter          abudllahkhan646khan@gmail.com
                      avoid one -- that reads more amateur than the underscore
                      does.
 
-Facebook             being replaced. The old page "Zindagi Ke Rang" is on the
-                     old Buffer account and is being retired.
+Facebook             page not created yet. The old "Zindagi Ke Rang" page
+                     lived on the old Buffer account and is retired.
 
-Buffer               being replaced. Both channels connect through ONE Buffer
-                     account, separate from the Pinterest agent's Buffer.
+Buffer (news)        abdullahfida645@gmail.com
+                     Org id : 6a954ec4a54fe3cad5f33bfb
+                     Separate from the Pinterest agent's Buffer account,
+                     which is on abdullahkhan646khan@gmail.com.
+                     Free plan: 3 channels, and see the queue note below.
 
 WHEN YOU SWAP THE BUFFER ACCOUNT: update BUFFER_ACCESS_TOKEN in Render and
 DELETE or update BUFFER_ORGANIZATION_ID. A new token beside the old
@@ -253,12 +266,29 @@ a different subject, in the site's largest section.
 --------------------------------------------------------------------------------
 9. THINGS LEARNED THE HARD WAY
 --------------------------------------------------------------------------------
-* Buffer's free plan holds only TEN posts in a channel's queue. Eight articles
-  a day fills that in a day and a half, after which every post fails with
-  "Scheduled posts limit reached" -- which is exactly the state the old account
-  was found in. Posts now use ShareMode "shareNow", which publishes on the spot
-  and never enters the queue. Confirmed against the live schema: the enum is
-  addToQueue | customScheduled | shareNext | shareNow.
+* ONE picture per article. The photograph on the page is the photograph on
+  Facebook and on X: a single file in Supabase storage, one public URL, handed
+  to Buffer as a link. Nothing is copied, re-uploaded or stored per platform,
+  and a test asserts it.
+
+* Buffer's free plan holds only TEN posts in the queue at once, and that ten
+  is ACROSS THE WHOLE ORGANISATION, not per channel. The limit is
+  OrganizationLimits.scheduledPosts, described in Buffer's own schema as "the
+  maximum number of scheduled posts allowed for the organization". Six posts a
+  day on two channels is twelve, so a queued setup would jam inside the first
+  day -- which is exactly the state the old account was found in, sitting at
+  "10 scheduled posts out of 10 allowed" and silently refusing everything.
+
+  Posts use ShareMode "shareNow", which publishes on the spot and never enters
+  the queue, so the limit does not apply to us at all. Confirmed against the
+  live schema: the enum is addToQueue | customScheduled | shareNext | shareNow.
+  The token cannot read organizations{limits} directly -- that scope is not
+  granted to a public token -- so the number ten comes from the error message
+  the API returned on the old account, not from a guess.
+
+* Buffer's free plan allows THREE channels. Facebook plus X is two, so there
+  is room, but the Pinterest agent deliberately uses a different Buffer
+  account rather than spending the third slot here.
 
 * Facebook used to hang off the TELEGRAM fan-out. Once the website got its own
   schedule the two clocks carried different stories, so a Facebook post fired
@@ -276,9 +306,13 @@ a different subject, in the site's largest section.
 --------------------------------------------------------------------------------
 10. OUTSTANDING
 --------------------------------------------------------------------------------
-  [ ] Create the new Facebook page
-  [ ] Create the new Buffer account, connect Facebook and X to it
-  [ ] Update BUFFER_ACCESS_TOKEN in Render, and delete BUFFER_ORGANIZATION_ID
+  [x] Create the new Buffer account          abdullahfida645@gmail.com
+  [x] Connect X to it                        @press_vane, verified live
+  [ ] Create the new Facebook page and connect it to the same Buffer
+  [ ] Update BUFFER_ACCESS_TOKEN in Render, and DELETE BUFFER_ORGANIZATION_ID
+      (the old value belongs to the retired account)
   [ ] Turn the master switch on:  POST /api/social/toggle {"active": true}
   [ ] Watch the first day. Three posts is the whole of day one, and they land
       at 01:00, 18:00 and 21:00 PKT.
+  [ ] Rotate the Buffer token once everything is settled -- it has been pasted
+      into a chat window.

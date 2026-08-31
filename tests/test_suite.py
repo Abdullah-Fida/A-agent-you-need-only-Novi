@@ -2643,25 +2643,44 @@ class TestSocialSyndicator(unittest.TestCase):
 
     # ── volume ───────────────────────────────────────────────────
 
-    def test_full_cap_shares_every_article(self):
+    def test_the_settled_cap_is_six_of_the_eight_articles(self):
         syn = self._syn()
-        self.assertEqual(syn.daily_cap("facebook"), 8)
+        self.assertEqual(syn.daily_cap("facebook"), 6)
         self.assertEqual(len(syn.SLOT_PRIORITY), 8)
 
     def test_a_new_account_ramps_up_on_its_own(self):
         today = (datetime.now(timezone.utc) + PKT).date()
-        for days, expected in ((0, 3), (4, 3), (5, 5), (10, 5),
-                               (11, 6), (17, 6), (18, 8), (400, 8)):
+        for days, expected in ((0, 3), (9, 3), (10, 4), (19, 4),
+                               (20, 6), (400, 6)):
             syn = self._syn(start_date=str(today - timedelta(days=days)))
             self.assertEqual(syn.daily_cap("facebook"), expected,
                              f"day {days + 1} of the account should allow {expected}")
 
-    def test_the_ramp_only_ever_climbs(self):
+    def test_the_ramp_only_ever_climbs_and_stops_at_six(self):
         today = (datetime.now(timezone.utc) + PKT).date()
         caps = [self._syn(start_date=str(today - timedelta(days=d))).daily_cap("facebook")
-                for d in range(0, 40)]
+                for d in range(0, 60)]
         self.assertEqual(caps, sorted(caps), "the daily limit must never drop")
-        self.assertEqual(caps[-1], 8, "and must reach the full cap")
+        self.assertEqual(max(caps), 6, "six is the ceiling, not eight")
+
+    def test_the_two_slots_left_out_are_the_ones_nobody_is_awake_for(self):
+        """
+        Six of the eight articles are announced. The two that are not are the
+        11:30 and 13:00 PKT slots -- 02:30 and 04:00 in New York. They are
+        still written, published and indexed; only the post is skipped.
+        """
+        from modules.social_syndicator import SocialSyndicator as S
+        shared = set(S.SLOT_PRIORITY[:6])
+        self.assertNotIn((11, 30), shared)
+        self.assertNotIn((13, 0), shared)
+        for peak in ((18, 0), (21, 0), (1, 0)):
+            self.assertIn(peak, shared)
+
+    def test_the_website_still_publishes_all_eight(self):
+        """The social ceiling must never be read as a publishing ceiling."""
+        slots = (len(BotBrain.SCHEDULE["article_slots"])
+                 + len(BotBrain.SCHEDULE["evergreen_slots"]))
+        self.assertEqual(slots, 8)
 
     def test_day_one_stamps_itself_on_the_first_post(self):
         """
@@ -2716,7 +2735,7 @@ class TestSocialSyndicator(unittest.TestCase):
 
     def test_no_start_date_anywhere_means_no_ramp(self):
         self.assertIsNone(self._syn().days_live())
-        self.assertEqual(self._syn(start_date="not-a-date").daily_cap("twitter"), 8)
+        self.assertEqual(self._syn(start_date="not-a-date").daily_cap("twitter"), 6)
 
     def test_a_configured_cap_is_never_exceeded_by_the_ramp(self):
         today = (datetime.now(timezone.utc) + PKT).date()
@@ -2974,6 +2993,32 @@ class TestSocialSyndicator(unittest.TestCase):
         self.assertEqual(asyncio.run(syn.syndicate(self.ARTICLE)),
                          {"facebook": False, "twitter": False})
         buf.send.assert_not_awaited()
+
+    def test_one_image_serves_the_site_and_both_platforms(self):
+        """
+        There is ONE picture per article and one row in Supabase storage.
+        Facebook and X are handed the same public URL the website renders,
+        and Buffer fetches it from there -- nothing is copied, re-uploaded or
+        stored per platform.
+        """
+        buf = MagicMock()
+        buf.ensure_channels = AsyncMock(
+            side_effect=lambda s: [{"id": s, "service": s}])
+        buf.last_error = ""
+        handed = []
+
+        async def send(channel, text, image_url="", article_slug=""):
+            handed.append((channel["service"], image_url))
+            return True
+
+        buf.send = AsyncMock(side_effect=send)
+        syn = self._syn(buffer=buf)
+        syn._slot_is_allowed = lambda *a: True
+        asyncio.run(syn.syndicate(self.ARTICLE))
+
+        self.assertEqual(len(handed), 2, "both platforms should have been sent")
+        urls = {u for _, u in handed} | {self.ARTICLE["main_image_url"]}
+        self.assertEqual(len(urls), 1, f"more than one image in play: {urls}")
 
     def test_the_article_picture_is_passed_to_buffer(self):
         syn = self._syn(services=["facebook"])

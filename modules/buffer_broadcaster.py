@@ -19,10 +19,14 @@ api.bufferapp.com rejects modern public tokens and retires 2027-02-01):
   * `mode` is the ShareMode enum: addToQueue | customScheduled | shareNext |
     shareNow. We use `shareNow`, for two reasons. The post has to go out at
     the moment its article publishes, which is the whole design; and the free
-    plan allows only TEN posts sitting in a channel's queue, which eight
-    articles a day fill in a day and a half. The live account was already
-    jammed at "10 scheduled posts out of 10 allowed" and had stopped
-    accepting anything. Nothing published immediately ever enters that queue.
+    plan allows only TEN posts to sit in the queue at once. That limit is
+    `OrganizationLimits.scheduledPosts` -- "the maximum number of scheduled
+    posts allowed for the ORGANIZATION", so it is ten across every channel
+    together, not ten each. Six posts a day on two channels is twelve, which
+    fills it before the first day is out; the previous account was found
+    already jammed at "10 scheduled posts out of 10 allowed" and silently
+    refusing everything. Nothing published immediately ever enters that
+    queue, so the limit does not apply to us at all.
   * X/Twitter needs no such metadata, but its text is hard-capped at 280
     characters and Buffer rejects anything longer outright.
 """
@@ -273,7 +277,8 @@ class BufferBroadcaster:
     X_MAX_CHARS = 280
 
     # Publish on the spot. See the module docstring for why queueing is not
-    # an option: it is both the wrong time and a cap of ten.
+    # an option: it is both the wrong time and a cap of ten across the whole
+    # organisation.
     PUBLISH_MODE = "shareNow"
     # Only if the account will not publish immediately. Queueing late beats
     # losing the post, and the queue-full error then says so in the log.
@@ -329,8 +334,9 @@ class BufferBroadcaster:
         kind = result.get("__typename")
 
         # Some accounts refuse to publish on the spot. Queueing is the wrong
-        # time and risks the ten-post cap, but it still beats dropping the
-        # post, so it is tried once and the reason is logged either way.
+        # time and runs into the ten-post organisation cap within a day, but
+        # it still beats dropping the post, so it is tried once and the
+        # reason is logged either way.
         if kind not in ("PostActionSuccess", None) and self.FALLBACK_MODE:
             logger.warning(f"Buffer refused to publish to {service} "
                            f"immediately ({result.get('message')}); "
