@@ -93,11 +93,19 @@ class SocialSyndicator:
     # without one there silently mutes a platform for that slot.
     #
     #    PKT      UTC     London   New York
+    # The 19:30 EXPLAINER sits third deliberately, ahead of a news slot at a
+    # marginally better hour. Explainers are the stronger social post: "How
+    # the Bitcoin halving affects the price, explained" is saved and shared
+    # and still true next month, while a same-day news item is scrolled past
+    # and dead by morning. Ranking purely by audience put all three of the
+    # opening ten days' posts on news, which wastes the better material.
+    #
+    #    PKT      UTC     London   New York
     SLOT_PRIORITY = [
         (18, 0),    # 13:00   14:00   09:00   US peak, UK afternoon
         (21, 0),    # 16:00   17:00   12:00   US lunch
+        (19, 30),   # 14:30   15:30   10:30   US morning      (EXPLAINER)
         (1, 0),     # 20:00   21:00   16:00   US afternoon
-        (19, 30),   # 14:30   15:30   10:30   US morning      (explainer)
         (4, 0),     # 23:00   00:00   19:00   US evening
         (15, 0),    # 10:00   11:00   06:00   US wakes
         (11, 30),   # 06:30   07:30   02:30   UK commute
@@ -656,6 +664,18 @@ class SocialSyndicator:
                 link_in_body=not self.FACEBOOK_LINK_IN_FIRST_COMMENT)
         return self.sized_caption(service, article, link)
 
+    def first_comment_available(self, buf) -> bool:
+        """
+        Whether a first comment can actually be posted.
+
+        Buffer only allows them on a paid plan. The transport learns that
+        from the first rejection and records it, so this is asked BEFORE the
+        caption is composed -- otherwise the post would go out with the link
+        in neither the body nor a comment.
+        """
+        return bool(self.FACEBOOK_LINK_IN_FIRST_COMMENT
+                    and getattr(buf, "first_comment_supported", True))
+
     def first_comment_for(self, service: str, link: str) -> str:
         """The comment to post underneath, if the service supports one."""
         if service == "facebook" and self.FACEBOOK_LINK_IN_FIRST_COMMENT:
@@ -759,8 +779,22 @@ class SocialSyndicator:
         # Some posts on X and Threads deliberately go out with no link, to
         # buy back the reach those platforms take away from link posts.
         carries_link = self.wants_link(service)
-        text = self.caption_for(service, article, link if carries_link else "")
-        comment = self.first_comment_for(service, link) if carries_link else ""
+
+        # Facebook's link goes in the first comment where that is allowed,
+        # and in the post body where it is not -- a free Buffer plan rejects
+        # the whole post over a first comment. Asked before composing, so the
+        # link is never left with nowhere to go.
+        use_comment = service == "facebook" and self.first_comment_available(buf)
+        body_link = link if carries_link and not use_comment else ""
+        comment = (self.first_comment_for(service, link)
+                   if carries_link and use_comment else "")
+
+        if service == "facebook":
+            text = self.facebook_caption(article, link,
+                                         link_in_body=bool(body_link))
+        else:
+            text = self.caption_for(service, article,
+                                    link if carries_link else "")
         slug = article.get("slug", "")
 
         # When the post is MEANT to carry a link, it must actually carry one
@@ -779,6 +813,20 @@ class SocialSyndicator:
             ok = await buf.send(channel, text, image_url=image,
                                 article_slug=slug,
                                 first_comment=comment)
+
+            # Buffer only reveals that first comments are a paid feature by
+            # refusing a post that uses one. The link was in that comment, so
+            # rewriting with it in the body and sending again is the only way
+            # this post reaches anyone. Happens exactly once per process --
+            # the flag is remembered from here on.
+            if not ok and comment and not self.first_comment_available(buf):
+                logger.info(f"{service}: rewriting with the link in the post "
+                            f"body and sending again.")
+                text = self.facebook_caption(article, link, link_in_body=True)
+                comment = ""
+                ok = await buf.send(channel, text, image_url=image,
+                                    article_slug=slug)
+
             any_ok = any_ok or ok
             await asyncio.sleep(1)          # be gentle with the API
 

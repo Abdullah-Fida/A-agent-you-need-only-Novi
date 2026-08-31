@@ -35,7 +35,13 @@ api.bufferapp.com rejects modern public tokens and retires 2027-02-01):
     so it gets its own caption rather than a truncated Facebook one.
   * `metadata.facebook.firstComment` posts a comment under the post. It is
     how the article link reaches a Facebook audience without the post itself
-    being demoted for carrying an outbound link.
+    being demoted for carrying an outbound link -- but it is a PAID feature.
+    A free plan answers "First comment requires a paid plan. Please upgrade
+    to use this feature." and rejects the whole post, which is how a design
+    that worked perfectly in a dry run failed on its first real publish.
+    `first_comment_supported` records that answer the first time it is seen,
+    so the caller can put the link back in the body and nothing tries a
+    second time.
   * `metadata.facebook.linkAttachment` is documented as "mutually exclusive
     with a non-empty assets array -- input providing both is rejected". Every
     post we send carries the article photograph, so it must never be set.
@@ -120,6 +126,10 @@ class BufferBroadcaster:
         self.channels: List[Dict] = []
         self._connected = False
         self._loaded_at = 0.0
+        # Set to False the first time Buffer says first comments are a paid
+        # feature. Callers read it BEFORE composing, so the link goes in the
+        # post body instead of being lost.
+        self.first_comment_supported = True
         # Which Buffer login these channels came from. Shown in /api/health so
         # a token swap is visible without opening buffer.com.
         self.account_email = ""
@@ -361,10 +371,10 @@ class BufferBroadcaster:
         if service in self._TYPED_SERVICES:
             post_input["metadata"] = {service: {"type": self._TYPED_SERVICES[service]}}
 
-        # Only Facebook has a first comment. Never set linkAttachment beside
-        # it: Buffer rejects that outright whenever `assets` is non-empty,
-        # and every post here carries the article photograph.
-        if first_comment and service == "facebook":
+        # Only Facebook has a first comment, and only on a paid plan. Never
+        # set linkAttachment beside it: Buffer rejects that outright whenever
+        # `assets` is non-empty, and every post here carries the photograph.
+        if first_comment and service == "facebook" and self.first_comment_supported:
             post_input["metadata"]["facebook"]["firstComment"] = first_comment[:8000]
         elif first_comment:
             logger.warning(f"Buffer: {service} has no first comment; the text "
@@ -377,6 +387,20 @@ class BufferBroadcaster:
         data = await self._gql(_CREATE_POST, {"i": post_input})
         result = (data or {}).get("createPost") or {}
         kind = result.get("__typename")
+
+        # A free plan rejects the WHOLE post because of the first comment.
+        # Record that and give up on THIS attempt rather than retrying here:
+        # the caller composed a post whose link was meant to live in that
+        # comment, so simply dropping it would publish a post pointing
+        # nowhere. The caller sees the flag, rewrites with the link in the
+        # body, and sends again.
+        if (kind not in ("PostActionSuccess", None)
+                and "first comment" in (result.get("message") or "").lower()):
+            logger.warning("Buffer: first comments need a paid plan. The link "
+                           "moves into the post body from now on.")
+            self.first_comment_supported = False
+            self.last_error = result.get("message") or "first comment refused"
+            return False
 
         # Some accounts refuse to publish on the spot. Queueing is the wrong
         # time and runs into the ten-post organisation cap within a day, but

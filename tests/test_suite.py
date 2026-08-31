@@ -2497,6 +2497,88 @@ class TestSocialSyndicator(unittest.TestCase):
                        or link in syn.first_comment_for(service, link))
             self.assertTrue(reaches, f"{service} post has no link anywhere")
 
+    def test_a_free_plan_puts_the_facebook_link_back_in_the_post(self):
+        """
+        Buffer answers "First comment requires a paid plan" and rejects the
+        WHOLE post. That is how a design which passed every dry run failed on
+        its first real publish. The transport records the answer, and the
+        link moves into the body rather than vanishing.
+        """
+        buf = MagicMock()
+        buf.ensure_channels = AsyncMock(
+            return_value=[{"id": "c1", "service": "facebook"}])
+        buf.send = AsyncMock(return_value=True)
+        buf.last_error = ""
+        buf.first_comment_supported = False          # a free plan
+        syn = self._syn(buffer=buf, services=["facebook"])
+        syn._slot_is_allowed = lambda *a: True
+
+        results = asyncio.run(syn.syndicate(self.ARTICLE))
+        self.assertTrue(results["facebook"])
+        text = buf.send.await_args.args[1]
+        link = syn.article_link(self.ARTICLE["slug"])
+        self.assertIn(link, text, "the link vanished entirely")
+        self.assertEqual(buf.send.await_args.kwargs["first_comment"], "")
+
+    def test_the_transport_learns_that_first_comments_are_paid(self):
+        """
+        It must NOT quietly retry without the comment. The link lived in
+        that comment, so dropping it would publish a post pointing nowhere.
+        The transport records the fact and refuses; the caller rewrites.
+        """
+        from modules.buffer_broadcaster import BufferBroadcaster
+        bb = BufferBroadcaster(access_token="tok")
+        self.assertTrue(bb.first_comment_supported)
+        calls = []
+
+        async def fake_gql(query, variables=None, timeout=30):
+            calls.append(variables["i"].get("metadata", {})
+                         .get("facebook", {}).get("firstComment"))
+            return {"createPost": {
+                "__typename": "InvalidInputError",
+                "message": ("Invalid post: First comment requires a paid "
+                            "plan. Please upgrade to use this feature.")}}
+
+        bb._gql = fake_gql
+        ok = asyncio.run(bb.send({"id": "c", "service": "facebook"}, "hi",
+                                 first_comment="link here"))
+        self.assertFalse(ok, "it must not report success")
+        self.assertFalse(bb.first_comment_supported, "it must remember")
+        self.assertEqual(len(calls), 1, "no blind retry that loses the link")
+
+    def test_the_first_facebook_post_is_rewritten_not_lost(self):
+        """
+        Buffer only reveals the paid-plan rule by refusing a post. The one
+        that discovers it must still reach Facebook, WITH its link.
+        """
+        from modules.buffer_broadcaster import BufferBroadcaster
+        sent = []
+        buf = MagicMock()
+        buf.ensure_channels = AsyncMock(
+            return_value=[{"id": "c1", "service": "facebook"}])
+        buf.first_comment_supported = True
+        buf.last_error = ""
+
+        async def send(channel, text, image_url="", article_slug="",
+                       first_comment=""):
+            sent.append((text, first_comment))
+            if first_comment:                      # the free-plan refusal
+                buf.first_comment_supported = False
+                return False
+            return True
+
+        buf.send = AsyncMock(side_effect=send)
+        syn = self._syn(buffer=buf, services=["facebook"])
+        syn._slot_is_allowed = lambda *a: True
+
+        results = asyncio.run(syn.syndicate(self.ARTICLE))
+        link = syn.article_link(self.ARTICLE["slug"])
+        self.assertTrue(results["facebook"], "the post never went out")
+        self.assertEqual(len(sent), 2, "one refusal, then one rewrite")
+        self.assertNotIn(link, sent[0][0])         # first try: link in comment
+        self.assertIn(link, sent[1][0])            # rewrite: link in the body
+        self.assertEqual(sent[1][1], "")
+
     def test_the_facebook_link_sits_in_the_first_comment(self):
         syn = self._syn()
         link = syn.article_link(self.ARTICLE["slug"])
@@ -3140,6 +3222,19 @@ class TestSocialSyndicator(unittest.TestCase):
         self.assertEqual(syn.sent_today["facebook"], 0)
 
     # ── which articles survive the warm-up cap ───────────────────
+
+    def test_the_opening_three_carry_an_explainer(self):
+        """
+        Ranking purely by audience put all three of the first ten days' posts
+        on news. Explainers are the stronger social post -- saved, shared,
+        still true next month -- so one is in from day one.
+        """
+        from modules.social_syndicator import SocialSyndicator as S
+        top3 = S.SLOT_PRIORITY[:3]
+        self.assertIn((19, 30), top3, "the 19:30 explainer must be in the "
+                                      "opening three")
+        self.assertEqual(sum(1 for s in top3 if s in ((13, 0), (19, 30))), 1,
+                         "two news and one explainer")
 
     def test_the_warm_up_keeps_the_slots_the_audience_is_awake_for(self):
         """
