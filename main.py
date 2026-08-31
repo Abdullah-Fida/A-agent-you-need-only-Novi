@@ -31,6 +31,7 @@ from modules.notification_manager import NotificationManager
 from modules.growth_engine import GrowthEngine
 from modules.buffer_broadcaster import BufferBroadcaster
 from modules.fanout import Fanout
+from modules.social_syndicator import SocialSyndicator
 from modules.indexnow import IndexNow
 from modules.evergreen import EvergreenDesk
 from modules.stock_photos import StockPhotoFinder
@@ -139,7 +140,8 @@ async def main():
         site_name=config.site_name,
         site_url=config.site_url,
         article_ai=article_ai,
-        indexnow=indexnow
+        indexnow=indexnow,
+        photos=stock_photos
     )
 
     evergreen = EvergreenDesk(article_agent=content_engine.article_agent,
@@ -170,14 +172,11 @@ async def main():
         db=db
     )
 
-    # 7b. Initialize Buffer Broadcaster (Facebook)
+    # 7b. Initialize Buffer (the transport for Facebook and X/Twitter)
     buffer_broadcaster = BufferBroadcaster(
         access_token=config.buffer_access_token,
         organization_id=config.buffer_organization_id,
         enabled_services=config.buffer_services,
-        site_url=config.site_url,
-        ai_engine=ai_engine,
-        brain=brain,
         db=db
     )
     if config.buffer_access_token:
@@ -185,6 +184,22 @@ async def main():
             await buffer_broadcaster.connect()
         except Exception as e:
             logger.error(f"Buffer connect failed: {e}")
+
+    # 7c. Social syndication — Facebook and X announce every article the
+    # moment it publishes, always with a link back to it. Driven by the
+    # ARTICLE schedule, never by the Telegram one: the two carry different
+    # stories, so a post fired on the Telegram clock would have nothing to
+    # link to. Telegram is not involved here at all.
+    syndicator = SocialSyndicator(
+        buffer=buffer_broadcaster,
+        db=db,
+        growth=growth_engine,
+        site_url=config.site_url,
+        services=config.buffer_services,
+        caps={"facebook": config.social_max_per_day_facebook,
+              "twitter": config.social_max_per_day_twitter},
+        start_date=config.social_start_date,
+    )
 
     # 8. Initialize Twitter Broadcaster
     twitter_broadcaster = TwitterBroadcaster(
@@ -223,8 +238,8 @@ async def main():
         growth_engine=growth_engine,
         reddit=reddit_broadcaster,
         twitter=twitter_broadcaster,
-        buffer=buffer_broadcaster,
         article_agent=content_engine.article_agent,
+        syndicator=syndicator,
         notification_manager=notification_manager,
         # The website publishes on its own schedule, so it needs its own way
         # to find a story and choose a section.
@@ -342,6 +357,7 @@ async def main():
     api_app.state.reddit_broadcaster = reddit_broadcaster
     api_app.state.twitter_broadcaster = twitter_broadcaster
     api_app.state.buffer_broadcaster = buffer_broadcaster
+    api_app.state.syndicator = syndicator
     api_app.state.fanout = fanout
     api_app.state.db = db
     api_app.state.config = config
@@ -559,6 +575,8 @@ async def main():
                     piece = await evergreen.publish_one()
                     if piece:
                         logger.info(f"Evergreen live: /{piece.get('slug')}")
+                        # Explainers are announced like any other article.
+                        await fanout.syndicate(piece)
                     else:
                         fired_slots.discard(ever_slot["key"])
                 except Exception as e:

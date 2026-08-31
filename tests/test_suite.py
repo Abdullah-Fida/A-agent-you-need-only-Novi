@@ -952,8 +952,7 @@ class TestFacebookImageAttachment(unittest.TestCase):
 
     def make(self):
         from modules.buffer_broadcaster import BufferBroadcaster
-        b = BufferBroadcaster(access_token="t", db=MagicMock(),
-                              site_url="https://example.com")
+        b = BufferBroadcaster(access_token="t", db=MagicMock())
         b._connected = True
         b.db.log_social_post = AsyncMock()
         b.db.log_post = AsyncMock()
@@ -968,7 +967,7 @@ class TestFacebookImageAttachment(unittest.TestCase):
             return {"createPost": {"__typename": "PostActionSuccess",
                                    "post": {"id": "1", "status": "queued"}}}
         broadcaster._gql = fake_gql
-        asyncio.run(broadcaster._post_to_channel(
+        asyncio.run(broadcaster.send(
             {"id": "c1", "name": "Page", "service": "facebook"},
             "caption text", image_url, "some-slug"))
         return captured
@@ -1001,14 +1000,24 @@ class TestFacebookImageAttachment(unittest.TestCase):
         captured = self._capture_post_input(b, r"C:\assets\generated_images\post.jpg")
         self.assertEqual(captured.get("assets"), [])
 
-    def test_hosted_image_is_preferred_over_the_outlets_photo(self):
-        from modules.buffer_broadcaster import BufferBroadcaster
-        pick = BufferBroadcaster._pick_image
-        self.assertEqual(
-            pick({"image_url": "https://ours/a.jpg", "real_image_url": "https://theirs/b.jpg"}),
-            "https://ours/a.jpg")
-        self.assertEqual(pick({"real_image_url": "https://theirs/b.jpg"}),
-                         "https://theirs/b.jpg")
+    def test_the_picture_is_the_one_on_the_article(self):
+        """
+        Facebook and X show the hero the reader will see when they follow the
+        link. It is already a public URL on our own storage, so there is
+        nothing to choose between and nothing to re-host.
+        """
+        from modules.social_syndicator import SocialSyndicator
+        buf = MagicMock()
+        buf.ensure_channels = AsyncMock(
+            return_value=[{"id": "c1", "service": "facebook"}])
+        buf.send = AsyncMock(return_value=True)
+        buf.last_error = ""
+        syn = SocialSyndicator(buffer=buf, site_url="https://example.com",
+                               services=["facebook"])
+        asyncio.run(syn.syndicate({"slug": "s", "title": "A real headline here",
+                                   "main_image_url": "https://ours/hero.jpg"}))
+        self.assertEqual(buf.send.await_args.kwargs["image_url"],
+                         "https://ours/hero.jpg")
 
     def test_content_engine_publishes_a_url_for_social_platforms(self):
         """Facebook and the website cannot upload the local file Telegram uses."""
@@ -2419,6 +2428,439 @@ class TestEvergreenDesk(unittest.TestCase):
         sections = {t["category"] for t in self.bank}
         for required in ("crypto", "pakistan", "business_markets", "tech_ai"):
             self.assertIn(required, sections)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  SOCIAL SYNDICATION — Facebook and X
+# ═══════════════════════════════════════════════════════════════
+class TestSocialSyndicator(unittest.TestCase):
+    """
+    Facebook and X announce every article the moment it publishes.
+
+    Three things have to hold, and each has already gone wrong once in some
+    form: every post carries a link, X posts fit in 280 characters, and the
+    trigger is the ARTICLE rather than the Telegram schedule.
+    """
+
+    ARTICLE = {
+        "slug": "bitcoin-halving-explained",
+        "title": "How the Bitcoin halving affects the price, explained",
+        "meta_description": ("The halving cuts new supply in half roughly every "
+                             "four years. Here is the mechanism, the historical "
+                             "record, and why past cycles are not a promise."),
+        "summary": "A plain-English look at what the halving does to supply.",
+        "seo_keywords": ["bitcoin halving", "crypto supply", "the price of bitcoin"],
+        "main_image_url": "https://cdn.example/hero.jpg",
+    }
+
+    def _syn(self, **kw):
+        from modules.social_syndicator import SocialSyndicator
+        buf = kw.pop("buffer", None)
+        if buf is None:
+            buf = MagicMock()
+            buf.channels_for = MagicMock(return_value=[{"id": "c1", "service": "facebook"}])
+            buf.ensure_channels = AsyncMock(
+                return_value=[{"id": "c1", "service": "facebook"}])
+            buf.send = AsyncMock(return_value=True)
+            buf.last_error = ""
+        syn = SocialSyndicator(
+            buffer=buf,
+            site_url=kw.pop("site_url", "https://pressvane.com"),
+            services=kw.pop("services", ["facebook", "twitter"]),
+            **kw)
+        syn._buffer_mock = buf
+        return syn
+
+    # ── the link is the entire point ─────────────────────────────
+
+    def test_every_post_carries_the_article_link(self):
+        syn = self._syn()
+        link = syn.article_link(self.ARTICLE["slug"])
+        self.assertEqual(link, "https://pressvane.com/bitcoin-halving-explained")
+        for service in ("facebook", "twitter"):
+            self.assertIn(link, syn.caption_for(service, self.ARTICLE, link))
+
+    def test_nothing_is_posted_when_there_is_no_link_to_give(self):
+        """A post with no link is worse than no post: it spends the reach and
+        sends nobody to the site."""
+        syn = self._syn(site_url="")
+        results = asyncio.run(syn.syndicate(self.ARTICLE))
+        self.assertEqual(results, {})
+        syn._buffer_mock.send.assert_not_awaited()
+
+    def test_an_article_with_no_slug_is_not_posted(self):
+        syn = self._syn()
+        self.assertEqual(asyncio.run(syn.syndicate({"title": "T"})), {})
+        syn._buffer_mock.send.assert_not_awaited()
+
+    # ── X's 280 characters are hard ──────────────────────────────
+
+    def test_x_caption_fits_280_characters(self):
+        syn = self._syn()
+        link = syn.article_link(self.ARTICLE["slug"])
+        text = syn.x_caption(self.ARTICLE, link)
+        self.assertLessEqual(syn.x_length(text, link), syn.X_MAX_CHARS)
+        self.assertIn(link, text)
+
+    def test_x_caption_fits_even_with_an_enormous_headline(self):
+        """Buffer rejects an over-length X post outright, so the trim has to
+        survive input nobody expected."""
+        syn = self._syn()
+        link = syn.article_link("s")
+        article = dict(self.ARTICLE, title="Bitcoin " * 80,
+                       seo_keywords=["a very long keyword phrase indeed here"] * 6)
+        text = syn.x_caption(article, link)
+        self.assertLessEqual(syn.x_length(text, link), syn.X_MAX_CHARS)
+        self.assertIn(link, text)
+
+    def test_x_prices_the_link_at_23_characters(self):
+        """X rewrites every URL through t.co, so a long slug costs no more
+        than a short one. Measuring the raw string wastes the budget."""
+        syn = self._syn()
+        short = syn.x_length("hello https://a.co/x", "https://a.co/x")
+        long_link = "https://pressvane.com/" + "a" * 200
+        long_ = syn.x_length(f"hello {long_link}", long_link)
+        self.assertEqual(short, long_)
+
+    def test_a_short_opening_sentence_still_counts_as_context(self):
+        """
+        Regression: the sentence-boundary guard was a fraction of the budget,
+        so a generous 172-character budget rejected a good 78-character
+        opening sentence and the tweet went out as a bare headline.
+        """
+        syn = self._syn()
+        long_summary = ("The halving cuts the reward for mining a block in half "
+                        "roughly every four years. This explains the mechanism, "
+                        "what happened in each past cycle, and why that record "
+                        "is not a promise.")
+        article = dict(self.ARTICLE, summary=long_summary)
+        link = syn.article_link(article["slug"])
+        text = syn.x_caption(article, link)
+        self.assertIn("every four years.", text)
+        self.assertNotIn("This explains", text, "only the first whole sentence")
+        self.assertLessEqual(syn.x_length(text, link), syn.X_MAX_CHARS)
+
+    def test_a_stub_is_still_rejected(self):
+        """A four-word first sentence is not a summary."""
+        syn = self._syn()
+        article = dict(self.ARTICLE, meta_description="", summary=(
+            "It fell. " + "Then a much longer clause that runs past the budget "
+            "and keeps going well beyond it " * 4))
+        self.assertEqual(syn._blurb(article, 120), "")
+
+    def test_x_caption_keeps_the_headline_intact_when_it_fits(self):
+        syn = self._syn()
+        link = syn.article_link(self.ARTICLE["slug"])
+        self.assertIn(self.ARTICLE["title"], syn.x_caption(self.ARTICLE, link))
+
+    # ── Facebook ─────────────────────────────────────────────────
+
+    def test_a_blurb_cut_off_mid_sentence_is_never_published(self):
+        """
+        Regression: meta_description is trimmed to 160 characters for the
+        search snippet and almost always stops mid-clause ("...and token
+        age-spent, helping"). Invisible in a search result, glaring in a
+        Facebook post. summary is written whole, so it goes first.
+        """
+        syn = self._syn()
+        link = "https://pressvane.com/s"
+        cut = {"slug": "s", "title": "A headline that is long enough",
+               "meta_description": "Bitcoin fell before rebounding above, showing",
+               "summary": "Bitcoin fell to $78,630 before rebounding above $79,000."}
+        self.assertIn("$79,000.", syn.facebook_caption(cut, link))
+        self.assertNotIn("showing", syn.facebook_caption(cut, link))
+
+        # Nothing whole to say: the post is headline and link, not a fragment.
+        only_fragment = dict(cut, summary="")
+        text = syn.facebook_caption(only_fragment, link)
+        self.assertNotIn("showing", text)
+        self.assertIn(link, text)
+
+    def test_facebook_caption_uses_the_article_not_a_model_rewrite(self):
+        syn = self._syn()
+        link = syn.article_link(self.ARTICLE["slug"])
+        text = syn.facebook_caption(self.ARTICLE, link)
+        self.assertIn(self.ARTICLE["title"], text)
+        self.assertIn("what the halving does to supply", text)
+        self.assertIn(link, text)
+
+    def test_facebook_caption_stays_under_the_feed_limit(self):
+        syn = self._syn()
+        article = dict(self.ARTICLE, summary="word " * 5000,
+                       meta_description="word " * 5000)
+        text = syn.facebook_caption(article, "https://pressvane.com/s")
+        self.assertLessEqual(len(text), syn.FACEBOOK_MAX_CHARS)
+
+    # ── hashtags ─────────────────────────────────────────────────
+
+    def test_hashtags_are_built_from_the_seo_keywords(self):
+        from modules.social_syndicator import SocialSyndicator as S
+        self.assertEqual(S._hashtag("bitcoin halving"), "#BitcoinHalving")
+        self.assertEqual(S._hashtag("the price of bitcoin"), "#PriceOfBitcoin")
+
+    def test_a_compound_term_survives_intact(self):
+        """
+        Regression: splitting on the hyphen left "on" looking like a stop word
+        standing alone, and "on-chain analysis" published as #ChainAnalysis --
+        a different subject. Crypto is the largest section on the site.
+        """
+        from modules.social_syndicator import SocialSyndicator as S
+        self.assertEqual(S._hashtag("on-chain analysis"), "#OnChainAnalysis")
+        self.assertEqual(S._hashtag("risk-on sentiment"), "#RiskOnSentiment")
+        self.assertEqual(S._hashtag("trump mail-in challenge"),
+                         "#TrumpMailInChallenge")
+
+    def test_the_ai_writes_dashes_that_are_not_hyphens(self):
+        """The model emits U+2011 and friends; they must not split a term."""
+        from modules.social_syndicator import SocialSyndicator as S
+        self.assertEqual(S._hashtag("token age‑spent analysis"),
+                         "#TokenAgeSpentAnalysis")
+        self.assertEqual(S._hashtag("on‑chain analysis"), "#OnChainAnalysis")
+
+    def test_useless_hashtags_are_dropped(self):
+        from modules.social_syndicator import SocialSyndicator as S
+        self.assertEqual(S._hashtag("the"), "")
+        self.assertEqual(S._hashtag("2026"), "")
+        self.assertEqual(S._hashtag("!!!"), "")
+        self.assertEqual(S._hashtag("a phrase far too long to be a hashtag"), "")
+        self.assertEqual(S._hashtag("financial metrics interpretation"), "",
+                         "31 characters is not a hashtag")
+
+    def test_hashtags_are_deduplicated_and_capped(self):
+        from modules.social_syndicator import SocialSyndicator as S
+        tags = S.hashtags(["bitcoin halving", "Bitcoin Halving", "crypto"], 2)
+        self.assertEqual(tags, ["#BitcoinHalving", "#Crypto"])
+
+    # ── volume ───────────────────────────────────────────────────
+
+    def test_full_cap_shares_every_article(self):
+        syn = self._syn()
+        self.assertEqual(syn.daily_cap("facebook"), 8)
+        self.assertEqual(len(syn.SLOT_PRIORITY), 8)
+
+    def test_a_new_account_ramps_up_over_a_fortnight(self):
+        today = (datetime.now(timezone.utc) + PKT).date()
+        for days, expected in ((0, 4), (6, 4), (7, 6), (13, 6), (14, 8), (400, 8)):
+            syn = self._syn(start_date=str(today - timedelta(days=days)))
+            self.assertEqual(syn.daily_cap("facebook"), expected,
+                             f"day {days} should allow {expected}")
+
+    def test_no_start_date_means_no_ramp(self):
+        self.assertIsNone(self._syn().days_live())
+        self.assertEqual(self._syn(start_date="not-a-date").daily_cap("twitter"), 8)
+
+    def test_a_configured_cap_is_never_exceeded_by_the_ramp(self):
+        today = (datetime.now(timezone.utc) + PKT).date()
+        syn = self._syn(caps={"facebook": 3}, start_date=str(today - timedelta(days=400)))
+        self.assertEqual(syn.daily_cap("facebook"), 3)
+
+    def test_the_daily_cap_stops_further_posts(self):
+        syn = self._syn(services=["facebook"], caps={"facebook": 1})
+        syn._slot_is_allowed = lambda *a: True   # isolate the counter
+        asyncio.run(syn.syndicate(self.ARTICLE))
+        asyncio.run(syn.syndicate(dict(self.ARTICLE, slug="second")))
+        self.assertEqual(syn._buffer_mock.send.await_count, 1)
+        self.assertEqual(syn.sent_today["facebook"], 1)
+
+    def test_counters_reset_when_the_pkt_date_changes(self):
+        syn = self._syn(services=["facebook"], caps={"facebook": 1})
+        syn._slot_is_allowed = lambda *a: True   # isolate the counter
+        asyncio.run(syn.syndicate(self.ARTICLE))
+        self.assertEqual(syn.sent_today["facebook"], 1)
+        syn._counter_day = syn._counter_day - timedelta(days=1)   # yesterday
+        asyncio.run(syn.syndicate(dict(self.ARTICLE, slug="second")))
+        self.assertEqual(syn.sent_today["facebook"], 1)
+        self.assertEqual(syn._buffer_mock.send.await_count, 2)
+
+    def test_a_rejected_post_does_not_consume_the_day_allowance(self):
+        buf = MagicMock()
+        buf.ensure_channels = AsyncMock(
+            return_value=[{"id": "c1", "service": "facebook"}])
+        buf.send = AsyncMock(return_value=False)
+        buf.last_error = "rate limited"
+        syn = self._syn(buffer=buf, services=["facebook"])
+        asyncio.run(syn.syndicate(self.ARTICLE))
+        self.assertEqual(syn.sent_today["facebook"], 0)
+
+    # ── which articles survive the warm-up cap ───────────────────
+
+    def test_the_warm_up_keeps_the_slots_the_audience_is_awake_for(self):
+        """
+        Not "the first four of the day". The PKT day starts at midnight while
+        the readers are in London and New York, so first-come would hand every
+        share to the small hours.
+        """
+        syn = self._syn()
+        top4 = syn.SLOT_PRIORITY[:4]
+        self.assertIn((18, 0), top4, "18:00 PKT is 09:00 in New York")
+        self.assertIn((21, 0), top4, "21:00 PKT is 12:00 in New York")
+        self.assertNotIn((13, 0), top4, "13:00 PKT is 04:00 in New York")
+        self.assertNotIn((11, 30), top4, "11:30 PKT is 02:30 in New York")
+
+    def test_every_priority_slot_is_a_slot_the_website_actually_publishes_in(self):
+        """
+        A time listed here that the brain does not publish at would silently
+        mute a platform, and the mismatch would be invisible until someone
+        counted posts a week later.
+        """
+        from modules.social_syndicator import SocialSyndicator as S
+        scheduled = {(s["hour"], s["minute"])
+                     for s in BotBrain.SCHEDULE["article_slots"]}
+        scheduled |= {(s["hour"], s["minute"])
+                      for s in BotBrain.SCHEDULE["evergreen_slots"]}
+        self.assertEqual(set(S.SLOT_PRIORITY), scheduled)
+
+    def test_an_out_of_favour_slot_is_skipped_while_warming_up(self):
+        syn = self._syn(services=["facebook"], caps={"facebook": 8})
+        syn.daily_cap = lambda platform: 4
+        # 13:00 PKT is the lowest-ranked slot: outside the top four.
+        thirteen = datetime(2026, 9, 1, 13, 2, tzinfo=timezone.utc)
+        self.assertFalse(syn._slot_is_allowed("facebook", thirteen))
+        # 18:00 PKT is the best one.
+        self.assertTrue(syn._slot_is_allowed(
+            "facebook", datetime(2026, 9, 1, 18, 1, tzinfo=timezone.utc)))
+
+    def test_a_deferred_article_still_counts_as_its_own_slot(self):
+        """A story held back 30 minutes for a picture must not lose its share
+        just because it published at 18:30 instead of 18:00."""
+        syn = self._syn(services=["facebook"])
+        syn.daily_cap = lambda platform: 4
+        self.assertTrue(syn._slot_is_allowed(
+            "facebook", datetime(2026, 9, 1, 18, 34, tzinfo=timezone.utc)))
+
+    def test_an_off_schedule_publish_is_allowed_on_the_counter_alone(self):
+        """A manual run at 09:00 belongs to no slot; the daily cap is then the
+        only thing standing between it and a post."""
+        syn = self._syn(services=["facebook"])
+        syn.daily_cap = lambda platform: 4
+        self.assertTrue(syn._slot_is_allowed(
+            "facebook", datetime(2026, 9, 1, 8, 45, tzinfo=timezone.utc)))
+
+    def test_the_slot_gate_is_off_once_the_cap_covers_every_slot(self):
+        syn = self._syn(services=["facebook"], caps={"facebook": 8})
+        for hour in range(24):
+            self.assertTrue(syn._slot_is_allowed(
+                "facebook", datetime(2026, 9, 1, hour, 7, tzinfo=timezone.utc)))
+
+    # ── isolation ────────────────────────────────────────────────
+
+    def test_facebook_failing_does_not_stop_x(self):
+        buf = MagicMock()
+        buf.ensure_channels = AsyncMock(
+            side_effect=lambda s: [{"id": s, "service": s}])
+        buf.last_error = ""
+
+        async def send(channel, text, image_url="", article_slug=""):
+            if channel["service"] == "facebook":
+                raise RuntimeError("facebook down")
+            return True
+
+        buf.send = AsyncMock(side_effect=send)
+        syn = self._syn(buffer=buf)
+        results = asyncio.run(syn.syndicate(self.ARTICLE))
+        self.assertFalse(results["facebook"])
+        self.assertTrue(results["twitter"])
+
+    def test_a_channel_connected_after_start_up_is_picked_up(self):
+        """
+        The channel list is read once at boot. The user is connecting a brand
+        new Facebook page and X account right now, and without a recheck they
+        would stay invisible to the running bot until the next deploy, with
+        nothing in the log to explain the silence.
+        """
+        from modules.buffer_broadcaster import BufferBroadcaster
+        buf = BufferBroadcaster(access_token="tok", organization_id="org1",
+                                enabled_services=["facebook"])
+        buf._loaded_at = -10000          # older than REFRESH_AFTER_SECONDS
+
+        async def fake_connect():
+            buf.channels = [{"id": "c1", "service": "facebook", "name": "New Page",
+                             "isDisconnected": False}]
+            return True
+
+        buf.connect = fake_connect
+        self.assertEqual(buf.channels_for("facebook"), [])
+        found = asyncio.run(buf.ensure_channels("facebook"))
+        self.assertEqual([c["id"] for c in found], ["c1"])
+
+    def test_a_permanently_absent_channel_is_not_rechecked_every_article(self):
+        from modules.buffer_broadcaster import BufferBroadcaster
+        buf = BufferBroadcaster(access_token="tok", organization_id="org1")
+        buf._loaded_at = -10000
+        calls = []
+
+        async def fake_connect():
+            calls.append(1)
+            return True
+
+        buf.connect = fake_connect
+        asyncio.run(buf.ensure_channels("twitter"))
+        asyncio.run(buf.ensure_channels("twitter"))
+        asyncio.run(buf.ensure_channels("twitter"))
+        self.assertEqual(len(calls), 1, "one recheck, then back off")
+
+    def test_a_missing_channel_is_not_an_error(self):
+        buf = MagicMock()
+        buf.ensure_channels = AsyncMock(return_value=[])
+        buf.send = AsyncMock(return_value=True)
+        buf.last_error = ""
+        syn = self._syn(buffer=buf)
+        self.assertEqual(asyncio.run(syn.syndicate(self.ARTICLE)),
+                         {"facebook": False, "twitter": False})
+        buf.send.assert_not_awaited()
+
+    def test_the_article_picture_is_passed_to_buffer(self):
+        syn = self._syn(services=["facebook"])
+        asyncio.run(syn.syndicate(self.ARTICLE))
+        self.assertEqual(syn._buffer_mock.send.await_args.kwargs["image_url"],
+                         "https://cdn.example/hero.jpg")
+        self.assertEqual(syn._buffer_mock.send.await_args.kwargs["article_slug"],
+                         "bitcoin-halving-explained")
+
+
+class TestSocialIsDrivenByTheArticle(unittest.TestCase):
+    """
+    The trigger is the article publishing, not the Telegram slot.
+
+    Facebook used to hang off the Telegram fan-out. Once the website got its
+    own schedule the two carried different stories, so those posts had no
+    article to link to -- and when the schedules did collide, the same story
+    went to Facebook twice.
+    """
+
+    def setUp(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.main = open(os.path.join(root, "main.py"), encoding="utf-8").read()
+        self.fanout = open(os.path.join(root, "modules", "fanout.py"),
+                           encoding="utf-8").read()
+
+    def test_the_telegram_fanout_no_longer_posts_to_facebook(self):
+        self.assertNotIn("_to_facebook", self.fanout)
+        self.assertNotIn('"facebook": self.', self.fanout)
+
+    def test_the_article_run_hands_off_to_the_syndicator(self):
+        i = self.fanout.index("Scheduled article published")
+        self.assertIn("await self.syndicate(article)", self.fanout[i:i + 400])
+
+    def test_a_deferred_article_is_announced_too(self):
+        i = self.fanout.index("Deferred article published")
+        self.assertIn("await self.syndicate(article)", self.fanout[i:i + 400])
+
+    def test_evergreen_explainers_are_announced_too(self):
+        i = self.main.index("Evergreen live:")
+        self.assertIn("fanout.syndicate(piece)", self.main[i:i + 400])
+
+    def test_the_syndicator_is_wired_into_main(self):
+        self.assertIn("SocialSyndicator(", self.main)
+        self.assertIn("syndicator=syndicator", self.main)
+
+    def test_telegram_broadcasting_is_untouched_by_social(self):
+        # The Telegram broadcaster must not learn about Buffer, Facebook or X.
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        tg = open(os.path.join(root, "modules", "telegram_broadcaster.py"),
+                  encoding="utf-8").read().lower()
+        for word in ("buffer", "facebook", "syndicat"):
+            self.assertNotIn(word, tg)
 
 
 if __name__ == "__main__":

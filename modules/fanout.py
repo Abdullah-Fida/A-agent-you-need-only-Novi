@@ -1,12 +1,23 @@
 """
 Cross-platform fan-out.
 
-One place that decides where a published news package also goes: Reddit,
-X/Twitter, Facebook (via Buffer), and the website article.
+Two jobs live here:
 
-Previously this logic was inline in the main loop, so the on-demand
-"post now" path skipped Reddit/X/Facebook entirely and the two routes
-could drift apart. Everything now goes through `distribute()`.
+  * `publish_scheduled_article()` / `retry_due_articles()` -- the website's
+    own publishing run, on the website's own clock. Every article that goes
+    live is handed straight to the social syndicator, so Facebook and X
+    announce it at the moment it exists.
+
+  * `distribute()` -- everything that hangs off a TELEGRAM post: Reddit, and
+    the opt-in browser-driven X account.
+
+Facebook used to hang off `distribute()` too, and that stopped being correct
+the day the website was decoupled from the Telegram schedule. The two
+schedules now carry DIFFERENT stories, so a Facebook post fired from the
+Telegram side had no article to link to and went out bare; when the schedules
+did collide, the same story went out twice. Facebook and X are now triggered
+by the article, in modules/social_syndicator.py, and nothing in this file
+posts to them on the Telegram clock.
 
 Each destination is isolated: one platform failing never stops the others,
 and no failure can propagate back into the Telegram post that already
@@ -31,15 +42,17 @@ class Fanout:
     MAX_ARTICLE_ATTEMPTS = 3
 
     def __init__(self, brain=None, db=None, growth_engine=None,
-                 reddit=None, twitter=None, buffer=None, article_agent=None,
-                 notification_manager=None, scraper=None, pick_category=None):
+                 reddit=None, twitter=None, article_agent=None,
+                 notification_manager=None, scraper=None, pick_category=None,
+                 syndicator=None):
         self.brain = brain
         self.db = db
         self.growth = growth_engine
         self.reddit = reddit
         self.twitter = twitter
-        self.buffer = buffer
         self.article_agent = article_agent
+        # Announces each published article on Facebook and X.
+        self.syndicator = syndicator
         self.nm = notification_manager
         # Used only by the website's own publishing run.
         self.scraper = scraper
@@ -134,6 +147,7 @@ class Fanout:
 
             if article:
                 logger.info(f"Scheduled article published: /{article.get('slug')}")
+                await self.syndicate(article)
                 return article
 
             # Deferred rather than failed -- retry it later instead of burning
@@ -225,6 +239,7 @@ class Fanout:
             if article:
                 published += 1
                 logger.info(f"Deferred article published: /{article.get('slug')}")
+                await self.syndicate(article)
             elif getattr(self.article_agent, "retry_after_minutes", 0):
                 self._defer_article(
                     item["story"],
@@ -238,16 +253,16 @@ class Fanout:
         Sends a package everywhere it should go.
 
         The website article is NOT written here -- it has its own schedule.
-        This only looks one up so the Facebook caption can link to it.
+        This only looks one up so the Telegram package can carry its slug.
 
-        Returns a per-platform result map.
+        Facebook and X are not sent from here either; see the module
+        docstring. Returns a per-platform result map.
         """
         results: Dict[str, bool] = {}
 
         # 1. The article for this story is written on the WEBSITE's schedule,
         # not this one. All that is needed here is its slug, if it happens to
-        # exist yet, so the Facebook caption can link to it. Creating one here
-        # as well would publish the same story twice.
+        # exist yet. Creating one here as well would publish the story twice.
         article_slug = ""
         if self.db and story:
             article_slug = await self._existing_slug(story.get("link", ""))
@@ -255,11 +270,13 @@ class Fanout:
                 package["article_slug"] = article_slug
         results["website"] = bool(article_slug)
 
-        # 2. Everything else, in parallel — each isolated from the others
+        # 2. Everything else, in parallel — each isolated from the others.
+        # Facebook and X are NOT here: they are announced by the syndicator
+        # when the article itself publishes, so every one of their posts has
+        # a live page to link to.
         tasks = {
             "reddit": self._to_reddit(package),
             "twitter": self._to_twitter(package),
-            "facebook": self._to_facebook(package, article_slug),
         }
         gathered = await asyncio.gather(*tasks.values(), return_exceptions=True)
 
@@ -303,19 +320,6 @@ class Fanout:
             await self._record_error("TwitterBroadcaster", e)
             return False
 
-    async def _to_facebook(self, package: Dict, article_slug: str) -> bool:
-        if not self.buffer:
-            return False
-        try:
-            ok = await self.buffer.post(package, article_slug=article_slug)
-            if ok and self.growth:
-                self.growth.record_action(self.growth.ACTION_POST, {"platform": "facebook"})
-            return ok
-        except Exception as e:
-            logger.error(f"Facebook/Buffer post failed: {type(e).__name__}: {e}")
-            await self._record_error("BufferBroadcaster", e)
-            return False
-
     async def _record_error(self, module: str, error: Exception):
         if self.brain:
             try:
@@ -327,11 +331,29 @@ class Fanout:
         if self.db:
             await self.db.log_error(module, type(error).__name__, str(error), auto_resolved=True)
 
+    # ── social syndication ───────────────────────────────────────
+
+    async def syndicate(self, article: Optional[Dict]) -> Dict[str, bool]:
+        """
+        Hands a freshly published article to Facebook and X.
+
+        Guarded here as well as inside the syndicator: an article that is
+        already live must never be undone by a social network being down.
+        """
+        if not (self.syndicator and article):
+            return {}
+        try:
+            return await self.syndicator.syndicate(article)
+        except Exception as e:
+            logger.error(f"Social syndication raised {type(e).__name__}: {e}")
+            await self._record_error("SocialSyndicator", e)
+            return {}
+
     @property
     def status(self) -> Dict[str, Any]:
         return {
             "reddit": bool(self.reddit and getattr(self.reddit, "_connected", False)),
             "twitter": bool(self.twitter and getattr(self.twitter, "_connected", False)),
-            "facebook": bool(self.buffer and self.buffer.is_ready),
+            "social": bool(self.syndicator and self.syndicator.is_ready),
             "website": bool(self.article_agent),
         }

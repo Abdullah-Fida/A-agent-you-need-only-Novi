@@ -1,7 +1,11 @@
 """
-Buffer Broadcaster — Facebook (and any other Buffer-connected channel).
+Buffer transport — Facebook and X/Twitter.
 
 Uses Buffer's GraphQL API at https://api.buffer.com/graphql.
+
+This module is only the wire: it knows how to talk to Buffer and how each
+service wants a post shaped. WHAT to say and WHEN to say it belongs to
+`modules/social_syndicator.py`, which drives this off the article agent.
 
 Notes learned from probing the live API (the legacy REST API at
 api.bufferapp.com rejects modern public tokens and retires 2027-02-01):
@@ -12,9 +16,12 @@ api.bufferapp.com rejects modern public tokens and retires 2027-02-01):
     with an error variant, never as an HTTP error status.
   * Facebook posts REQUIRE `metadata.facebook.type` ("post" | "reel" | "story").
     Omitting it fails with "Facebook posts require a type".
+  * X/Twitter needs no such metadata, but its text is hard-capped at 280
+    characters and Buffer rejects anything longer outright.
 """
 import asyncio
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("OmniBot.Buffer")
@@ -46,40 +53,86 @@ _ACCOUNT = "query { account { id email organizations { id name } } }"
 
 
 class BufferBroadcaster:
-    """Publishes to Facebook (and other channels) through Buffer."""
+    """Publishes to Facebook and X/Twitter through Buffer."""
 
     # Services needing an explicit post type in metadata
     _TYPED_SERVICES = {"facebook": "post", "instagram": "post"}
 
-    def __init__(self, access_token: str, db=None, ai_engine=None, brain=None,
-                 organization_id: str = "", enabled_services: Optional[List[str]] = None,
-                 site_url: str = ""):
+    # Buffer still calls the X channel "twitter" in its API. Accept the new
+    # name too, so a rename on their side does not silently drop the channel.
+    _SERVICE_ALIASES = {"x": "twitter", "twitter": "twitter"}
+
+    # How long to wait before asking Buffer again about a service whose
+    # channel we cannot see.
+    REFRESH_AFTER_SECONDS = 1800
+
+    def __init__(self, access_token: str, db=None,
+                 organization_id: str = "",
+                 enabled_services: Optional[List[str]] = None):
         self.token = (access_token or "").strip()
         self.db = db
-        self.ai = ai_engine
-        self.brain = brain
         self.organization_id = (organization_id or "").strip()
-        self.site_url = (site_url or "").rstrip("/")
-        # Which Buffer services we post to. Facebook only, by default.
-        self.enabled_services = [s.lower() for s in (enabled_services or ["facebook"])]
+        # Which Buffer services we post to.
+        self.enabled_services = [self.canonical_service(s)
+                                 for s in (enabled_services or ["facebook", "twitter"])]
 
         self.channels: List[Dict] = []
         self._connected = False
+        self._loaded_at = 0.0
         self.posts_sent = 0
         self.last_error = ""
 
         if not self.token:
-            logger.warning("Buffer access token missing. Facebook posting disabled.")
+            logger.warning("Buffer access token missing. Facebook and X "
+                           "posting are disabled.")
 
     @property
     def is_ready(self) -> bool:
         return self._connected and bool(self.target_channels)
 
+    @classmethod
+    def canonical_service(cls, service: str) -> str:
+        """'X' and 'twitter' are the same channel. Everything else is itself."""
+        name = (service or "").strip().lower()
+        return cls._SERVICE_ALIASES.get(name, name)
+
     @property
     def target_channels(self) -> List[Dict]:
         return [c for c in self.channels
-                if c.get("service", "").lower() in self.enabled_services
+                if self.canonical_service(c.get("service", "")) in self.enabled_services
                 and not c.get("isDisconnected")]
+
+    def channels_for(self, service: str) -> List[Dict]:
+        """Every live channel for one service, e.g. all Facebook pages."""
+        want = self.canonical_service(service)
+        return [c for c in self.target_channels
+                if self.canonical_service(c.get("service", "")) == want]
+
+    async def ensure_channels(self, service: str) -> List[Dict]:
+        """
+        Channels for a service, re-reading Buffer first if we have none.
+
+        The list is loaded once at start-up, which is wrong the moment a
+        channel is connected at buffer.com afterwards: a brand-new Facebook
+        page or X account would stay invisible to a running bot until the
+        next deploy, with nothing in the log to say why. Rechecking costs one
+        request, and only when a service currently looks absent.
+        """
+        found = self.channels_for(service)
+        if found or not self.token:
+            return found
+        if time.monotonic() - self._loaded_at < self.REFRESH_AFTER_SECONDS:
+            return found
+        logger.info(f"No {service} channel on file — re-reading Buffer in case "
+                    f"one was connected since start-up.")
+        # Stamped even if the reload fails, so a permanently absent channel
+        # cannot turn every article into another round-trip.
+        self._loaded_at = time.monotonic()
+        try:
+            await self.connect()
+        except Exception as e:
+            logger.warning(f"Buffer channel refresh failed: {type(e).__name__}: {e}")
+        return self.channels_for(service)
 
     @property
     def status(self) -> Dict:
@@ -160,6 +213,7 @@ class BufferBroadcaster:
 
         data = await self._gql(_CHANNELS, {"i": {"organizationId": self.organization_id}})
         self.channels = ((data or {}).get("channels") or [])
+        self._loaded_at = time.monotonic()
 
         if not self.channels:
             self.last_error = ("No channels connected in Buffer. "
@@ -179,43 +233,32 @@ class BufferBroadcaster:
 
     # ── posting ──────────────────────────────────────────────────
 
-    async def post(self, package: Dict, article_slug: str = "") -> bool:
+    # X wraps every link in t.co, which always counts as this many characters
+    # no matter how long the real URL is.
+    X_LINK_LENGTH = 23
+    X_MAX_CHARS = 280
+
+    async def send(self, channel: Dict, text: str, image_url: str = "",
+                   article_slug: str = "") -> bool:
         """
-        Publishes a content package to every enabled Buffer channel.
-        Returns True if at least one channel accepted the post.
+        Queues one post on one Buffer channel.
+
+        This is the whole public surface for publishing. Callers build the
+        text; this decides how the request has to be shaped for the service.
         """
-        if not self.token:
+        if not self.token or not channel:
             return False
 
-        if not self._connected:
-            await self.connect()
-        if not self.target_channels:
-            logger.warning("Buffer: no connected channel to post to.")
+        service = self.canonical_service(channel.get("service", ""))
+
+        if not (text or "").strip():
+            logger.error(f"Buffer: refusing to queue an empty {service} post.")
             return False
-
-        text = await self._build_caption(package, article_slug)
-        if not text:
-            logger.error("Buffer: empty caption, aborting.")
-            return False
-
-        image_url = self._pick_image(package)
-
-        any_ok = False
-        for channel in self.target_channels:
-            ok = await self._post_to_channel(channel, text, image_url, article_slug)
-            any_ok = any_ok or ok
-            await asyncio.sleep(1)  # be gentle with the API
-
-        return any_ok
-
-    async def _post_to_channel(self, channel: Dict, text: str,
-                               image_url: str, article_slug: str) -> bool:
-        service = (channel.get("service") or "").lower()
 
         # Buffer downloads the picture itself, so this has to be a public URL —
-        # the local file Telegram uploads is no use here. `assets` was
-        # previously left empty, which is why every Facebook post went out
-        # without an image even though one had been generated.
+        # a local file path is no use here. `assets` was previously left empty,
+        # which is why every Facebook post went out without an image even
+        # though one had been prepared.
         assets: List[Dict[str, Any]] = []
         if image_url and image_url.startswith("http"):
             assets.append({"image": {"url": image_url, "thumbnailUrl": image_url}})
@@ -224,7 +267,7 @@ class BufferBroadcaster:
             "channelId": channel["id"],
             "text": text,
             "assets": assets,
-            "mode": "addToQueue",          # respects your Buffer schedule
+            "mode": "addToQueue",           # respects your Buffer schedule
             "schedulingType": "automatic",  # Buffer publishes it for us
             "needsApproval": False,
             "saveToDraft": False,
@@ -249,7 +292,8 @@ class BufferBroadcaster:
             self.posts_sent += 1
             self.last_error = ""
             logger.info(f"Buffer: queued {service} post "
-                        f"({channel.get('name')}) id={post.get('id')} status={post.get('status')}")
+                        f"({channel.get('name')}) id={post.get('id')} "
+                        f"status={post.get('status')}")
             if self.db:
                 await self.db.log_social_post(
                     platform=service, provider="buffer", content=text,
@@ -273,68 +317,3 @@ class BufferBroadcaster:
             await self.db.log_error("BufferBroadcaster", kind or "PostFailed",
                                     message, auto_resolved=False)
         return False
-
-    # ── content helpers ──────────────────────────────────────────
-
-    @staticmethod
-    def _pick_image(package: Dict) -> str:
-        """
-        The picture Buffer should fetch.
-
-        Our own generated-and-hosted image first, since that is what went out
-        on Telegram and keeps the story looking the same everywhere; the
-        outlet's photo only if we have nothing hosted.
-        """
-        return package.get("image_url") or package.get("real_image_url") or ""
-
-    def _article_link(self, article_slug: str) -> str:
-        # The site serves articles at the root: /{slug}
-        if article_slug and self.site_url:
-            return f"{self.site_url}/{article_slug}"
-        return ""
-
-    async def _build_caption(self, package: Dict, article_slug: str = "") -> str:
-        """
-        Builds a Facebook-appropriate caption.
-
-        Telegram copy is short and emoji-dense; Facebook rewards a little more
-        context, so we ask the AI to adapt it and fall back to the original.
-        """
-        base = (package.get("telegram_text") or package.get("tweet_text") or "").strip()
-        if not base:
-            return ""
-
-        link = self._article_link(article_slug)
-        caption = base
-
-        if self.ai:
-            try:
-                rewritten = await self.ai.generate(
-                    task="social_caption",
-                    system_prompt=(
-                        "You adapt short news posts into Facebook captions. "
-                        "Keep every fact identical. Write 2-4 short paragraphs, "
-                        "friendly and readable, keep a few relevant emojis, and end "
-                        "with 3-5 relevant hashtags. Output only the caption."
-                    ),
-                    user_prompt=f"Adapt this for Facebook:\n\n{base}",
-                    max_tokens=420,
-                    temperature=0.7,
-                )
-                # Only accept a rewrite that is actually a caption. The
-                # engine already rejects narration, but the Telegram copy is a
-                # perfectly good caption, so anything doubtful falls back to it
-                # rather than risking the model's deliberation on the page.
-                if rewritten and 40 < len(rewritten.strip()) < 2200:
-                    caption = rewritten.strip()
-                elif rewritten:
-                    logger.warning("Caption rewrite was not usable; keeping the "
-                                   "original post text.")
-            except Exception as e:
-                logger.warning(f"Caption rewrite failed, using original: {type(e).__name__}")
-
-        if link:
-            caption = f"{caption}\n\n📖 Read the full story: {link}"
-
-        # Facebook's hard limit is ~63k, but long captions get truncated in-feed
-        return caption[:5000]

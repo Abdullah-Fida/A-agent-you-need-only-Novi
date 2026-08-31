@@ -139,6 +139,7 @@ async def health(request: Request):
             },
         },
         "buffer": bb.status if (bb := getattr(st, 'buffer_broadcaster', None)) else {"configured": False},
+        "social": sy.status if (sy := getattr(st, 'syndicator', None)) else {"ready": False},
         "database_connected": bool(brain and brain.db and getattr(brain.db, "_initialized", False)),
         "email": nm.health if (nm := getattr(st, 'notification_manager', None)) else {"configured": False},
         "growth": ge.summary() if (ge := getattr(st, 'growth_engine', None)) else None,

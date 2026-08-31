@@ -57,10 +57,20 @@ class BotConfig:
     twitter_password: str = ""
     twitter_email: str = ""
     
-    # Buffer (Facebook and other social channels)
+    # Buffer (Facebook and X/Twitter)
     buffer_access_token: str = ""
     buffer_organization_id: str = ""
-    buffer_services: List[str] = field(default_factory=lambda: ["facebook"])
+    buffer_services: List[str] = field(default_factory=lambda: ["facebook", "twitter"])
+
+    # Social syndication — one post per published article, per platform.
+    # Eight articles are published a day, so eight is "share everything".
+    social_max_per_day_facebook: int = 8
+    social_max_per_day_twitter: int = 8
+    # The day the social accounts opened, YYYY-MM-DD. Set it and the volume
+    # ramps 4 -> 6 -> 8 over the first fortnight, which is what keeps a
+    # brand-new page from reading as a link farm. Leave it empty and the
+    # full cap applies from the first post.
+    social_start_date: str = ""
 
     # Website
     site_url: str = ""
@@ -198,7 +208,10 @@ def load_config() -> BotConfig:
         twitter_email=os.getenv("TWITTER_EMAIL", ""),
         buffer_access_token=_clean(os.getenv("BUFFER_ACCESS_TOKEN", "")),
         buffer_organization_id=_clean(os.getenv("BUFFER_ORGANIZATION_ID", "")),
-        buffer_services=_csv("BUFFER_SERVICES") or ["facebook"],
+        buffer_services=_csv("BUFFER_SERVICES") or ["facebook", "twitter"],
+        social_max_per_day_facebook=_int_env("SOCIAL_MAX_PER_DAY_FACEBOOK", 8, lo=0, hi=8),
+        social_max_per_day_twitter=_int_env("SOCIAL_MAX_PER_DAY_TWITTER", 8, lo=0, hi=8),
+        social_start_date=_clean(os.getenv("SOCIAL_START_DATE", "")),
         site_url=_clean(os.getenv("SITE_URL", "")),
         site_name=_clean(os.getenv("SITE_NAME", "")) or "PressVane",
         indexnow_key=_clean(os.getenv("INDEXNOW_KEY", "")),
@@ -269,6 +282,14 @@ def _warn_on_problems(cfg: "BotConfig"):
     """
     if not cfg.supabase_url or not cfg.supabase_key:
         logger.warning("Supabase not configured — nothing will be persisted to the database.")
+
+    # Every Facebook and X post exists to send someone to an article. Without
+    # SITE_URL there is no link to send them to, and a link-less post is worse
+    # than none at all, so syndication refuses to run rather than post bare.
+    if cfg.buffer_access_token and not cfg.site_url:
+        logger.warning("BUFFER_ACCESS_TOKEN is set but SITE_URL is empty — "
+                       "Facebook and X will NOT be posted to, because no post "
+                       "could carry a link back to the article.")
 
     if not cfg.resend_api_key and not (cfg.email_sender and cfg.email_app_password):
         logger.warning("No email method configured — you will NOT receive notifications.")
