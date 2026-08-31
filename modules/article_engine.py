@@ -40,13 +40,19 @@ class ArticleAgent:
     RETRY_MINUTES = 30
 
     def __init__(self, ai_engine: AIEngine, db=None, site_name: str = "Novi News",
-                 site_url: str = "", image_gen=None, indexnow=None):
+                 site_url: str = "", image_gen=None, indexnow=None, photos=None):
         self.ai = ai_engine
         self.db = db
         self.site_name = site_name
         self.site_url = (site_url or "").rstrip("/")
         self.image_gen = image_gen
         self.indexnow = indexnow
+        # Openly-licensed photography, used when the story arrived without a
+        # picture. A real photograph of something related beats a synthetic
+        # illustration of the exact subject: readers can tell the difference,
+        # and a generated image is the clearest possible signal that nobody
+        # was involved.
+        self.photos = photos
         self.articles_written = 0
 
         # Why the last attempt produced nothing, and whether it is worth
@@ -444,6 +450,18 @@ class ArticleAgent:
         if provided_url:
             return provided_url
 
+        # No wire photo. Before generating one, look for a real photograph of
+        # the subject. The generator tries whatever URL it is handed first, so
+        # passing a stock photo here inserts real photography ahead of the
+        # synthetic tier without touching the chain itself.
+        if not story_image_url and self.photos:
+            try:
+                found, _ = await self.photos.find(self._photo_query(title, category))
+                if found:
+                    story_image_url = found
+            except Exception as e:
+                logger.warning(f"Stock photo lookup skipped: {type(e).__name__}: {e}")
+
         # allow_card=False: a drawn headline card is fine on Telegram, where
         # the alternative is no post, but on the website it is a placeholder
         # and we would rather wait and retry.
@@ -459,6 +477,11 @@ class ArticleAgent:
                     source_credit=self.site_name,
                     story_image_url=story_image_url,
                     allow_card=False,
+                    # The website never publishes a synthetic image. A real
+                    # photograph or nothing: an AI illustration on a news page
+                    # is the clearest possible signal that nobody was
+                    # involved, and readers can tell.
+                    allow_generated=False,
                 )
             except Exception as e:
                 logger.error(f"Hero image generation failed "
@@ -479,6 +502,27 @@ class ArticleAgent:
 
         logger.warning(f"No usable hero image after {self.IMAGE_ATTEMPTS} attempts.")
         return ""
+
+    # Section -> a concrete noun a photo archive can actually answer. A news
+    # headline is a poor search query: "Supreme court threatens midterms
+    # mail-in voting" finds nothing, while "courthouse" finds plenty.
+    _SECTION_PHOTO = {
+        "crypto": "bitcoin coin",
+        "tech_ai": "computer server",
+        "tech": "computer server",
+        "business_markets": "stock market",
+        "business": "stock market",
+        "world_news": "flags international",
+        "pakistan": "karachi city pakistan",
+        "politics": "parliament building",
+        "sports": "stadium crowd",
+    }
+
+    @classmethod
+    def _photo_query(cls, title: str, category: str) -> str:
+        """A photographable query for a story that arrived without a picture."""
+        key = (category or "").lower().replace(" ", "_")
+        return cls._SECTION_PHOTO.get(key, "newspaper")
 
     @staticmethod
     def _image_category(category: str) -> str:

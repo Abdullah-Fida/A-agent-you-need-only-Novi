@@ -1,21 +1,25 @@
 """
 Image Generator.
 
-Real photography first, generated imagery second:
+Real photography first, generated imagery only where it is acceptable:
 
-    1. The photo published with the original news story
+    1. The photo published with the original news story, or an openly
+       licensed photograph the caller supplies
     2. Bing Image Creator — DALL-E 3, needs a live `_U` cookie, retried
     3. A branded headline card drawn locally
+
+THE WEBSITE NEVER REACHES TIERS 2 OR 3. Articles pass allow_generated=False
+and allow_card=False, so a page carries a real photograph or the story is
+deferred and tried again later. A synthetic image on a news page is the
+clearest possible signal that nobody was involved, and readers can tell.
+
+Telegram still uses the full chain: there the alternative to a drawn card is
+no post at all, which is worse.
 
 The order matters. Bing used to run first and the outlet's own photograph was
 only reached when Bing failed, which is backwards for reporting: a picture of
 the actual event beats an illustration of it, and it costs one download rather
-than a minute of generation. No other generator is used.
-
-Tier 3 needs no network and no installed fonts, so `generate()` returning None
-means either the disk write failed or the caller passed `allow_card=False` --
-which the website article does, preferring to defer over publishing a
-placeholder.
+than a minute of generation.
 
 The cookie expires every few weeks. When it does, Bing stops redirecting and
 the failure is silent, so a dead cookie raises an email alert asking for a
@@ -174,7 +178,8 @@ class ImageGenerator:
 
     async def generate(self, headline: str, category: str = "default",
                        source_credit: str = "", story_image_url: str = "",
-                       allow_card: bool = True) -> Optional[str]:
+                       allow_card: bool = True,
+                       allow_generated: bool = True) -> Optional[str]:
         """
         Returns the path to a saved JPEG, or None if the disk write failed or
         `allow_card=False` and no real picture could be obtained.
@@ -218,7 +223,9 @@ class ImageGenerator:
                 logger.info("Using the photo published with the original story.")
 
         # 2. Generate one, retried, when the story came without a picture.
-        if img is None and self.bing_cookie:
+        #    Callers that must not publish synthetic imagery -- the website --
+        #    pass allow_generated=False and stop at real photography.
+        if img is None and allow_generated and self.bing_cookie:
             for attempt in range(1, self.BING_ATTEMPTS + 1):
                 remaining = left()
                 if remaining < 15:
