@@ -290,6 +290,39 @@ a different subject, in the site's largest section.
   is room, but the Pinterest agent deliberately uses a different Buffer
   account rather than spending the third slot here.
 
+* API REQUEST limits are a SEPARATE thing from the post queue, and are the
+  ones shown on buffer.com under Settings -> API:
+
+      100 requests per 15 minutes
+      500 requests per 24 hours
+      10,000 requests per 30 days
+
+  shared across every key and integration on the account. The live responses
+  carry it in a header: ratelimit: "100-in-15min"; r=99; t=900.
+
+  Measured cost of a full day, by counting the requests the code makes:
+
+      start-up (account + channels)                     2
+      six posts x two channels                         12
+                                                       --
+      a settled day                                    14   2.8% of 500
+      a month                                         420   4.2% of 10,000
+      largest burst in any 15 minutes                   2   2.0% of 100
+
+  Running with a service enabled whose channel is NOT connected costs more,
+  because the missing-channel recheck fires: 24 requests a day, still under
+  5%. A test pins the whole budget so a future change that starts polling
+  cannot quietly eat it.
+
+* THE API KEY EXPIRES. The current one was created 2026-08-31 and expires
+  2027-08-31. Nothing warns about this in advance -- posting will simply
+  start failing with a 401 on that date. Make a new key at
+  publish.buffer.com/settings/api before then and update Render.
+
+* The token's permissions were checked against the live channel:
+  allowedActions includes manageUpdates, which is the one that matters for
+  publishing. viewChannel and readUpdates cover the rest of what is used.
+
 * Facebook used to hang off the TELEGRAM fan-out. Once the website got its own
   schedule the two clocks carried different stories, so a Facebook post fired
   from the Telegram side had no article to link to and went out bare; when the

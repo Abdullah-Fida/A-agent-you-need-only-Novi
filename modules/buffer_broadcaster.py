@@ -29,6 +29,23 @@ api.bufferapp.com rejects modern public tokens and retires 2027-02-01):
     queue, so the limit does not apply to us at all.
   * X/Twitter needs no such metadata, but its text is hard-capped at 280
     characters and Buffer rejects anything longer outright.
+
+REQUEST BUDGET
+--------------
+Buffer's API allows 100 requests per 15 minutes, 500 per 24 hours and 10,000
+per 30 days, shared across every key and integration on the account. The
+live responses carry it as `ratelimit: "100-in-15min"`.
+
+A full day of publishing costs about fourteen requests: two at start-up
+(account, then channels) and one per post. Six posts on two channels is
+twelve. That is under 3% of the daily allowance, and the largest burst in
+any fifteen minutes is two -- one article, one request per channel.
+
+The one thing that moves the number is running with a service enabled whose
+channel is not connected: `ensure_channels` then rechecks, at most once per
+REFRESH_AFTER_SECONDS, which over eight publishing slots adds sixteen. Still
+under 5%. A test asserts the whole budget so a future change that starts
+polling cannot quietly eat it.
 """
 import asyncio
 import logging

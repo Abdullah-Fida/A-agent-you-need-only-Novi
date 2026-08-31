@@ -2891,6 +2891,65 @@ class TestSocialSyndicator(unittest.TestCase):
         asyncio.run(bb.connect())
         self.assertEqual(bb.organization_id, "second")
 
+    def test_a_days_publishing_fits_easily_inside_buffers_api_budget(self):
+        """
+        Buffer allows 100 requests per 15 minutes, 500 per 24 hours and
+        10,000 per 30 days, shared across every key on the account. This
+        pins the cost of a day so a future change that starts polling
+        cannot quietly eat the allowance.
+        """
+        from modules.buffer_broadcaster import BufferBroadcaster
+        from modules.social_syndicator import SocialSyndicator
+
+        calls = []
+        channels = [{"id": "tw", "service": "twitter", "name": "x",
+                     "isDisconnected": False},
+                    {"id": "fb", "service": "facebook", "name": "f",
+                     "isDisconnected": False}]
+
+        buf = BufferBroadcaster(access_token="t",
+                                enabled_services=["facebook", "twitter"])
+
+        async def fake_gql(query, variables=None, timeout=30):
+            calls.append(query)
+            if "account" in query:
+                return {"account": {"id": "a", "email": "e",
+                                    "organizations": [{"id": "o", "name": "n"}]}}
+            if "channels" in query:
+                return {"channels": channels}
+            return {"createPost": {"__typename": "PostActionSuccess",
+                                   "post": {"id": "p", "status": "sent"}}}
+
+        buf._gql = fake_gql
+        asyncio.run(buf.connect())
+        start_up = len(calls)
+        self.assertEqual(start_up, 2, "start-up is one account + one channels call")
+
+        syn = SocialSyndicator(buffer=buf, site_url="https://pressvane.com",
+                               services=["facebook", "twitter"])
+        syn._slot_is_allowed = lambda *a: True
+        asyncio.run(syn.syndicate(
+            {"slug": "s", "title": "A headline that is long enough here",
+             "summary": "A whole sentence.", "main_image_url": "https://x/y.jpg"}))
+
+        per_article = len(calls) - start_up
+        self.assertEqual(per_article, 2, "one request per channel, nothing else")
+
+        # Six posts a day on two channels, plus start-up.
+        day = start_up + 6 * per_article
+        self.assertLessEqual(day, 50, f"a day costs {day} requests; the "
+                                      f"allowance is 500")
+        self.assertLessEqual(day * 30, 10000 // 4,
+                             "a month must stay well inside 10,000")
+
+    def test_a_missing_channel_cannot_poll_the_api_flat(self):
+        """
+        A service enabled but not connected rechecks, and the back-off is
+        the only thing stopping that becoming a request per article.
+        """
+        from modules.buffer_broadcaster import BufferBroadcaster
+        self.assertGreaterEqual(BufferBroadcaster.REFRESH_AFTER_SECONDS, 600)
+
     def test_posts_are_published_now_not_queued(self):
         """
         Two reasons, and the live account had already hit the second: a post
