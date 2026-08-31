@@ -447,6 +447,76 @@ async def toggle_website(request: Request):
             "message": f"Website / Auto-Blogging is now {status}."}
 
 
+@app.post("/api/social/toggle")
+async def toggle_social(request: Request):
+    """
+    Turns Facebook AND X on or off together — the master switch.
+
+    Separate from the website switch on purpose. The article still publishes
+    while this is off; it just is not announced. A page under review or an
+    account being rebuilt should never be a reason to stop writing.
+    """
+    brain = getattr(request.app.state, 'brain', None)
+    nm = getattr(request.app.state, 'notification_manager', None)
+    if not brain:
+        raise HTTPException(status_code=500, detail="Brain not wired.")
+
+    brain.social_module_active = await _desired_state(request, brain.social_module_active)
+    status = "ACTIVE" if brain.social_module_active else "DEACTIVATED"
+
+    if nm:
+        await nm.notify_module_status(
+            "Facebook + X", status,
+            f"Social announcing has been turned "
+            f"{'ON' if brain.social_module_active else 'OFF'} from the dashboard.")
+
+    if brain.db:
+        await brain.db.log_metric("social_module_status",
+                                  1 if brain.social_module_active else 0,
+                                  {"action": "toggled", "new_status": status})
+
+    await brain.save_state()
+    return {"success": True, "active": brain.social_module_active,
+            "message": f"Facebook + X is now {status}."}
+
+
+@app.post("/api/social/{platform}/toggle")
+async def toggle_social_platform(platform: str, request: Request):
+    """
+    Turns ONE platform on or off: /api/social/facebook/toggle or
+    /api/social/twitter/toggle.
+
+    Two switches rather than one because they fail independently — an X
+    account gets restricted, a Facebook page is mid-rebuild — and losing one
+    is no reason to lose the other.
+    """
+    brain = getattr(request.app.state, 'brain', None)
+    if not brain:
+        raise HTTPException(status_code=500, detail="Brain not wired.")
+
+    field = {"facebook": "facebook_active",
+             "twitter": "twitter_active",
+             "x": "twitter_active"}.get(platform.strip().lower())
+    if not field:
+        raise HTTPException(status_code=400,
+                            detail="Platform must be 'facebook' or 'twitter'.")
+
+    setattr(brain, field, await _desired_state(request, getattr(brain, field)))
+    on = getattr(brain, field)
+    label = "Facebook" if field == "facebook_active" else "X / Twitter"
+    status = "ACTIVE" if on else "DEACTIVATED"
+
+    if brain.db:
+        await brain.db.log_metric(f"{field}_status", 1 if on else 0,
+                                  {"action": "toggled", "new_status": status})
+
+    await brain.save_state()
+    note = ("" if brain.social_module_active else
+            " (the social master switch is still OFF, so nothing posts yet)")
+    return {"success": True, "active": on,
+            "message": f"{label} is now {status}.{note}"}
+
+
 @app.post("/api/pins/toggle")
 async def toggle_pins(request: Request):
     """Turns the AliExpress to Pinterest agent ON or OFF."""

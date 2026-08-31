@@ -148,6 +148,19 @@ class BotBrain:
         # affiliate API quota and posts to a public account, so it only
         # runs when it has been switched on deliberately.
         self.pin_module_active = False
+
+        # Facebook and X. Three switches rather than one, because they fail
+        # for different reasons: an account gets restricted, or a page is
+        # being rebuilt, and taking that platform off should not stop the
+        # other one or stop the website publishing. All start OFF — they post
+        # publicly under your name.
+        self.social_module_active = False   # the master switch for both
+        self.facebook_active = True         # only meaningful while social is on
+        self.twitter_active = True
+        # The first day either of them posted, "YYYY-MM-DD". Recorded on the
+        # first post and persisted, so the warm-up ramp starts itself and
+        # survives a redeploy. Nobody has to remember to set a date.
+        self.social_started_on = ""
         self.master_kill = False            # Master kill switch
         
         logger.info(f"Brain initialized. Weekly goal: {weekly_goal} subscribers.")
@@ -348,6 +361,32 @@ class BotBrain:
     def record_reddit_post(self):
         self.reddit_posts_today += 1
 
+    def social_enabled(self, platform: str) -> bool:
+        """Whether one social platform may post right now."""
+        if self.master_kill or not self.social_module_active:
+            return False
+        if platform == "facebook":
+            return self.facebook_active
+        if platform in ("twitter", "x"):
+            return self.twitter_active
+        return False
+
+    def note_social_start(self) -> str:
+        """
+        Stamps today as day one, the first time anything is posted.
+
+        The warm-up ramp needs to know how old the accounts are. Asking the
+        operator to set a date is a step that gets forgotten, and forgetting
+        it means eight posts a day out of a page with no history — the exact
+        thing the ramp exists to prevent. So the first post records it.
+        """
+        if not self.social_started_on:
+            self.social_started_on = self._get_pkt_now().date().isoformat()
+            logger.info(f"First social post. Day one is "
+                        f"{self.social_started_on}; the daily limit now ramps "
+                        f"up on its own over the next fortnight.")
+        return self.social_started_on
+
     def can_post_x(self) -> bool:
         """Enforces MAX_DAILY_X_POSTS (previously configured but ignored)."""
         if self.x_posts_today >= self.max_x_posts_today:
@@ -479,6 +518,10 @@ class BotBrain:
             "news_module_active": self.news_module_active,
             "website_module_active": self.website_module_active,
             "pin_module_active": self.pin_module_active,
+            "social_module_active": self.social_module_active,
+            "facebook_active": self.facebook_active,
+            "twitter_active": self.twitter_active,
+            "social_started_on": self.social_started_on,
             "master_kill": self.master_kill,
             "is_paused": self.is_paused,
             "max_posts_today": self.max_posts_today,
@@ -520,6 +563,10 @@ class BotBrain:
         self.news_module_active = bool(saved.get("news_module_active", self.news_module_active))
         self.website_module_active = bool(saved.get("website_module_active", False))
         self.pin_module_active = bool(saved.get("pin_module_active", False))
+        self.social_module_active = bool(saved.get("social_module_active", False))
+        self.facebook_active = bool(saved.get("facebook_active", True))
+        self.twitter_active = bool(saved.get("twitter_active", True))
+        self.social_started_on = str(saved.get("social_started_on", "") or "")
         self.master_kill = bool(saved.get("master_kill", False))
         self.is_paused = bool(saved.get("is_paused", False))
         self.max_posts_today = int(saved.get("max_posts_today", self.max_posts_today))

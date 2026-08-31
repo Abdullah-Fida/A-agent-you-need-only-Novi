@@ -10,6 +10,7 @@ article-writing API later means changing only `AIEngine.MODELS["article"]`
 (or passing `model_override`), not this file.
 """
 import asyncio
+import html
 import logging
 import re
 from typing import Optional, Dict, List, Tuple
@@ -214,8 +215,9 @@ class ArticleAgent:
             "category": category,
             "seo_keywords": seo.get("keywords", [])[:12],
             "meta_title": self._trim_to_sentence(seo.get("meta_title") or title, 70),
-            "meta_description": self._trim_to_sentence(
-                seo.get("meta_description") or summary or "", 160),
+            "meta_description": self._finish_sentence(
+                seo.get("meta_description") or summary or "", 160,
+                fallback=seo.get("summary") or summary or ""),
             "reading_minutes": max(1, round(words / 220)),
             "word_count": words,
             "source_url": source_url,
@@ -365,8 +367,13 @@ class ArticleAgent:
                 fixable.append(f"meta description {len(meta_desc)} chars (max 160)")
             if len(meta_desc) < 50:
                 fixable.append(f"meta description only {len(meta_desc)} chars")
-            if meta_desc.rstrip().endswith(("-", ",", "and", "the", "of")):
-                fixable.append("meta description cut mid-phrase")
+            # The real failure was never length. The model obeys the word
+            # target and stops on whatever word it had reached, so the string
+            # comes back UNDER the limit and reads "...and token age-spent,
+            # helping". The old check listed a handful of trailing words,
+            # which both missed that one and matched "thousand" by substring.
+            if meta_desc.rstrip()[-1:] not in (".", "!", "?", "”", "’", '"'):
+                fixable.append("meta description does not end a sentence")
 
         if len(keywords) < 3:
             fixable.append(f"only {len(keywords)} SEO keywords")
@@ -409,7 +416,8 @@ class ArticleAgent:
             # Too thin to be useful: rebuild it from the opening of the body.
             body_text = re.sub(r"\s+", " ", self._strip_html(fixed.get("content", ""))).strip()
             md = body_text[:300] or md
-        fixed["meta_description"] = self._trim_to_sentence(md, 160)
+        fixed["meta_description"] = self._finish_sentence(
+            md, 160, fallback=fixed.get("summary") or "")
 
         if len(fixed.get("seo_keywords") or []) < 3:
             fixed["seo_keywords"] = (self._derive_keywords(
@@ -669,8 +677,10 @@ broader implications instead."""
             "Keys and what each must contain:\n"
             "- meta_title: 8-12 words. Must name the actual subject of THIS "
             "story, taken from the headline. Never a generic section label.\n"
-            "- meta_description: 22-28 words, one or two full sentences, "
-            "stating what specifically happened and why it matters.\n"
+            "- meta_description: one or two COMPLETE sentences, 22-28 words, "
+            "stating what specifically happened and why it matters. It MUST "
+            "end with a full stop. Never stop mid-sentence to hit the word "
+            "count -- finish the sentence and let it run short instead.\n"
             "- keywords: 6-8 entries. Each MUST be a two-to-four word phrase "
             "someone would type into Google. Single generic words such as "
             "'news', 'market', 'crypto', 'business', 'update' are forbidden.\n"
@@ -758,9 +768,12 @@ broader implications instead."""
                 logger.info(f"SEO meta_description was thin ({len(md)} chars); "
                             f"rebuilding from the article.")
                 md = self._trim_to_sentence(candidate, 158)
-        # Trim at a word boundary: Google renders the cut as written, and
-        # a description ending "underscoring its sensiti" looks broken.
-        seo["meta_description"] = self._trim_to_sentence(md, 160)
+        # A description has to end where a sentence ends. Google renders the
+        # cut exactly as written, and both failures look broken: one ending
+        # "underscoring its sensiti" and one ending "and token age-spent,
+        # helping".
+        seo["meta_description"] = self._finish_sentence(
+            md, 160, fallback=seo.get("summary") or summary or plain)
 
         # ── keywords: drop bare generic words, top up from the article ──
         kws = [k for k in (seo.get("keywords") or [])
@@ -801,6 +814,112 @@ broader implications instead."""
         space = cut.rfind(" ")
         trimmed = (cut[:space] if space > 0 else cut).strip().rstrip(",;:")
         return (trimmed + "…")[:limit]
+
+    # A description shorter than this says nothing useful in a search result.
+    MIN_META_DESCRIPTION = 90
+
+    # Words a sentence cannot end on. When the model runs out of budget it
+    # stops on whatever word it was on, and these are the ones that make the
+    # break obvious.
+    _DANGLING = (
+        "and", "or", "but", "with", "for", "to", "of", "in", "on", "at", "by",
+        "from", "as", "that", "which", "while", "after", "before",
+        "the", "a", "an", "its", "their", "his", "her",
+        # Present participles that need an object. A sentence stopping on one
+        # is unfinished no matter how complete the rest looks, and adding a
+        # full stop after it publishes broken English: "...and potentially
+        # limiting." The loop pops them one after another, so a run of them
+        # unwinds back to the last word that can actually end a sentence.
+        "helping", "including", "making", "showing", "leaving", "adding",
+        "giving", "limiting", "requiring", "allowing", "causing", "prompting",
+        "raising", "reducing", "boosting", "creating", "offering", "providing",
+        "affecting", "forcing", "pushing", "sparking", "exposing", "hinting",
+        # Adverbs that only ever modify what comes next.
+        "potentially", "particularly", "especially", "largely", "mainly",
+    )
+
+    @classmethod
+    def _finish_sentence(cls, text: str, limit: int, fallback: str = "") -> str:
+        """
+        Returns a description that ends where a sentence ends.
+
+        The model is told to write complete sentences and mostly does, but the
+        word target makes it stop on whatever word it had reached: the live
+        site carried "...to reveal transaction volume, active addresses, and
+        token age-spent, helping". Nothing caught that, because the string was
+        under the character limit -- the old trimmer only ever fixed
+        descriptions that were too LONG.
+
+        The order matters, and every step earns its place on the live site:
+
+          1. Already ends properly, or already ends in an ellipsis somebody
+             chose: leave it alone.
+          2. Drop back to the last full stop inside the budget.
+          3. Drop back to the last clause and close it. This is what saves
+             "...and understand how these metrics" -- appending a full stop
+             there would publish broken English, while cutting at the comma
+             gives "...and free cash flow."
+          4. The sentence is whole and only the full stop is missing. Tried
+             AFTER step 3, never before it, for the reason above.
+          5. Fall back to the summary, which is written as whole sentences.
+        """
+        text = html.unescape(re.sub(r"\s+", " ", text or "").strip())
+
+        def ends_well(t: str) -> bool:
+            return bool(t) and t[-1] in ".!?\u201d\u2019\"'"
+
+        if len(text) <= limit and ends_well(text):
+            return text
+        # An ellipsis is a decision somebody already made; honour it.
+        if len(text) <= limit and text.endswith(("\u2026", "...")):
+            return text
+
+        window = text[:limit]
+
+        # 2. The last complete sentence inside the budget.
+        stop = max(window.rfind(". "), window.rfind("! "), window.rfind("? "))
+        if stop + 1 >= cls.MIN_META_DESCRIPTION:
+            return window[:stop + 1].strip()
+        if ends_well(window) and len(window) >= cls.MIN_META_DESCRIPTION:
+            return window.strip()
+
+        # 3. No sentence break: close off the last complete clause instead.
+        clause = max(window.rfind(", "), window.rfind("; "), window.rfind(" -- "))
+        if clause >= cls.MIN_META_DESCRIPTION:
+            candidate = window[:clause].strip().rstrip(",;:-\u2014 ")
+            words = candidate.split()
+            while words and words[-1].lower().strip(",;:") in cls._DANGLING:
+                words.pop()
+            candidate = " ".join(words).rstrip(",;:-\u2014 ")
+            if len(candidate) >= cls.MIN_META_DESCRIPTION:
+                return candidate + "."
+
+        # 4. Nothing to cut back to, and the last word is not one a sentence
+        #    breaks off on -- so it reads as finished and is simply missing
+        #    its full stop. "...exposing critical failures in healthcare".
+        #    The full stop has to fit inside the limit too, so a description
+        #    already sitting exactly on 160 gives up its last word for it.
+        room = text
+        if len(room) >= limit:
+            room = room[:limit - 1]
+            space = room.rfind(" ")
+            room = room[:space] if space > 0 else room
+        words = room.split()
+        while words and words[-1].lower().strip(",;:") in cls._DANGLING:
+            words.pop()
+        room = " ".join(words).rstrip(",;:-— ")
+        if len(room) >= cls.MIN_META_DESCRIPTION:
+            return room + "."
+
+        # 5. The summary is written as whole sentences.
+        spare = html.unescape(re.sub(r"\s+", " ", fallback or "").strip())
+        if spare and spare != text:
+            rescued = cls._finish_sentence(spare, limit)
+            if len(rescued) >= cls.MIN_META_DESCRIPTION and ends_well(rescued):
+                return rescued
+
+        # Last resort: an ellipsis at least reads as deliberate.
+        return cls._trim_to_sentence(text, limit)
 
     @classmethod
     def _parse_json(cls, raw: Optional[str]) -> Optional[Dict]:

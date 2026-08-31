@@ -199,6 +199,9 @@ async def main():
         caps={"facebook": config.social_max_per_day_facebook,
               "twitter": config.social_max_per_day_twitter},
         start_date=config.social_start_date,
+        # The brain owns the on/off switches and the date the accounts first
+        # posted, so both survive a redeploy.
+        brain=brain,
     )
 
     # 8. Initialize Twitter Broadcaster

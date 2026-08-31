@@ -26,12 +26,18 @@ the share is pure loss.
 
 Brand-new accounts are the exception. An account whose first day of life
 includes eight outbound links reads as a link farm to both platforms, and
-the reach penalty for that is the kind you do not recover from. So when
-SOCIAL_START_DATE is set the volume ramps:
+the reach penalty for that is the kind you do not recover from. So the
+volume starts small and climbs on its own:
 
-    days 1-7    4 posts/day
-    days 8-14   6 posts/day
-    day 15+     8 posts/day  (every article)
+    days 1-4    3 posts/day
+    days 5-10   5 posts/day
+    days 11-17  6 posts/day
+    day 18+     8 posts/day  (every article)
+
+Day one stamps itself on the first post ever sent and is persisted with the
+rest of the brain's state, so the ramp needs no configuration, cannot be
+forgotten, and survives a redeploy. SOCIAL_START_DATE overrides it if you
+ever need to.
 
 The articles that survive the cap are chosen by AUDIENCE, not by whichever
 happened to publish first. Ranked best-first below; a cap of four keeps the
@@ -74,8 +80,15 @@ class SocialSyndicator:
     # that slot. Covers the 30-minute deferral an unillustrated story takes.
     NEAR_SLOT_MINUTES = 120
 
-    # Volume during the account warm-up, by week.
-    RAMP = (4, 6)
+    # Volume during the account warm-up: (day threshold, posts allowed).
+    # Read in order; the first threshold the account is younger than wins.
+    RAMP = ((5, 3), (11, 5), (18, 6))
+
+    # How much of the article a Facebook post carries. Long enough to be
+    # worth reading on its own -- someone who never clicks should still come
+    # away knowing what happened -- and short enough that Facebook does not
+    # collapse it behind "See more" before the point is made.
+    FACEBOOK_BODY_CHARS = 700
 
     # X counts every link as exactly this many characters, whatever its
     # real length, because it rewrites them through t.co.
@@ -91,10 +104,11 @@ class SocialSyndicator:
     def __init__(self, buffer=None, db=None, growth=None, site_url: str = "",
                  services: Optional[List[str]] = None,
                  caps: Optional[Dict[str, int]] = None,
-                 start_date: str = ""):
+                 start_date: str = "", brain=None):
         self.buffer = buffer
         self.db = db
         self.growth = growth
+        self.brain = brain
         self.site_url = (site_url or "").rstrip("/")
         self.services = [s for s in (services or ["facebook", "twitter"]) if s]
         self.caps = {"facebook": 8, "twitter": 8}
@@ -134,10 +148,19 @@ class SocialSyndicator:
         return datetime.now(timezone.utc) + PKT_OFFSET
 
     def days_live(self) -> Optional[int]:
-        """Days since the accounts opened, or None if that was never set."""
-        if not self.start_date:
+        """
+        Days since the accounts started posting, or None if nothing has yet.
+
+        A configured SOCIAL_START_DATE wins. Otherwise the brain's own stamp
+        is used, which it writes the first time anything is posted -- so the
+        ramp starts itself rather than waiting on a setting somebody has to
+        remember.
+        """
+        started = self.start_date or self._parse_date(
+            getattr(self.brain, "social_started_on", "") or "")
+        if not started:
             return None
-        return max(0, (self._pkt_now().date() - self.start_date).days)
+        return max(0, (self._pkt_now().date() - started).days)
 
     def daily_cap(self, platform: str) -> int:
         """Today's ceiling for one platform, warm-up included."""
@@ -145,10 +168,9 @@ class SocialSyndicator:
         age = self.days_live()
         if age is None:
             return full
-        if age < 7:
-            return min(full, self.RAMP[0])
-        if age < 14:
-            return min(full, self.RAMP[1])
+        for threshold, allowed in self.RAMP:
+            if age < threshold:
+                return min(full, allowed)
         return full
 
     def _roll_day(self) -> None:
@@ -285,19 +307,67 @@ class SocialSyndicator:
                 return text
         return ""
 
+    @classmethod
+    def article_excerpt(cls, article: Dict, limit: int) -> str:
+        """
+        The opening of the article as plain paragraphs.
+
+        A post that is only a headline and a link asks for a click and gives
+        nothing back, and neither platform rewards that. This carries enough
+        of the story to stand on its own: whole paragraphs, never a fragment,
+        so the reader who does not click still learns what happened and the
+        one who does knows why it is worth the trip.
+        """
+        html = article.get("content") or ""
+        if not html:
+            return ""
+
+        # Paragraphs only. Headings are signposts for a page, not for a feed.
+        paragraphs = re.findall(r"<p[^>]*>(.*?)</p>", html,
+                                flags=re.S | re.I)
+        out, used = [], 0
+        for raw in paragraphs:
+            text = re.sub(r"<[^>]+>", "", raw)
+            text = (text.replace("&nbsp;", " ").replace("&amp;", "&")
+                        .replace("&lt;", "<").replace("&gt;", ">")
+                        .replace("&#39;", "'").replace("&quot;", '"'))
+            text = " ".join(text.split())
+            if len(text) < 40:            # a caption or a photo credit
+                continue
+            if used and used + len(text) > limit:
+                break
+            out.append(text)
+            used += len(text) + 2
+            if used >= limit:
+                break
+
+        if not out:
+            return ""
+        # One paragraph that alone overruns the budget is cut to a sentence.
+        if len(out) == 1 and len(out[0]) > limit:
+            return cls._trim(out[0], limit)
+        return "\n\n".join(out)
+
     def facebook_caption(self, article: Dict, link: str) -> str:
         """
         Built from the article itself, not rewritten by a model.
 
-        The headline and meta description were already written and already
-        passed the quality gate. Paying a model to paraphrase them adds
-        latency, cost and one more way to publish nonsense, for nothing.
+        The article was already written and already passed the quality gate.
+        Paying a model to paraphrase it adds latency, cost and one more way
+        to publish nonsense, for nothing.
+
+        The opening of the piece is carried in full so the post is worth
+        reading on its own; the link is there for the rest of it.
         """
         title = (article.get("title") or "").strip()
-        blurb = self._blurb(article, 300)
+        body = self.article_excerpt(article, self.FACEBOOK_BODY_CHARS)
+        if not body:
+            # No body to quote (an older record, or an odd one): the written
+            # summary is the next best thing.
+            body = self._blurb(article, 300)
         tags = self.hashtags(article.get("seo_keywords"), 3)
 
-        parts = [p for p in (title, blurb) if p]
+        parts = [p for p in (title, body) if p]
         parts.append(f"📖 Read the full story: {link}")
         if tags:
             parts.append(" ".join(tags))
@@ -360,6 +430,20 @@ class SocialSyndicator:
     def is_ready(self) -> bool:
         return bool(self.buffer and self.site_url and self.services)
 
+    @property
+    def is_on(self) -> bool:
+        """The master switch. Without a brain wired in, nothing is gated."""
+        if self.brain is None:
+            return True
+        return bool(getattr(self.brain, "social_module_active", False)
+                    and not getattr(self.brain, "master_kill", False))
+
+    def platform_is_on(self, service: str) -> bool:
+        if self.brain is None:
+            return True
+        checker = getattr(self.brain, "social_enabled", None)
+        return bool(checker(service)) if checker else True
+
     async def syndicate(self, article: Optional[Dict]) -> Dict[str, bool]:
         """
         Announces one published article everywhere it belongs.
@@ -370,6 +454,11 @@ class SocialSyndicator:
         """
         results: Dict[str, bool] = {}
         if not (article and self.buffer):
+            return results
+
+        if not self.is_on:
+            logger.info("Social module is OFF — the article is published, "
+                        "but not announced.")
             return results
 
         link = self.article_link(article.get("slug", ""))
@@ -399,6 +488,10 @@ class SocialSyndicator:
 
     async def _to_service(self, service: str, article: Dict,
                           link: str, image: str) -> bool:
+        if not self.platform_is_on(service):
+            logger.info(f"{service} is switched off — skipping.")
+            return False
+
         # ensure_channels, not channels_for: a page connected at buffer.com
         # after this process started is otherwise invisible until a deploy.
         if hasattr(self.buffer, "ensure_channels"):
@@ -439,6 +532,12 @@ class SocialSyndicator:
 
         if any_ok:
             self.sent_today[service] = self.sent_today.get(service, 0) + 1
+            # Day one of the warm-up is the first post that actually left.
+            if self.brain is not None and hasattr(self.brain, "note_social_start"):
+                try:
+                    self.brain.note_social_start()
+                except Exception:
+                    pass
             if self.growth:
                 try:
                     self.growth.record_action(self.growth.ACTION_POST,
@@ -454,6 +553,8 @@ class SocialSyndicator:
         self._roll_day()
         return {
             "ready": self.is_ready,
+            "active": self.is_on,
+            "platforms_on": {s: self.platform_is_on(s) for s in self.services},
             "services": list(self.services),
             "site_url": self.site_url,
             "days_live": self.days_live(),

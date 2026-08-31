@@ -1275,10 +1275,20 @@ class TestToggleSafety(unittest.TestCase):
         with open(p, encoding="utf-8") as fh:
             src = fh.read()
         for flag in ("brain.news_module_active", "brain.website_module_active",
+                     "brain.social_module_active", "brain.facebook_active",
+                     "brain.twitter_active",
                      "sm._reply_active", "sm._scraping_active"):
             self.assertNotIn(f"{flag} = not {flag}", src,
                              f"{flag} still blindly inverts")
-        self.assertGreaterEqual(src.count("await _desired_state("), 5)
+        self.assertGreaterEqual(src.count("await _desired_state("), 7)
+
+    def test_the_social_switches_are_exposed(self):
+        p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "core", "api_server.py")
+        with open(p, encoding="utf-8") as fh:
+            src = fh.read()
+        for ep in ('"/api/social/toggle"', '"/api/social/{platform}/toggle"'):
+            self.assertIn(ep, src)
 
 
 class TestNoviIntentGuards(unittest.TestCase):
@@ -2638,14 +2648,73 @@ class TestSocialSyndicator(unittest.TestCase):
         self.assertEqual(syn.daily_cap("facebook"), 8)
         self.assertEqual(len(syn.SLOT_PRIORITY), 8)
 
-    def test_a_new_account_ramps_up_over_a_fortnight(self):
+    def test_a_new_account_ramps_up_on_its_own(self):
         today = (datetime.now(timezone.utc) + PKT).date()
-        for days, expected in ((0, 4), (6, 4), (7, 6), (13, 6), (14, 8), (400, 8)):
+        for days, expected in ((0, 3), (4, 3), (5, 5), (10, 5),
+                               (11, 6), (17, 6), (18, 8), (400, 8)):
             syn = self._syn(start_date=str(today - timedelta(days=days)))
             self.assertEqual(syn.daily_cap("facebook"), expected,
-                             f"day {days} should allow {expected}")
+                             f"day {days + 1} of the account should allow {expected}")
 
-    def test_no_start_date_means_no_ramp(self):
+    def test_the_ramp_only_ever_climbs(self):
+        today = (datetime.now(timezone.utc) + PKT).date()
+        caps = [self._syn(start_date=str(today - timedelta(days=d))).daily_cap("facebook")
+                for d in range(0, 40)]
+        self.assertEqual(caps, sorted(caps), "the daily limit must never drop")
+        self.assertEqual(caps[-1], 8, "and must reach the full cap")
+
+    def test_day_one_stamps_itself_on_the_first_post(self):
+        """
+        The ramp needs to know the account's age, and asking someone to set a
+        date is a step that gets forgotten -- which means eight posts a day
+        out of a page with no history, the exact thing the ramp prevents.
+        """
+        brain = make_brain()
+        brain.social_module_active = True
+        self.assertEqual(brain.social_started_on, "")
+
+        syn = self._syn(services=["facebook"], brain=brain)
+        syn._slot_is_allowed = lambda *a: True
+        self.assertIsNone(syn.days_live())
+
+        asyncio.run(syn.syndicate(self.ARTICLE))
+        today = (datetime.now(timezone.utc) + PKT).date().isoformat()
+        self.assertEqual(brain.social_started_on, today)
+        self.assertEqual(syn.days_live(), 0)
+        self.assertEqual(syn.daily_cap("facebook"), 3, "day one starts small")
+
+    def test_day_one_survives_a_redeploy(self):
+        brain = make_brain()
+        brain.social_started_on = "2026-08-01"
+        self.assertEqual(brain.snapshot()["social_started_on"], "2026-08-01")
+
+        restored = make_brain()
+        restored.db = MagicMock()
+        restored.db.load_state = AsyncMock(return_value=brain.snapshot())
+        asyncio.run(restored.restore_state())
+        self.assertEqual(restored.social_started_on, "2026-08-01")
+
+    def test_a_failed_post_does_not_start_the_clock(self):
+        brain = make_brain()
+        brain.social_module_active = True
+        buf = MagicMock()
+        buf.ensure_channels = AsyncMock(
+            return_value=[{"id": "c1", "service": "facebook"}])
+        buf.send = AsyncMock(return_value=False)
+        buf.last_error = "rejected"
+        syn = self._syn(buffer=buf, services=["facebook"], brain=brain)
+        syn._slot_is_allowed = lambda *a: True
+        asyncio.run(syn.syndicate(self.ARTICLE))
+        self.assertEqual(brain.social_started_on, "")
+
+    def test_a_configured_date_overrides_the_stamp(self):
+        brain = make_brain()
+        brain.social_started_on = "2020-01-01"
+        today = (datetime.now(timezone.utc) + PKT).date()
+        syn = self._syn(brain=brain, start_date=str(today - timedelta(days=2)))
+        self.assertEqual(syn.days_live(), 2)
+
+    def test_no_start_date_anywhere_means_no_ramp(self):
         self.assertIsNone(self._syn().days_live())
         self.assertEqual(self._syn(start_date="not-a-date").daily_cap("twitter"), 8)
 
@@ -2873,6 +2942,166 @@ class TestSocialSyndicator(unittest.TestCase):
                          "bitcoin-halving-explained")
 
 
+class TestSocialSwitches(unittest.TestCase):
+    """
+    Three switches, not one. They fail for different reasons -- an account
+    gets restricted, a page is being rebuilt -- and taking one platform off
+    must not stop the other, nor stop the website publishing.
+    """
+
+    ARTICLE = TestSocialSyndicator.ARTICLE
+
+    def _syn(self, brain, **kw):
+        from modules.social_syndicator import SocialSyndicator
+        buf = MagicMock()
+        buf.ensure_channels = AsyncMock(
+            side_effect=lambda s: [{"id": s, "service": s}])
+        buf.send = AsyncMock(return_value=True)
+        buf.last_error = ""
+        syn = SocialSyndicator(buffer=buf, brain=brain,
+                               site_url="https://pressvane.com",
+                               services=["facebook", "twitter"], **kw)
+        syn._slot_is_allowed = lambda *a: True
+        syn._buffer_mock = buf
+        return syn
+
+    def test_social_starts_switched_off(self):
+        self.assertFalse(make_brain().social_module_active)
+
+    def test_the_master_switch_stops_both(self):
+        brain = make_brain()          # social_module_active is False
+        syn = self._syn(brain)
+        self.assertEqual(asyncio.run(syn.syndicate(self.ARTICLE)), {})
+        syn._buffer_mock.send.assert_not_awaited()
+
+    def test_one_platform_can_be_switched_off_alone(self):
+        brain = make_brain()
+        brain.social_module_active = True
+        brain.facebook_active = False
+        syn = self._syn(brain)
+        results = asyncio.run(syn.syndicate(self.ARTICLE))
+        self.assertFalse(results["facebook"])
+        self.assertTrue(results["twitter"])
+
+    def test_x_can_be_switched_off_alone(self):
+        brain = make_brain()
+        brain.social_module_active = True
+        brain.twitter_active = False
+        syn = self._syn(brain)
+        results = asyncio.run(syn.syndicate(self.ARTICLE))
+        self.assertTrue(results["facebook"])
+        self.assertFalse(results["twitter"])
+
+    def test_x_answers_to_both_of_its_names(self):
+        brain = make_brain()
+        brain.social_module_active = True
+        brain.twitter_active = False
+        self.assertFalse(brain.social_enabled("x"))
+        self.assertFalse(brain.social_enabled("twitter"))
+
+    def test_the_kill_switch_beats_every_other_switch(self):
+        brain = make_brain()
+        brain.social_module_active = True
+        brain.master_kill = True
+        self.assertFalse(brain.social_enabled("facebook"))
+        self.assertEqual(asyncio.run(self._syn(brain).syndicate(self.ARTICLE)), {})
+
+    def test_social_being_off_does_not_stop_the_website(self):
+        """The article still publishes; only the announcement is withheld."""
+        brain = make_brain()
+        brain.website_module_active = True
+        brain.social_module_active = False
+        agent = MagicMock()
+        agent.generate_and_publish_article = AsyncMock(return_value={"slug": "s"})
+        scraper = MagicMock()
+        scraper.fetch_latest_news = AsyncMock(
+            return_value=[{"title": "T", "link": "https://src/1"}])
+        from modules.fanout import Fanout
+        fo = Fanout(brain=brain, article_agent=agent, scraper=scraper,
+                    syndicator=self._syn(brain), pick_category=lambda: "crypto")
+        self.assertEqual(asyncio.run(fo.publish_scheduled_article())["slug"], "s")
+
+    def test_the_switches_are_persisted_and_restored(self):
+        brain = make_brain()
+        brain.social_module_active = True
+        brain.twitter_active = False
+        snap = brain.snapshot()
+        self.assertTrue(snap["social_module_active"])
+        self.assertFalse(snap["twitter_active"])
+
+        restored = make_brain()
+        restored.db = MagicMock()
+        restored.db.load_state = AsyncMock(return_value=snap)
+        asyncio.run(restored.restore_state())
+        self.assertTrue(restored.social_module_active)
+        self.assertFalse(restored.twitter_active)
+        self.assertTrue(restored.facebook_active)
+
+
+class TestSocialPostsCarryTheStory(unittest.TestCase):
+    """
+    A post that is only a headline and a link asks for a click and gives
+    nothing back. The Facebook post carries the opening of the article, so a
+    reader who never clicks still learns what happened.
+    """
+
+    BODY = ("<h2>What changed</h2>"
+            "<p>The Federal Reserve raised its benchmark rate by a quarter "
+            "point on Wednesday, the third increase this year, and signalled "
+            "that another may follow before December.</p>"
+            "<p>Chair Kevin Warsh said inflation had proved more stubborn "
+            "than the committee expected, particularly in services, where "
+            "prices are still rising at an annual pace above four per cent.</p>"
+            "<h2>What it means</h2>"
+            "<p>Mortgage rates track the benchmark closely, so households "
+            "renewing a fixed deal in the next year will feel this first.</p>"
+            "<p class='photo-credit'><small>Photo: Reuters</small></p>")
+
+    ARTICLE = {"slug": "fed-raises-rates-again", "title": "Fed raises rates again",
+               "content": BODY, "summary": "The Fed raised rates a quarter point.",
+               "seo_keywords": ["federal reserve", "interest rates"],
+               "main_image_url": "https://cdn.example/hero.jpg"}
+
+    def _syn(self):
+        from modules.social_syndicator import SocialSyndicator
+        return SocialSyndicator(buffer=MagicMock(), site_url="https://pressvane.com")
+
+    def test_the_post_carries_whole_paragraphs_of_the_article(self):
+        text = self._syn().facebook_caption(self.ARTICLE, "https://pressvane.com/s")
+        self.assertIn("third increase this year", text)
+        self.assertIn("more stubborn", text)
+        self.assertIn("https://pressvane.com/s", text)
+
+    def test_headings_and_photo_credits_are_left_out(self):
+        text = self._syn().facebook_caption(self.ARTICLE, "https://pressvane.com/s")
+        self.assertNotIn("What changed", text)
+        self.assertNotIn("Photo: Reuters", text)
+
+    def test_a_paragraph_is_never_cut_in_half(self):
+        excerpt = self._syn().article_excerpt(self.ARTICLE, 260)
+        self.assertTrue(excerpt)
+        for para in excerpt.split("\n\n"):
+            self.assertTrue(para.rstrip().endswith((".", "!", "?", '"')),
+                            f"paragraph ends mid-sentence: {para[-40:]!r}")
+
+    def test_an_article_with_no_body_still_posts(self):
+        """Older records have no content column loaded; the summary stands in."""
+        syn = self._syn()
+        bare = {"slug": "s", "title": "A headline long enough to pass",
+                "summary": "The Fed raised rates a quarter point on Wednesday."}
+        text = syn.facebook_caption(bare, "https://pressvane.com/s")
+        self.assertIn("quarter point", text)
+        self.assertIn("https://pressvane.com/s", text)
+
+    def test_the_excerpt_stays_within_facebooks_limit(self):
+        syn = self._syn()
+        huge = dict(self.ARTICLE,
+                    content="<p>" + ("A long sentence that keeps going. " * 400) + "</p>")
+        text = syn.facebook_caption(huge, "https://pressvane.com/s")
+        self.assertLessEqual(len(text), syn.FACEBOOK_MAX_CHARS)
+        self.assertIn("https://pressvane.com/s", text)
+
+
 class TestSocialIsDrivenByTheArticle(unittest.TestCase):
     """
     The trigger is the article publishing, not the Telegram slot.
@@ -2916,6 +3145,149 @@ class TestSocialIsDrivenByTheArticle(unittest.TestCase):
                   encoding="utf-8").read().lower()
         for word in ("buffer", "facebook", "syndicat"):
             self.assertNotIn(word, tg)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  META DESCRIPTIONS MUST END A SENTENCE
+# ═══════════════════════════════════════════════════════════════
+class TestMetaDescriptionEndsProperly(unittest.TestCase):
+    """
+    56 of the 63 articles on the live site had a meta description that
+    stopped mid-clause: "...to reveal transaction volume, active addresses,
+    and token age-spent, helping". That is the text Google prints under the
+    headline, so it was the first thing a searcher saw.
+
+    The cause is the prompt. It asks for 22-28 words, and the model obeys the
+    count rather than the sentence -- it stops on whatever word it reached.
+    Nothing caught it, because the old trimmer only ever fixed descriptions
+    that were too LONG, and every one of these was under the limit.
+    """
+
+    ENDINGS = (".", "!", "?", "\u201d", "\u2019", '"')
+
+    def setUp(self):
+        from modules.article_engine import ArticleAgent
+        self.A = ArticleAgent
+
+    def fix(self, text, fallback=""):
+        return self.A._finish_sentence(text, 160, fallback=fallback)
+
+    def ends_ok(self, text):
+        return bool(text) and text[-1] in self.ENDINGS
+
+    def _record(self, meta_description):
+        return {
+            "title": "A headline that is definitely long enough",
+            "content": "<p>" + ("Real sentence here. " * 60) + "</p>",
+            "word_count": 400, "slug": "a-slug", "summary": "A summary.",
+            "meta_title": "A meta title long enough to pass the checks",
+            "seo_keywords": ["one thing", "two thing", "three thing"],
+            "meta_description": meta_description,
+        }
+
+    def test_a_dangling_participle_is_cut_back_to_the_clause(self):
+        out = self.fix("This article explains on-chain analysis, detailing how "
+                       "blockchain data is examined to reveal transaction volume, "
+                       "active addresses, and token age-spent, helping")
+        self.assertTrue(self.ends_ok(out))
+        self.assertNotIn("helping", out)
+        self.assertIn("token age-spent", out)
+
+    def test_a_trailing_clause_is_dropped_not_terminated(self):
+        """
+        "...and understand how these metrics" reads as unfinished, so adding
+        a full stop there would publish broken English. Cutting back to the
+        comma gives a sentence that is actually true.
+        """
+        out = self.fix("Learn how to decode a company earnings report by focusing "
+                       "on revenue, earnings per share, operating margin, and free "
+                       "cash flow, and understand how these metrics")
+        self.assertTrue(self.ends_ok(out))
+        self.assertNotIn("these metrics", out)
+        self.assertTrue(out.endswith("free cash flow."))
+
+    def test_a_finished_sentence_only_gains_its_full_stop(self):
+        out = self.fix("Crypto companies push AI firms to give Bitcoin developers "
+                       "early access to enhance security and integrity")
+        self.assertEqual(out[-1], ".")
+        self.assertIn("security and integrity", out)
+
+    def test_one_sitting_exactly_on_the_limit_gives_up_a_word(self):
+        """The full stop has to fit inside 160 too."""
+        text = ("A fire in a public hospital's neonatal unit in Pakistan claimed "
+                "14 newborn lives, sparking a national investigation and exposing "
+                "critical failures in healthcare")
+        self.assertEqual(len(text), 160)
+        out = self.fix(text)
+        self.assertLessEqual(len(out), 160)
+        self.assertTrue(self.ends_ok(out))
+
+    def test_a_run_of_dangling_words_unwinds_to_a_real_ending(self):
+        """"...and potentially limiting in" is three unfinished words deep."""
+        out = self.fix(
+            "The Supreme Court 6-3 ruling supports a challenge to federal mail-in "
+            "voting rules by tightening verification and potentially limiting in")
+        self.assertTrue(self.ends_ok(out))
+        self.assertTrue(out.endswith("tightening verification."), out)
+
+    def test_the_summary_rescues_one_with_nothing_to_cut_back_to(self):
+        """Too short to keep, nothing to cut to: the written summary stands in."""
+        out = self.fix(
+            "Supreme Court backs Trump on mail-in and",
+            fallback="The Supreme Court upheld a rule tightening mail-in ballot "
+                     "verification, allowing states more power to reject "
+                     "improperly completed absentee votes.")
+        self.assertTrue(self.ends_ok(out))
+        self.assertIn("absentee votes", out)
+
+    def test_a_deliberate_ellipsis_is_left_alone(self):
+        text = ("ZEC traded above its January 2018 peak as futures volume hit "
+                "billions of dollars and a Grayscale filing showed progress\u2026")
+        self.assertEqual(self.fix(text), text)
+
+    def test_html_entities_never_reach_a_search_result(self):
+        out = self.fix("A view of the Azad Jammu and Kashmir Legislative Assembly "
+                       "&mdash; the vote continues from 10am to 2pm at the assembly "
+                       "building in Muzaffarabad")
+        self.assertNotIn("&mdash;", out)
+        self.assertIn("\u2014", out)
+
+    def test_a_good_description_is_returned_untouched(self):
+        good = ("Bitcoin fell to $78,630 before rebounding above $79,000 after "
+                "Fed Chair Kevin Warsh's inflation speech.")
+        self.assertEqual(self.fix(good), good)
+
+    def test_the_result_is_always_within_googles_budget(self):
+        for text in ("word " * 200, "A. " * 90, "no punctuation here at all " * 9):
+            out = self.fix(text)
+            self.assertLessEqual(len(out), 160, repr(text[:30]))
+
+    def test_the_gate_now_catches_it(self):
+        """
+        The old check listed a handful of trailing words, so it missed
+        "helping" entirely.
+        """
+        from modules.article_engine import ArticleAgent
+        agent = ArticleAgent(ai_engine=MagicMock(), db=None, site_name="X")
+        _, fixable = agent._quality_issues(
+            self._record("x" * 40 + " and something that stops helping"))
+        self.assertTrue(any("end a sentence" in f for f in fixable), fixable)
+
+    def test_a_word_ending_in_and_is_not_a_dangling_and(self):
+        """The old check matched "thousand" by substring."""
+        from modules.article_engine import ArticleAgent
+        agent = ArticleAgent(ai_engine=MagicMock(), db=None, site_name="X")
+        _, fixable = agent._quality_issues(self._record(
+            "Pakistan exported goods worth several billion dollars last year, a "
+            "figure the ministry called a record for the decade and a thousand."))
+        self.assertFalse(any("end a sentence" in f for f in fixable), fixable)
+
+    def test_the_prompt_asks_for_complete_sentences(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        src = open(os.path.join(root, "modules", "article_engine.py"),
+                   encoding="utf-8").read()
+        self.assertIn("COMPLETE sentences", src)
+        self.assertIn("Never stop mid-sentence to hit the word", src)
 
 
 if __name__ == "__main__":
