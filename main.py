@@ -32,6 +32,8 @@ from modules.growth_engine import GrowthEngine
 from modules.buffer_broadcaster import BufferBroadcaster
 from modules.fanout import Fanout
 from modules.indexnow import IndexNow
+from modules.evergreen import EvergreenDesk
+from modules.stock_photos import StockPhotoFinder
 import uvicorn
 from core.api_server import app as api_app
 
@@ -124,6 +126,11 @@ async def main():
     # still discovers articles through the sitemap.
     indexnow = IndexNow(key=config.indexnow_key, site_url=config.site_url, db=db)
 
+    # Explainers, on their own bank of long-tail questions. News
+    # rewrites cannot outrank the wire that filed them; explainers
+    # compete on depth instead, and keep earning for years.
+    stock_photos = StockPhotoFinder()
+
     content_engine = ContentEngine(
         ai_engine=ai_engine,
         scraper=scraper,
@@ -135,10 +142,15 @@ async def main():
         indexnow=indexnow
     )
 
+    evergreen = EvergreenDesk(article_agent=content_engine.article_agent,
+                              db=db, photos=stock_photos)
+
     # 6. Initialize The Brain + Growth Engine
     # (created before the broadcasters so they can enforce Brain-owned limits)
     brain = BotBrain(db=db, weekly_goal=config.weekly_subscriber_goal,
                      notification_manager=notification_manager, config=config)
+
+    evergreen.brain = brain
 
     growth_engine = GrowthEngine(db=db, weekly_goal=config.weekly_subscriber_goal,
                                  notification_manager=notification_manager)
@@ -537,6 +549,21 @@ async def main():
                 except Exception as e:
                     logger.error(f"Scheduled article failed: {type(e).__name__}: {e}")
                     fired_slots.discard(article_slot["key"])
+
+            # ---- Evergreen explainer ----
+            # Same exemption as the news articles: the website does not sleep.
+            ever_slot = brain.get_due_evergreen_slot()
+            if ever_slot and ever_slot["key"] not in fired_slots:
+                fired_slots.add(ever_slot["key"])
+                try:
+                    piece = await evergreen.publish_one()
+                    if piece:
+                        logger.info(f"Evergreen live: /{piece.get('slug')}")
+                    else:
+                        fired_slots.discard(ever_slot["key"])
+                except Exception as e:
+                    logger.error(f"Evergreen failed: {type(e).__name__}: {e}")
+                    fired_slots.discard(ever_slot["key"])
 
             # ---- Deferred website articles ----
             # A story held back because it had no picture, or because it

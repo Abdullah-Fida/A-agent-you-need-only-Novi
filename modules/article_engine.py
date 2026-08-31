@@ -149,7 +149,9 @@ class ArticleAgent:
 
         logger.info(f"ArticleAgent writing: '{title[:60]}'")
 
-        body_html = await self._write_body(title, summary, category)
+        body_html = await self._write_body(
+            title, summary, category,
+            evergreen=bool(story.get("evergreen")))
         if not body_html:
             logger.warning(f"No article body generated for '{title[:50]}'. Skipping.")
             return None
@@ -182,6 +184,20 @@ class ArticleAgent:
 
         base_slug = self._slugify(seo.get("slug_hint") or title)
         slug = await self._unique_slug(base_slug)
+
+        # A required photo credit is printed with the article. Appended to the
+        # body rather than stored in a new column, so it survives every render
+        # path -- page, RSS and search snippet -- without a schema change.
+        # Only credit the photograph that was ACTUALLY used. The stock photo
+        # can be found and then fail to download, in which case the generator
+        # draws one instead -- printing the credit anyway would attribute an
+        # image that is not on the page.
+        used_story_photo = getattr(self.image_gen, "last_source", "") == "story_image"
+        credit = (story.get("image_credit") or "").strip() if used_story_photo else ""
+        if credit:
+            body_html = (body_html.rstrip() +
+                         '<p class="photo-credit"><small>'
+                         + credit + "</small></p>")
 
         record = {
             "title": title[:300],
@@ -479,8 +495,76 @@ class ArticleAgent:
         }
         return aliases.get(key, key)
 
-    async def _write_body(self, title: str, summary: str, category: str) -> Optional[str]:
-        """Generates the long-form HTML body."""
+    async def _write_evergreen_body(self, title: str, angle: str,
+                                    category: str) -> Optional[str]:
+        """
+        The explainer prompt.
+
+        Longer than a news piece because depth is the only advantage a young
+        domain has: it cannot beat Reuters on being first, but a 1,500-word
+        answer can beat a 400-word one on being useful.
+
+        The banned-words rule matters more than it looks. An explainer earns
+        its keep by still being right in two years, and one "currently" or one
+        named office-holder turns an evergreen asset into something that
+        quietly goes stale and has to be rewritten.
+        """
+        system_prompt = (
+            f"You are a specialist explanatory writer for {self.site_name}. "
+            f"You write the piece somebody finds when they search a question "
+            f"and want a real answer rather than a news story.\n\n"
+            "Output rules:\n"
+            "- Return ONLY clean HTML fragments: <h2>, <h3>, <p>, <ul>, <li>, <strong>.\n"
+            "- NEVER output <html>, <body>, <head>, markdown, or code fences.\n"
+            "- Do not repeat the headline as an <h1> - the page renders it separately.\n"
+            "- Write in flawless professional English.\n"
+            "- This piece must still be accurate in two years. Never write "
+            "'recently', 'this week', 'currently', or name a current price, "
+            "rate or office-holder.\n"
+            "- Explain mechanisms, not events. Say plainly when something is "
+            "contested or unknown rather than inventing certainty."
+        )
+
+        user_prompt = (
+            f"Write a thorough 1200-1600 word explainer.\n\n"
+            f"TITLE: {title}\n"
+            f"WHAT TO COVER: {angle}\n"
+            f"SECTION: {category}\n\n"
+            "Structure it as:\n"
+            "1. A direct opening that answers the question in the title within "
+            "the first two sentences. No throat-clearing, no 'in today's world'.\n"
+            "2. Four to six <h2> sections that build understanding in order - "
+            "the mechanism first, then the implications, then the practical part.\n"
+            "3. A <ul> of practical takeaways a reader can act on.\n"
+            "4. A closing paragraph on what is still uncertain or debated.\n\n"
+            "Assume an intelligent reader who is new to this specific topic. "
+            "Define a term the first time you use it. Use concrete examples "
+            "with round, illustrative numbers, and say when a number is "
+            "illustrative. Never invent statistics, studies, quotes or named "
+            "sources."
+        )
+
+        return self._clean_html(await self.ai.generate(
+            task="article",
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_tokens=4000,
+            temperature=0.6,
+        ))
+
+    async def _write_body(self, title: str, summary: str, category: str,
+                          evergreen: bool = False) -> Optional[str]:
+        """
+        Generates the long-form HTML body.
+
+        An explainer is not a news report and must not be written like one.
+        A news piece leads with what happened; an explainer answers a
+        question somebody typed into a search box, and is judged on whether
+        the reader leaves understanding the thing. It also has to stay true
+        a year from now, so "this week" and "recently" are banned outright.
+        """
+        if evergreen:
+            return await self._write_evergreen_body(title, summary, category)
         system_prompt = (
             f"You are a senior journalist writing for {self.site_name}, covering "
             f"international news, crypto, technology, business and South Asia.\n\n"

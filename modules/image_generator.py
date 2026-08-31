@@ -417,13 +417,36 @@ class ImageGenerator:
 
     # ── tier 3: the publisher's own photo ─────────────────────────────
 
+    # Wikimedia serves a large share of openly-licensed photography and
+    # answers a bare "Mozilla/5.0" with HTTP 429. Their policy asks for an
+    # application name and a contact, and honouring it is the difference
+    # between a real photograph and a fallback illustration.
+    DOWNLOAD_UA = ("PressVane/1.0 (+https://pressvane.com; article illustration) "
+                   "python-httpx")
+
+    # A hero image needs about 1MB of detail. Anything past this is an archive
+    # original, and decoding one is a memory risk rather than a quality gain.
+    MAX_DOWNLOAD_BYTES = 12 * 1024 * 1024
+
     async def _from_url(self, url: str) -> Optional[Image.Image]:
         if not url or not url.startswith("http"):
             return None
         async with httpx.AsyncClient(timeout=self.STORY_IMAGE_TIMEOUT,
                                      follow_redirects=True) as client:
-            r = await client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            r = await client.get(url, headers={"User-Agent": self.DOWNLOAD_UA,
+                                               "Accept": "image/*,*/*"})
             if r.status_code != 200:
+                logger.warning(f"Photo download returned HTTP {r.status_code} "
+                               f"from {url.split('/')[2] if '//' in url else url}")
+                return None
+
+            # Openly-licensed archives serve originals, and some are enormous
+            # -- a 119-megapixel scan decodes to roughly half a gigabyte of
+            # bitmap. The bot runs in 512MB, so decoding one would not produce
+            # a bad picture, it would kill the process.
+            if len(r.content) > self.MAX_DOWNLOAD_BYTES:
+                logger.warning(f"Photo is {len(r.content) // 1024 // 1024} MB; "
+                               f"too large to decode safely, skipping.")
                 return None
             img = self._decode(r.content)
             # Tracking pixels and sprite sheets are common in RSS payloads.

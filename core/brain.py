@@ -77,6 +77,17 @@ class BotBrain:
             {"hour": 1,  "minute": 0},   # 20:00   21:00   16:00  US afternoon
             {"hour": 4,  "minute": 0},   # 23:00   00:00   19:00  US evening
         ],
+
+        # Explainers. Two a day, off-peak from the news slots so the two
+        # desks never compete for the same minute, and placed where the
+        # audience is largest -- an explainer is found by search months
+        # later, but the first day still helps.
+        #
+        #     PKT     UTC    London  New York
+        "evergreen_slots": [
+            {"hour": 13, "minute": 0},   # 08:00   09:00   04:00
+            {"hour": 19, "minute": 30},  # 14:30   15:30   10:30  US morning
+        ],
     }
 
     # How long a post slot stays "open" after its scheduled minute. This must
@@ -290,6 +301,17 @@ class BotBrain:
                     < slot["minute"] + self.SLOT_WINDOW_MINUTES):
                 return {"type": "article", "hour": slot["hour"],
                         "key": f"article_{slot['hour']}_{slot['minute']}"}
+        return None
+
+    def get_due_evergreen_slot(self) -> Optional[Dict]:
+        """The explainer slot, if one is due. Same rules as the news slots."""
+        pkt_now = self._get_pkt_now()
+        for slot in self.SCHEDULE.get("evergreen_slots", []):
+            if (pkt_now.hour == slot["hour"]
+                    and slot["minute"] <= pkt_now.minute
+                    < slot["minute"] + self.SLOT_WINDOW_MINUTES):
+                return {"type": "evergreen", "hour": slot["hour"],
+                        "key": f"evergreen_{slot['hour']}_{slot['minute']}"}
         return None
 
     def can_post(self) -> bool:

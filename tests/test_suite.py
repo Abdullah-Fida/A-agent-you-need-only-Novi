@@ -2301,5 +2301,104 @@ class TestWebsiteRunIsNotGatedBySleep(unittest.TestCase):
         self.assertLess(kill, article)
 
 
+class TestStockPhotoLicensing(unittest.TestCase):
+    """
+    Explainers use real photographs, and the licence has to be respected.
+
+    The pipeline crops every image to 1280x720, which is a derivative work,
+    and the site carries affiliate links, which makes it commercial. Both
+    rule out whole licence classes.
+    """
+
+    def setUp(self):
+        from modules.stock_photos import StockPhotoFinder
+        self.F = StockPhotoFinder
+        self.f = StockPhotoFinder()
+
+    def _item(self, **kw):
+        base = {"url": "https://x/p.jpg", "license": "cc0",
+                "width": 1600, "height": 900, "title": "bitcoin coin"}
+        base.update(kw)
+        return base
+
+    def test_no_derivatives_licences_are_refused(self):
+        # We crop to 16:9. That is a derivative.
+        self.assertFalse(self.F._usable(self._item(license="by-nd")))
+        self.assertFalse(self.F._usable(self._item(license="by-nc-nd")))
+
+    def test_non_commercial_licences_are_refused(self):
+        self.assertFalse(self.F._usable(self._item(license="by-nc")))
+
+    def test_permitted_licences_pass(self):
+        for lic in ("cc0", "pdm", "by", "by-sa"):
+            self.assertTrue(self.F._usable(self._item(license=lic)), lic)
+
+    def test_small_images_are_refused(self):
+        # A thumbnail upscaled into a hero looks worse than no picture.
+        self.assertFalse(self.F._usable(self._item(width=320, height=200)))
+
+    def test_public_domain_needs_no_credit(self):
+        for lic in ("cc0", "pdm"):
+            self.assertEqual(self.F.credit_for(self._item(license=lic)), "")
+
+    def test_attributed_licences_produce_a_credit(self):
+        credit = self.F.credit_for(self._item(license="by-sa", creator="A Person",
+                                              source="wikimedia"))
+        self.assertIn("A Person", credit)
+        self.assertIn("BY-SA", credit)
+
+    def test_irrelevant_results_are_rejected(self):
+        # Openverse answered "financial report documents" with an Egyptian
+        # papyrus. Technically a document; useless on the page.
+        papyrus = self._item(title="Abusir papyrus - Pharaoh exhibit")
+        self.assertFalse(self.F._relevant(papyrus, "financial report documents"))
+
+    def test_relevant_results_are_kept(self):
+        self.assertTrue(self.F._relevant(self._item(title="Bitcoin coins on a desk"),
+                                         "bitcoin cryptocurrency"))
+        self.assertTrue(self.F._relevant(
+            self._item(title="Untitled", tags=[{"name": "solar"}, {"name": "panel"}]),
+            "solar panels rooftop"))
+
+
+class TestEvergreenDesk(unittest.TestCase):
+    """The explainer desk: what it writes and what it refuses to repeat."""
+
+    def setUp(self):
+        from modules.evergreen import EvergreenDesk, TOPIC_BANK
+        self.D = EvergreenDesk
+        self.bank = TOPIC_BANK
+
+    def test_every_topic_is_complete(self):
+        for t in self.bank:
+            for field in ("category", "title", "angle", "photo"):
+                self.assertTrue(t.get(field), f"{t.get('title')} is missing {field}")
+
+    def test_topics_are_unique(self):
+        titles = [t["title"] for t in self.bank]
+        self.assertEqual(len(titles), len(set(titles)))
+
+    def test_topic_keys_are_stable_and_distinct(self):
+        keys = {self.D._topic_key(t["title"]) for t in self.bank}
+        self.assertEqual(len(keys), len(self.bank))
+        self.assertEqual(self.D._topic_key("How Bitcoin halving affects the price"),
+                         self.D._topic_key("How Bitcoin halving affects the price"))
+
+    def test_topic_key_is_namespaced(self):
+        # Stored in source_url, which also holds real article URLs.
+        self.assertTrue(self.D._topic_key("Anything").startswith("evergreen:"))
+
+    def test_enough_topics_for_the_schedule(self):
+        from core.brain import BotBrain
+        per_day = len(BotBrain.SCHEDULE["evergreen_slots"])
+        self.assertGreaterEqual(len(self.bank) / per_day, 10,
+                                "fewer than ten days of explainers in the bank")
+
+    def test_the_bank_covers_every_section(self):
+        sections = {t["category"] for t in self.bank}
+        for required in ("crypto", "pakistan", "business_markets", "tech_ai"):
+            self.assertIn(required, sections)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
