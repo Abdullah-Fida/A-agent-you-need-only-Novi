@@ -2408,11 +2408,74 @@ class TestEvergreenDesk(unittest.TestCase):
         # Stored in source_url, which also holds real article URLs.
         self.assertTrue(self.D._topic_key("Anything").startswith("evergreen:"))
 
-    def test_enough_topics_for_the_schedule(self):
+    def test_enough_topics_for_a_full_year(self):
+        """
+        The bank is the one thing that has to keep working unattended. A
+        year of it means nobody has to think about explainers again, and the
+        self-replenishment below 6 remaining becomes a safety net rather
+        than the normal path.
+        """
         from core.brain import BotBrain
         per_day = len(BotBrain.SCHEDULE["evergreen_slots"])
-        self.assertGreaterEqual(len(self.bank) / per_day, 30,
-                                "fewer than thirty days of explainers in the bank")
+        days = len(self.bank) / per_day
+        self.assertGreaterEqual(days, 365,
+                                f"only {days:.0f} days of explainers banked")
+
+    def test_the_bank_leans_where_the_competition_is_thinnest(self):
+        """
+        Pakistan is the section nobody else writes explainers for, and the
+        one where a small site can actually reach page one. It should be the
+        largest share, not an afterthought.
+        """
+        from collections import Counter
+        by = Counter(t["category"] for t in self.bank)
+        self.assertEqual(by.most_common(1)[0][0], "pakistan")
+        for section in ("crypto", "tech_ai", "business_markets", "world_news"):
+            self.assertGreaterEqual(by[section], 100, section)
+
+    def test_every_photo_query_comes_from_the_verified_vocabulary(self):
+        """
+        Every query here was checked against Openverse and returns a real
+        photograph. A topic with an invented query is an article that
+        silently defers at 13:00 with nobody watching.
+        """
+        verified = {
+            "artificial intelligence technology", "bank building", "bank vault",
+            "bar chart", "bitcoin coin", "bitcoin cryptocurrency",
+            "bitcoin mining", "blockchain network", "calculator",
+            "cargo ship ocean", "central bank building", "climate weather",
+            "cloud computing servers", "coins", "credit cards",
+            "cryptocurrency trading", "data centre", "data chart", "digital art",
+            "digital currency coins", "dollar bills", "election voting",
+            "electric vehicle charging", "electricity power lines",
+            "fiber optic", "financial documents", "financial report documents",
+            "gold bars", "handshake meeting", "hardware wallet",
+            "hospital medical", "inflation money currency",
+            "international politics flags", "karachi city pakistan",
+            "laptop screen", "microchip", "mobile phone",
+            "money transfer banking", "office building", "office workspace",
+            "oil refinery industry", "padlock", "password security lock",
+            "power plant energy", "property houses", "refugee camp", "river",
+            "robot", "satellite space", "server data centre computing",
+            "server rack", "shipping containers port", "smartphone",
+            "solar panels rooftop", "source code",
+            "stock exchange trading floor", "stock market", "students classroom",
+            "tax calculator", "united nations building", "voting ballot",
+            "warehouse logistics", "wheat field agriculture", "wifi router",
+            "writing desk",
+        }
+        for t in self.bank:
+            self.assertIn(t["photo"], verified,
+                          f"unverified photo query on: {t['title']}")
+
+    def test_no_topic_expires(self):
+        """An explainer that mentions a year stops being evergreen."""
+        import re
+        for t in self.bank:
+            self.assertIsNone(
+                re.search(r"(20\d\d|today|this year|latest|breaking)",
+                          t["title"], re.I),
+                f"not evergreen: {t['title']}")
 
     def test_photo_queries_are_concrete_nouns(self):
         # A photo archive can answer "office workspace" and cannot answer
