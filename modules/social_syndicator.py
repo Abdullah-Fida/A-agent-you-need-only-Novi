@@ -728,9 +728,18 @@ class SocialSyndicator:
         self._roll_day()
         image = article.get("main_image_url") or ""
 
+        # Decided ONCE, before anything is sent. The first successful post
+        # stamps day one of the warm-up, which changes the cap -- so asking
+        # per platform meant Facebook was judged under a cap of six, posted,
+        # moved the accounts to day one, and X, Threads and Bluesky were then
+        # judged under a cap of three and skipped. One article, two rules.
+        allowed = {s: self._slot_is_allowed(s, self._pkt_now())
+                   for s in self.services}
+
         for service in self.services:
             try:
-                results[service] = await self._to_service(service, article, link, image)
+                results[service] = await self._to_service(
+                    service, article, link, image, allowed.get(service, True))
             except Exception as e:
                 self.last_error = f"{type(e).__name__}: {e}"
                 logger.error(f"{service} syndication raised {self.last_error}")
@@ -744,8 +753,8 @@ class SocialSyndicator:
                     f"{', '.join(delivered) or 'nothing'}")
         return results
 
-    async def _to_service(self, service: str, article: Dict,
-                          link: str, image: str) -> bool:
+    async def _to_service(self, service: str, article: Dict, link: str,
+                          image: str, slot_allowed: bool = True) -> bool:
         if not self.platform_is_on(service):
             logger.info(f"{service} is switched off — skipping.")
             return False
@@ -767,10 +776,11 @@ class SocialSyndicator:
                         f"({self.sent_today[service]}/{cap}).")
             return False
 
-        now = self._pkt_now()
-        if not self._slot_is_allowed(service, now):
+        # Decided once for the whole article by the caller, so every platform
+        # is judged by the same rule. See syndicate().
+        if not slot_allowed:
             self.skipped_today[service] = self.skipped_today.get(service, 0) + 1
-            slot, _ = self._nearest_slot(now)
+            slot, _ = self._nearest_slot(self._pkt_now())
             logger.info(f"{service}: the {slot[0]:02d}:{slot[1]:02d} PKT slot is "
                         f"outside today's top {cap} — not shared while the "
                         f"account is still warming up.")

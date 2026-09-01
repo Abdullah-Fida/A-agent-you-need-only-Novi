@@ -2924,6 +2924,69 @@ class TestSocialSyndicator(unittest.TestCase):
         syn._slot_is_allowed = lambda *a: True
         return syn
 
+    def test_every_platform_is_judged_by_the_same_rule(self):
+        """
+        The first successful post stamps day one of the warm-up, which
+        CHANGES the cap. Asking per platform meant Facebook was judged under
+        a cap of six, posted, aged the accounts to day one, and X, Threads
+        and Bluesky were then judged under a cap of three and skipped -- one
+        article, two rules, three platforms silently missing. It happened at
+        15:06 on 1 September.
+        """
+        seen = []
+
+        def _syn_with_shifting_cap():
+            buf = MagicMock()
+            buf.ensure_channels = AsyncMock(
+                side_effect=lambda s: [{"id": s, "service": s}])
+            buf.send = AsyncMock(return_value=True)
+            buf.last_error = ""
+            syn = self._syn(buffer=buf, services=["facebook", "twitter",
+                                                  "threads", "bluesky"])
+            # The cap collapses the moment anything is sent, exactly as it
+            # does when day one is stamped.
+            def slot(service, when):
+                seen.append(service)
+                return not seen[:-1]        # True only for the first asked
+            syn._slot_is_allowed = slot
+            return syn, buf
+
+        syn, buf = _syn_with_shifting_cap()
+        asyncio.run(syn.syndicate(self.ARTICLE))
+        # Every platform must have been asked BEFORE anything was sent, so a
+        # change caused by sending cannot reach the others.
+        self.assertEqual(len(seen), 4, "the gate was not asked once per platform")
+        self.assertEqual(buf.send.await_count, 1,
+                         "one allowed platform, one post")
+
+    def test_the_slot_gate_is_asked_before_anything_is_sent(self):
+        order = []
+        buf = MagicMock()
+        buf.ensure_channels = AsyncMock(
+            side_effect=lambda s: [{"id": s, "service": s}])
+        buf.last_error = ""
+
+        async def send(channel, text, image_url="", article_slug="",
+                       first_comment=""):
+            order.append(("send", channel["service"]))
+            return True
+
+        buf.send = AsyncMock(side_effect=send)
+        syn = self._syn(buffer=buf,
+                        services=["facebook", "twitter", "threads", "bluesky"])
+        real = syn._slot_is_allowed
+
+        def spy(service, when):
+            order.append(("gate", service))
+            return True
+
+        syn._slot_is_allowed = spy
+        asyncio.run(syn.syndicate(self.ARTICLE))
+        gates = [i for i, (k, _) in enumerate(order) if k == "gate"]
+        sends = [i for i, (k, _) in enumerate(order) if k == "send"]
+        self.assertTrue(max(gates) < min(sends),
+                        f"a gate was asked after a send: {order}")
+
     def test_a_channel_on_the_second_account_is_found(self):
         """
         Buffer caps channels per account, so Bluesky sits on the login the
