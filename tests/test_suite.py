@@ -3248,6 +3248,51 @@ class TestSocialSyndicator(unittest.TestCase):
         syn = self._syn(brain=brain, start_date=str(today - timedelta(days=2)))
         self.assertEqual(syn.days_live(), 2)
 
+    def test_day_one_is_written_to_the_database_immediately(self):
+        """
+        It was stamped in MEMORY and left for whatever called save_state()
+        next. A redeploy erased it, the accounts read as ageless again and
+        the cap jumped from three back to six -- the exact thing the ramp
+        exists to prevent. Found by a system check reporting a cap of 6 on
+        day one.
+        """
+        brain = make_brain()
+        brain.social_module_active = True
+        brain.social_started_on = ""
+        brain.save_state = AsyncMock()
+
+        buf = MagicMock()
+        buf.ensure_channels = AsyncMock(
+            return_value=[{"id": "c1", "service": "twitter"}])
+        buf.send = AsyncMock(return_value=True)
+        buf.last_error = ""
+        syn = self._syn(buffer=buf, services=["twitter"])
+        syn.brain = brain
+        syn._slot_is_allowed = lambda *a: True
+
+        asyncio.run(syn.syndicate(self.ARTICLE))
+        self.assertTrue(brain.social_started_on, "day one was never stamped")
+        brain.save_state.assert_awaited(), "stamped but never persisted"
+
+    def test_day_one_is_only_written_once(self):
+        """A save on every post would be a needless write forever."""
+        brain = make_brain()
+        brain.social_module_active = True
+        brain.social_started_on = "2026-09-01"      # already stamped
+        brain.save_state = AsyncMock()
+
+        buf = MagicMock()
+        buf.ensure_channels = AsyncMock(
+            return_value=[{"id": "c1", "service": "twitter"}])
+        buf.send = AsyncMock(return_value=True)
+        buf.last_error = ""
+        syn = self._syn(buffer=buf, services=["twitter"])
+        syn.brain = brain
+        syn._slot_is_allowed = lambda *a: True
+
+        asyncio.run(syn.syndicate(self.ARTICLE))
+        brain.save_state.assert_not_awaited()
+
     def test_no_start_date_anywhere_means_no_ramp(self):
         self.assertIsNone(self._syn().days_live())
         self.assertEqual(self._syn(start_date="not-a-date").daily_cap("twitter"), 6)

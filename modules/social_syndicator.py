@@ -833,11 +833,22 @@ class SocialSyndicator:
         if any_ok:
             self.sent_today[service] = self.sent_today.get(service, 0) + 1
             # Day one of the warm-up is the first post that actually left.
+            #
+            # Persisted IMMEDIATELY, not left for whatever calls save_state()
+            # next. It was stamped in memory only, so a redeploy erased it --
+            # the accounts read as ageless again and the cap jumped from
+            # three back to six, which is the whole thing the ramp exists to
+            # prevent. Caught by a system check reporting a cap of 6 on day
+            # one.
             if self.brain is not None and hasattr(self.brain, "note_social_start"):
                 try:
+                    was_stamped = bool(getattr(self.brain, "social_started_on", ""))
                     self.brain.note_social_start()
-                except Exception:
-                    pass
+                    if not was_stamped and hasattr(self.brain, "save_state"):
+                        await self.brain.save_state()
+                except Exception as e:
+                    logger.warning(f"Could not record day one of the warm-up: "
+                                   f"{type(e).__name__}: {e}")
             if self.growth:
                 try:
                     self.growth.record_action(self.growth.ACTION_POST,
