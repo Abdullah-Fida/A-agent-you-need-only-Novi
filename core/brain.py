@@ -315,6 +315,7 @@ class BotBrain:
                     and slot["minute"] <= pkt_now.minute
                     < slot["minute"] + self.SLOT_WINDOW_MINUTES):
                 return {"type": "article", "hour": slot["hour"],
+                        "minute": slot["minute"],
                         "key": f"article_{slot['hour']}_{slot['minute']}"}
         return None
 
@@ -326,6 +327,7 @@ class BotBrain:
                     and slot["minute"] <= pkt_now.minute
                     < slot["minute"] + self.SLOT_WINDOW_MINUTES):
                 return {"type": "evergreen", "hour": slot["hour"],
+                        "minute": slot["minute"],
                         "key": f"evergreen_{slot['hour']}_{slot['minute']}"}
         return None
 

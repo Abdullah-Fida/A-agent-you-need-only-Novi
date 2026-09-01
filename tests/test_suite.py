@@ -1014,6 +1014,7 @@ class TestFacebookImageAttachment(unittest.TestCase):
         buf.last_error = ""
         syn = SocialSyndicator(buffer=buf, site_url="https://example.com",
                                services=["facebook"])
+        syn._slot_is_allowed = lambda *a: True   # this is about WHAT, not WHEN
         asyncio.run(syn.syndicate({"slug": "s", "title": "A real headline here",
                                    "main_image_url": "https://ours/hero.jpg"}))
         self.assertEqual(buf.send.await_args.kwargs["image_url"],
@@ -3310,6 +3311,7 @@ class TestSocialSyndicator(unittest.TestCase):
 
         buf.send = AsyncMock(side_effect=send)
         syn = self._syn(buffer=buf)
+        syn._slot_is_allowed = lambda *a: True   # this is about WHAT, not WHEN
         results = asyncio.run(syn.syndicate(self.ARTICLE))
         self.assertFalse(results["facebook"])
         self.assertTrue(results["twitter"])
@@ -3550,6 +3552,7 @@ class TestSocialSyndicator(unittest.TestCase):
 
     def test_the_article_picture_is_passed_to_buffer(self):
         syn = self._syn(services=["facebook"])
+        syn._slot_is_allowed = lambda *a: True   # this is about WHAT, not WHEN
         asyncio.run(syn.syndicate(self.ARTICLE))
         self.assertEqual(syn._buffer_mock.send.await_args.kwargs["image_url"],
                          "https://cdn.example/hero.jpg")
@@ -3911,6 +3914,154 @@ class TestMetaDescriptionEndsProperly(unittest.TestCase):
                    encoding="utf-8").read()
         self.assertIn("COMPLETE sentences", src)
         self.assertIn("Never stop mid-sentence to hit the word", src)
+
+
+# ═══════════════════════════════════════════════════════════════
+#  NO REPEATS — the same photograph, or the same slot twice
+# ═══════════════════════════════════════════════════════════════
+class TestNothingRepeats(unittest.TestCase):
+    """
+    Both of these shipped and were found by looking at the live site.
+
+    Two Tech articles carried byte-identical photographs, because the file
+    name carried a timestamp and de-duplication compared URLs -- so one photo
+    downloaded twice looked like two different pictures.
+
+    And 01:01 and 01:22 on 1 September were ONE slot: the loop remembered
+    which slots had fired in a plain Python set, a Render restart inside the
+    25-minute window wiped it, and the slot published again.
+    """
+
+    # ── the same photograph ──────────────────────────────────────
+
+    def test_the_hosted_name_is_the_content_not_the_clock(self):
+        """
+        The same bytes must always produce the same file name. A timestamp
+        in the name is what let one photo masquerade as many.
+        """
+        import tempfile
+        from modules.article_engine import ArticleAgent
+        a, b = tempfile.mkstemp()[1], tempfile.mkstemp()[1]
+        open(a, "wb").write(b"the same photograph")
+        open(b, "wb").write(b"the same photograph")
+        self.assertEqual(ArticleAgent._file_digest(a),
+                         ArticleAgent._file_digest(b))
+        open(b, "wb").write(b"a different photograph")
+        self.assertNotEqual(ArticleAgent._file_digest(a),
+                            ArticleAgent._file_digest(b))
+
+    def test_a_missing_file_does_not_raise(self):
+        from modules.article_engine import ArticleAgent
+        self.assertEqual(ArticleAgent._file_digest("/no/such/file"), "")
+
+    def test_a_photo_already_in_use_is_detected(self):
+        from modules.article_engine import ArticleAgent
+        agent = ArticleAgent(ai_engine=MagicMock(), db=MagicMock())
+        agent.db.client.table.return_value.select.return_value.like.return_value             .limit.return_value.execute.return_value = MagicMock(
+                data=[{"slug": "an-earlier-article"}])
+        self.assertTrue(asyncio.run(agent._hero_in_use("abc123")))
+
+    def test_a_failed_duplicate_check_does_not_drop_the_story(self):
+        """A lookup failure must not cost an article. A repeat is the lesser
+        of the two problems."""
+        from modules.article_engine import ArticleAgent
+        agent = ArticleAgent(ai_engine=MagicMock(), db=MagicMock())
+        agent.db.client.table.side_effect = RuntimeError("supabase down")
+        self.assertFalse(asyncio.run(agent._hero_in_use("abc123")))
+
+    def test_the_finder_can_be_told_what_not_to_return(self):
+        """
+        Without this a retry asks the same question and gets the same top
+        result, which is exactly how the two Tech articles matched.
+        """
+        from modules.stock_photos import StockPhotoFinder
+        import inspect
+        self.assertIn("exclude",
+                      inspect.signature(StockPhotoFinder.find).parameters)
+        self.assertIn("exclude",
+                      inspect.signature(StockPhotoFinder._search).parameters)
+
+    # ── the same slot ────────────────────────────────────────────
+
+    @staticmethod
+    def _a_slot_that_has_passed():
+        """
+        An hour that is already behind us today. Hard-coding 18:00 made this
+        pass in the evening and fail in the afternoon -- the same trap that
+        caught three other tests in this file.
+        """
+        from datetime import datetime, timedelta, timezone
+        past = (datetime.now(timezone.utc) + timedelta(hours=5)
+                - timedelta(hours=2))
+        return past.hour, past.minute
+
+    def test_a_slot_that_already_published_is_not_fired_again(self):
+        from modules.fanout import Fanout
+        db = MagicMock()
+        db.client.table.return_value.select.return_value.gte.return_value             .lt.return_value.limit.return_value.execute.return_value = MagicMock(
+                data=[{"slug": "already-published-this-slot"}])
+        fo = Fanout(db=db)
+        h, m = self._a_slot_that_has_passed()
+        self.assertTrue(asyncio.run(fo.slot_already_filled(h, m)))
+
+    def test_an_empty_slot_is_free_to_fire(self):
+        from modules.fanout import Fanout
+        db = MagicMock()
+        db.client.table.return_value.select.return_value.gte.return_value             .lt.return_value.limit.return_value.execute.return_value = MagicMock(
+                data=[])
+        fo = Fanout(db=db)
+        h, m = self._a_slot_that_has_passed()
+        self.assertFalse(asyncio.run(fo.slot_already_filled(h, m)))
+
+    def test_a_slot_that_has_not_come_round_yet_is_never_blocked(self):
+        """
+        Regression: a future slot was shifted back a day, so at 13:30 the
+        15:00 slot reported "already filled" because YESTERDAY's 15:00 had
+        published. Every remaining slot of the day would have been blocked.
+        """
+        from modules.fanout import Fanout
+        from datetime import datetime, timedelta, timezone
+        db = MagicMock()
+        # Anything asked of the database says "yes, something is there".
+        db.client.table.return_value.select.return_value.gte.return_value             .lt.return_value.limit.return_value.execute.return_value = MagicMock(
+                data=[{"slug": "yesterdays-article"}])
+        fo = Fanout(db=db)
+
+        now = datetime.now(timezone.utc) + timedelta(hours=5)
+        later = (now + timedelta(hours=3))
+        self.assertFalse(
+            asyncio.run(fo.slot_already_filled(later.hour, later.minute)),
+            "a slot three hours away must not be treated as already done")
+
+    def test_a_failed_slot_check_still_lets_the_article_publish(self):
+        from modules.fanout import Fanout
+        db = MagicMock()
+        db.client.table.side_effect = RuntimeError("supabase down")
+        self.assertFalse(asyncio.run(Fanout(db=db).slot_already_filled(18, 0)))
+
+    def test_the_main_loop_asks_the_database_not_only_its_memory(self):
+        """
+        fired_slots is memory and memory dies with the process. This is the
+        check that survives a restart, which is the whole point.
+        """
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        src = open(os.path.join(root, "main.py"), encoding="utf-8").read()
+        self.assertEqual(src.count("slot_already_filled"), 2,
+                         "both the article and the explainer slot need it")
+        i = src.index("get_due_article_slot()")
+        self.assertIn("slot_already_filled", src[i:i + 500])
+
+    def test_the_slot_carries_its_minute(self):
+        """
+        A 25-minute window opened at 11:00 does not contain an 11:37 article,
+        so the check would never see the 11:30 slot's own work.
+        """
+        for getter in ("get_due_article_slot", "get_due_evergreen_slot"):
+            src = open(os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "core", "brain.py"), encoding="utf-8").read()
+            i = src.index(f"def {getter}")
+            self.assertIn('"minute": slot["minute"]', src[i:i + 900], getter)
 
 
 if __name__ == "__main__":

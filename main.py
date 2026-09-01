@@ -594,7 +594,13 @@ async def main():
             # channel meant the whole US afternoon and evening could never
             # carry one.
             article_slot = brain.get_due_article_slot()
-            if article_slot and article_slot["key"] not in fired_slots:
+            # fired_slots is memory and memory dies with the process. The
+            # database is asked as well, because a restart inside the slot
+            # window made the slot look unfired and published a SECOND
+            # article -- 01:01 and 01:22 on 1 September were one slot.
+            if (article_slot and article_slot["key"] not in fired_slots
+                    and not await fanout.slot_already_filled(
+                        article_slot["hour"], article_slot.get("minute", 0))):
                 fired_slots.add(article_slot["key"])
                 try:
                     published = await fanout.publish_scheduled_article()
@@ -612,7 +618,9 @@ async def main():
             # ---- Evergreen explainer ----
             # Same exemption as the news articles: the website does not sleep.
             ever_slot = brain.get_due_evergreen_slot()
-            if ever_slot and ever_slot["key"] not in fired_slots:
+            if (ever_slot and ever_slot["key"] not in fired_slots
+                    and not await fanout.slot_already_filled(
+                        ever_slot["hour"], ever_slot.get("minute", 0))):
                 fired_slots.add(ever_slot["key"])
                 try:
                     piece = await evergreen.publish_one()

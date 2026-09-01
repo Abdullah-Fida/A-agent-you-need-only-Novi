@@ -103,9 +103,14 @@ class StockPhotoFinder:
         source = (item.get("source") or "Openverse").strip()
         return f"Photo: {creator} / {source} (CC {licence.upper()})"
 
-    async def find(self, query: str) -> Tuple[Optional[str], str]:
+    async def find(self, query: str, exclude=()) -> Tuple[Optional[str], str]:
         """
         Returns (image_url, credit). Credit is "" for public-domain images.
+
+        `exclude` holds photo URLs the caller has already tried -- usually
+        because the picture turned out to be one another article is using.
+        Without it a retry asks the same question and gets the same top
+        result, which is how two Tech articles ended up byte-identical.
 
         Never raises: an article without a stock photo falls back to the
         generator, and a lookup failure must not stop a publish.
@@ -118,7 +123,7 @@ class StockPhotoFinder:
         # "hardware wallet" and then "wallet" do not. Broaden a step at a
         # time rather than jumping straight to a generated illustration.
         for attempt in self._query_ladder(query):
-            found, credit = await self._search(attempt)
+            found, credit = await self._search(attempt, exclude)
             if found:
                 return found, credit
 
@@ -146,7 +151,7 @@ class StockPhotoFinder:
                 ladder.append(candidate)
         return ladder
 
-    async def _search(self, query: str) -> Tuple[Optional[str], str]:
+    async def _search(self, query: str, exclude=()) -> Tuple[Optional[str], str]:
         """One search pass across the licence tiers."""
         import httpx
         for licences in LICENCE_TIERS:
@@ -170,6 +175,8 @@ class StockPhotoFinder:
                 continue
 
             for item in results:
+                if item.get("url") in exclude:
+                    continue
                 if self._usable(item) and self._relevant(item, query):
                     self.found += 1
                     credit = self.credit_for(item)

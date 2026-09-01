@@ -30,6 +30,10 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("OmniBot.Fanout")
 
+# The schedule is written in Pakistan time; every stored
+# timestamp is UTC.
+PKT_OFFSET = timedelta(hours=5)
+
 
 class Fanout:
     """Distributes one content package across every secondary platform."""
@@ -161,6 +165,59 @@ class Fanout:
 
         logger.info("Scheduled article: every candidate was already published.")
         return None
+
+    async def slot_already_filled(self, hour: int, minute: int,
+                                  window_minutes: int = 25) -> bool:
+        """
+        Whether an article was already published in this slot's window.
+
+        Asked of the DATABASE, not of memory. The loop used to remember which
+        slots had fired in a plain Python set, which every Render restart
+        wiped -- and a restart inside the 25-minute window made the slot look
+        unfired, so it published a second article. That is exactly how 01:01
+        and 01:22 both went out on 1 September.
+
+        The database cannot be wiped by a restart, so this holds however many
+        times the process comes back.
+        """
+        client = getattr(self.db, "client", None)
+        if client is None:
+            return False
+        try:
+            now_pkt = datetime.now(timezone.utc) + PKT_OFFSET
+            start_pkt = now_pkt.replace(hour=hour, minute=minute,
+                                        second=0, microsecond=0)
+            if start_pkt > now_pkt:
+                # Today's occurrence has not come round yet. The one case
+                # where that still needs checking is just after midnight,
+                # when we are inside YESTERDAY's window -- a 23:50 call about
+                # a 00:05 slot. Otherwise the slot is simply not due, and
+                # nothing can have filled it.
+                #
+                # An earlier version always shifted a future slot back a day,
+                # which reported 15:00 as "already filled" at 13:30 because
+                # YESTERDAY's 15:00 had published. That would have blocked
+                # every remaining slot of the day.
+                yesterday = start_pkt - timedelta(days=1)
+                if now_pkt - yesterday >= timedelta(minutes=window_minutes):
+                    return False
+                start_pkt = yesterday
+            start = (start_pkt - PKT_OFFSET).replace(tzinfo=timezone.utc)
+            end = start + timedelta(minutes=window_minutes)
+            res = await asyncio.to_thread(
+                lambda: client.table("articles").select("slug")
+                .gte("created_at", start.isoformat())
+                .lt("created_at", end.isoformat()).limit(1).execute())
+            if res.data:
+                logger.info(f"Slot {hour:02d}:{minute:02d} already published "
+                            f"/{res.data[0]['slug']} — not publishing again.")
+                return True
+            return False
+        except Exception as e:
+            # A failed lookup must not stop publishing; a duplicate is the
+            # lesser problem of the two.
+            logger.warning(f"Slot check failed: {type(e).__name__}: {e}")
+            return False
 
     # ── deferred articles ────────────────────────────────────────
 

@@ -480,7 +480,24 @@ class ArticleAgent:
             logger.warning("ArticleAgent has no image generator.")
             return ""
 
+        # Source photos already tried in THIS call, so a second attempt asks
+        # the finder for something else instead of the same picture again.
+        tried: set = set()
+
         for attempt in range(1, self.IMAGE_ATTEMPTS + 1):
+            if not story_image_url and self.photos:
+                # Only reached on a retry, when the first photo turned out to
+                # be one another article is already using.
+                try:
+                    found, _ = await self.photos.find(
+                        self._photo_query(title, category), exclude=tried)
+                    story_image_url = found or ""
+                except Exception as e:
+                    logger.warning(f"Stock photo retry failed: {type(e).__name__}: {e}")
+            if not story_image_url:
+                break
+            tried.add(story_image_url)
+
             try:
                 local_path = await self.image_gen.generate(
                     headline=title,
@@ -501,7 +518,23 @@ class ArticleAgent:
                 local_path = None
 
             if local_path and self.db:
-                url = await self.db.upload_image(local_path)
+                # The file is named after its own CONTENT, so the same
+                # photograph always lands on the same URL no matter how many
+                # times it is downloaded. Names used to carry a timestamp,
+                # which made one photo look like a hundred different ones --
+                # two Tech articles ran byte-identical pictures and nothing
+                # noticed, because the de-duplication compared URLs.
+                digest = self._file_digest(local_path)
+                dest = f"hero-{digest}.jpg" if digest else ""
+
+                if digest and await self._hero_in_use(digest):
+                    logger.info(f"That photograph is already on another "
+                                f"article; looking for a different one "
+                                f"(attempt {attempt}/{self.IMAGE_ATTEMPTS}).")
+                    story_image_url = ""      # forces a fresh search above
+                    continue
+
+                url = await self.db.upload_image(local_path, dest_name=dest)
                 if url:
                     tier = getattr(self.image_gen, "last_source", "?")
                     logger.info(f"Article hero hosted from '{tier}' "
@@ -513,6 +546,38 @@ class ArticleAgent:
 
         logger.warning(f"No usable hero image after {self.IMAGE_ATTEMPTS} attempts.")
         return ""
+
+    @staticmethod
+    def _file_digest(path: str) -> str:
+        """A short content hash, used to name the hosted image."""
+        import hashlib
+        try:
+            with open(path, "rb") as fh:
+                return hashlib.sha256(fh.read()).hexdigest()[:20]
+        except OSError as e:
+            logger.warning(f"Could not fingerprint the hero image: {e}")
+            return ""
+
+    async def _hero_in_use(self, digest: str) -> bool:
+        """
+        Whether some other article already carries this exact photograph.
+
+        Asked of the database rather than of memory, so it holds across a
+        restart and across every article ever published, not just this run.
+        """
+        client = getattr(self.db, "client", None)
+        if client is None or not digest:
+            return False
+        try:
+            res = await asyncio.to_thread(
+                lambda: client.table("articles").select("slug")
+                .like("main_image_url", f"%hero-{digest}%").limit(1).execute())
+            return bool(res.data)
+        except Exception as e:
+            # Better a possible repeat than a story dropped over a failed
+            # lookup.
+            logger.warning(f"Hero duplicate check failed: {type(e).__name__}: {e}")
+            return False
 
     # Section -> a concrete noun a photo archive can actually answer. A news
     # headline is a poor search query: "Supreme court threatens midterms
