@@ -294,6 +294,57 @@ class TestAgent(unittest.TestCase):
             self.assertTrue(8 <= hour <= 23, f"{hour}:00 PKT is not a waking hour")
 
 
+class TestImagery(unittest.TestCase):
+    """
+    The picture must not claim to be an asset it is not.
+    """
+
+    def test_only_bitcoin_gets_bitcoin_imagery(self):
+        """
+        Regression from the first build: mapping each ticker to a picture of
+        that coin put a gold BITCOIN on a post about UNI, because searching
+        any coin name returns Bitcoin -- it is what stock libraries have.
+        On a market post that is misleading, not merely weak.
+        """
+        from binance_agent.imaging import DraftImage, BTC_QUERY
+        self.assertEqual(DraftImage.query_for("BTC"), BTC_QUERY)
+        for t in ("UNI", "ARB", "SOL", "ETH", "ZEC", "DOGE"):
+            self.assertNotIn("bitcoin", DraftImage.query_for(t).lower(),
+                             f"{t} would be illustrated as Bitcoin")
+
+    def test_the_subject_is_stable_for_a_coin(self):
+        """Same ticker, same subject -- not random on every run."""
+        from binance_agent.imaging import DraftImage
+        self.assertEqual(DraftImage.query_for("UNI"), DraftImage.query_for("UNI"))
+
+    def test_the_feed_does_not_repeat_one_subject(self):
+        from binance_agent.imaging import DraftImage
+        subjects = {DraftImage.query_for(t) for t in
+                    ("UNI", "ARB", "SOL", "ETH", "ZEC", "LINK", "AAVE", "OP")}
+        self.assertGreaterEqual(len(subjects), 4)
+
+    def test_every_query_is_from_the_verified_vocabulary(self):
+        """An invented query means no picture at all."""
+        from binance_agent.imaging import (BTC_QUERY, DEFAULT_QUERY,
+                                           NEUTRAL_QUERIES)
+        verified = {"bitcoin cryptocurrency", "stock exchange trading floor",
+                    "data chart", "laptop screen", "server rack", "source code",
+                    "financial documents", "stock market", "fiber optic"}
+        for q in list(NEUTRAL_QUERIES) + [BTC_QUERY, DEFAULT_QUERY]:
+            self.assertIn(q, verified, f"unverified photo query: {q!r}")
+
+    def test_a_draft_survives_having_no_photograph(self):
+        """
+        A market note reads fine without a picture, and an invented picture
+        is worse than none. The draft must still go out.
+        """
+        from binance_agent.imaging import DraftImage
+        img = DraftImage(photos=None)
+        path, credit = asyncio.run(img.build({"base": "UNI", "change": 5.0}))
+        self.assertEqual(path, "")
+        self.assertIn("no photo finder", img.last_error)
+
+
 class TestDelivery(unittest.TestCase):
 
     def test_nothing_is_sent_without_a_group(self):

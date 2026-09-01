@@ -409,7 +409,11 @@ async def main():
             config=bnb_config, ai_engine=bnb_ai,
             # Shares the signal copier's connected client rather than opening
             # a second Telegram session, which would look like a new device.
-            client_owner=signal_copier, db=db)
+            client_owner=signal_copier, db=db,
+            # The same openly-licensed photo source the website uses, and the
+            # PIN project's storage: the news project's gigabyte is already
+            # going on article heroes.
+            photos=stock_photos, image_db=pin_db)
         logger.info(f"Binance agent ready — drafts to "
                     f"{bnb_config.draft_group or '(no group configured)'}, "
                     f"{bnb_config.drafts_per_day}/day.")

@@ -11,6 +11,7 @@ they can never be copied by accident into the post itself.
 """
 import asyncio
 import logging
+import os
 from typing import Dict, Optional
 
 logger = logging.getLogger("BinanceAgent.Delivery")
@@ -76,10 +77,25 @@ class DraftDelivery:
                   f"<code>${_esc(draft['base'])}</code>  ·  "
                   f"tap the block to copy, paste into Square.")
         post = f"<pre>{_esc(draft['text'])}</pre>"
+        image = draft.get("image_path") or ""
 
         try:
-            await self.client.send_message(entity, message=f"{header}\n\n{post}",
-                                           parse_mode="html", link_preview=False)
+            if image and os.path.exists(image):
+                # The caption cap is 1024 characters and a post can exceed it,
+                # so the picture goes first with a short caption and the
+                # copy-block follows as its own message. Splitting also keeps
+                # the tap-to-copy block clean of anything else.
+                await self.client.send_file(
+                    entity, file=image,
+                    caption=f"{header}", parse_mode="html")
+                await asyncio.sleep(1)
+                await self.client.send_message(entity, message=post,
+                                               parse_mode="html",
+                                               link_preview=False)
+            else:
+                await self.client.send_message(
+                    entity, message=f"{header}\n\n{post}",
+                    parse_mode="html", link_preview=False)
             await asyncio.sleep(1)
             await self.client.send_message(
                 entity,

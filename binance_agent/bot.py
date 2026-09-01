@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from binance_agent.delivery import DraftDelivery
+from binance_agent.imaging import DraftImage
 from binance_agent.market import BinanceMarket
 from binance_agent.writer import PostWriter
 
@@ -37,9 +38,15 @@ SLOT_WINDOW_MINUTES = 25
 class BinanceAgent:
     """Finds a story in the market, writes it, and hands it to you."""
 
-    def __init__(self, config, ai_engine=None, client_owner=None, db=None):
+    def __init__(self, config, ai_engine=None, client_owner=None, db=None,
+                 photos=None, image_db=None):
         self.config = config
         self.db = db
+        # Pictures are hosted on the PIN agent's Supabase project, not the
+        # news one: the free tier gives a gigabyte of storage per project and
+        # article heroes are already spending most of the news project's.
+        self.image_db = image_db or db
+        self.imaging = DraftImage(photos=photos, brand=config.brand)
         self.market = BinanceMarket(min_quote_volume=config.min_volume_usd)
         self.writer = PostWriter(ai_engine=ai_engine, brand=config.brand)
         self.delivery = DraftDelivery(client_owner=client_owner,
@@ -49,6 +56,7 @@ class BinanceAgent:
         self.drafted_today = 0
         self._counter_day = None
         self._recent: List[Dict] = []     # [{base, at}] for the repeat guard
+        self._recent_photos: List[str] = []   # so two drafts never match
         self.last_run: Optional[datetime] = None
         self.last_error = ""
 
@@ -111,6 +119,21 @@ class BinanceAgent:
                 logger.warning(f"${coin['base']}: {self.last_error}")
                 continue
 
+            # A real photograph, never a generated one -- the same rule as
+            # the website. Without one the draft still goes out: a market
+            # note reads fine without a picture, and an invented picture is
+            # worse than none.
+            path, credit = await self.imaging.build(
+                coin, exclude=set(self._recent_photos[-12:]))
+            draft["image_path"] = path
+            draft["credit"] = credit
+            if path:
+                self._recent_photos.append(self.imaging._last_url)
+                draft["image_url"] = await self._host(path)
+            else:
+                logger.info(f"${coin['base']}: no photograph "
+                            f"({self.imaging.last_error}); text only.")
+
             self._recent.append({"base": coin["base"],
                                  "at": datetime.now(timezone.utc)})
             return draft
@@ -119,6 +142,24 @@ class BinanceAgent:
                            "has not been covered in the last few days")
         logger.info(self.last_error)
         return None
+
+    async def _host(self, path: str) -> str:
+        """
+        Uploads the picture so a durable copy exists.
+
+        Telegram already carries the file you paste, so this is a record
+        rather than a delivery route -- Render wipes its own disk on every
+        deploy and the image would otherwise be gone by morning.
+        """
+        if not (self.image_db and path):
+            return ""
+        try:
+            return await self.image_db.upload_image(
+                path, bucket="pin-images") or ""
+        except Exception as e:
+            logger.warning(f"Could not host the draft image: "
+                           f"{type(e).__name__}: {e}")
+            return ""
 
     async def run_slot(self) -> Optional[Dict]:
         """One scheduled run: build a draft and deliver it."""
