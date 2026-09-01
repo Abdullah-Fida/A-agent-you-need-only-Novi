@@ -138,6 +138,7 @@ async def health(request: Request):
                 "site_url": getattr(getattr(st, 'config', None), 'site_url', ''),
             },
         },
+        "binance": ba.status if (ba := getattr(st, 'binance_agent', None)) else {"active": False, "wired": False},
         "buffer": bb.status if (bb := getattr(st, 'buffer_broadcaster', None)) else {"configured": False},
         "social": sy.status if (sy := getattr(st, 'syndicator', None)) else {"ready": False},
         "database_connected": bool(brain and brain.db and getattr(brain.db, "_initialized", False)),
@@ -550,6 +551,59 @@ async def toggle_social_platform(platform: str, request: Request):
             " (the social master switch is still OFF, so nothing posts yet)")
     return {"success": True, "active": on,
             "message": f"{label} is now {status}.{note}"}
+
+
+@app.post("/api/binance/toggle")
+async def toggle_binance(request: Request):
+    """
+    Turns the Binance Square draft agent ON or OFF.
+
+    It publishes nothing itself: Square has no posting API, so a draft only
+    lands in a Telegram group for a person to paste. Off by default anyway.
+    """
+    agent = getattr(request.app.state, 'binance_agent', None)
+    nm = getattr(request.app.state, 'notification_manager', None)
+    if not agent:
+        raise HTTPException(status_code=500, detail="Binance agent not wired.")
+
+    agent.active = await _desired_state(request, agent.active)
+    status = "ACTIVE" if agent.active else "DEACTIVATED"
+
+    if nm:
+        await nm.notify_module_status(
+            "Binance Square", status,
+            f"The Binance draft agent is {status}. "
+            + (f"Up to {agent.config.drafts_per_day} drafts a day will arrive "
+               f"in Telegram at {', '.join(agent.status['slots_pkt'])} PKT, "
+               f"ready to paste into Square." if agent.active
+               else "No drafts will be written."))
+
+    return {"success": True, "active": agent.active,
+            "message": f"Binance Square agent is now {status}."}
+
+
+@app.get("/api/binance/status")
+async def binance_status(request: Request):
+    agent = getattr(request.app.state, 'binance_agent', None)
+    return agent.status if agent else {"active": False, "wired": False}
+
+
+@app.post("/api/binance/run_now")
+async def binance_run_now(request: Request):
+    """Builds and delivers one draft immediately."""
+    agent = getattr(request.app.state, 'binance_agent', None)
+    if not agent:
+        raise HTTPException(status_code=500, detail="Binance agent not wired.")
+    was = agent.active
+    agent.active = True
+    try:
+        draft = await agent.run_slot()
+    finally:
+        agent.active = was
+    if not draft:
+        return {"success": False, "message": agent.last_error or "no draft"}
+    return {"success": True, "symbol": draft["symbol"],
+            "message": f"Draft for ${draft['base']} sent to Telegram."}
 
 
 @app.post("/api/pins/toggle")

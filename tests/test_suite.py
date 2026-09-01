@@ -4157,14 +4157,17 @@ class TestNothingRepeats(unittest.TestCase):
     @staticmethod
     def _a_slot_that_has_passed():
         """
-        An hour that is already behind us today. Hard-coding 18:00 made this
-        pass in the evening and fail in the afternoon -- the same trap that
-        caught three other tests in this file.
+        A slot that cannot be in the future: the one happening right now.
+
+        Hard-coding 18:00 made this pass in the evening and fail in the
+        afternoon. Subtracting two hours then failed just after midnight,
+        because 22:45 "two hours ago" is yesterday and the guard correctly
+        refuses to treat a future slot as filled. The present minute has
+        neither problem.
         """
         from datetime import datetime, timedelta, timezone
-        past = (datetime.now(timezone.utc) + timedelta(hours=5)
-                - timedelta(hours=2))
-        return past.hour, past.minute
+        now = datetime.now(timezone.utc) + timedelta(hours=5)
+        return now.hour, now.minute
 
     def test_a_slot_that_already_published_is_not_fired_again(self):
         from modules.fanout import Fanout

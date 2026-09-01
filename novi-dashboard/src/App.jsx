@@ -55,6 +55,7 @@ literally says "toggle" without saying which way.
 37. "clear" — Dismiss the data panel. Use when he says "hide", "clear", "dismiss".
 38. "news_toggle" — Turn the News Agent ON or OFF. ONLY for explicit commands: "turn on news", "stop news", "disable the news agent". NEVER for "report of the news agent", "how is the news agent", "is news working" — those are questions, use "health".
 38c. "pin_toggle" — Turn the Pinterest Agent (AliExpress products to Pinterest) ON or OFF. ONLY for explicit commands: "turn on pinterest", "start pinning", "stop the pin agent". NEVER for questions about it — use "health" for those.
+38f. "binance_toggle" — Turn the Binance Square draft agent ON or OFF. It writes crypto market posts and sends them to a Telegram group for Abdullah to paste into Binance Square by hand. Use for "turn on binance", "start the binance agent", "stop binance drafts".
 38d. "social_toggle" — The MASTER switch for Facebook, X, Threads and Bluesky together. Use for "turn on social", "start posting to facebook and twitter", "stop the social posts", "turn on the social module". This does NOT touch Telegram, which is a separate thing.
 38e. "social_facebook_toggle" / "social_twitter_toggle" / "social_threads_toggle" / "social_bluesky_toggle" — ONE platform each. Use when he names a single platform: "turn off twitter", "stop posting to facebook", "turn on bluesky". Remember the master switch still has to be ON for any of them to post.
 38d. "pin_now" — Build one Pinterest pin immediately instead of waiting for the schedule. Use when he says "make a pin", "post a pin now", "pin something".
@@ -787,11 +788,12 @@ function App() {
             const err = await apiRes.json().catch(() => ({}));
             textToSpeak = `I could not publish the post. ${err.detail || 'Make sure you generated a post first.'}`;
           }
-        } else if (['news_toggle', 'website_toggle', 'pin_toggle', 'signal_toggle', 'stealth_reply_toggle', 'stealth_invite_toggle', 'master_kill', 'social_toggle', 'social_facebook_toggle', 'social_twitter_toggle', 'social_threads_toggle', 'social_bluesky_toggle'].includes(response.action)) {
+        } else if (['news_toggle', 'website_toggle', 'pin_toggle', 'signal_toggle', 'stealth_reply_toggle', 'stealth_invite_toggle', 'master_kill', 'social_toggle', 'social_facebook_toggle', 'social_twitter_toggle', 'social_threads_toggle', 'social_bluesky_toggle', 'binance_toggle'].includes(response.action)) {
           let endpoint = '';
           if (response.action === 'news_toggle') endpoint = '/api/news/toggle';
           if (response.action === 'website_toggle') endpoint = '/api/website/toggle';
           if (response.action === 'pin_toggle') endpoint = '/api/pins/toggle';
+          if (response.action === 'binance_toggle') endpoint = '/api/binance/toggle';
           if (response.action === 'social_toggle') endpoint = '/api/social/toggle';
           if (response.action === 'social_facebook_toggle') endpoint = '/api/social/facebook/toggle';
           if (response.action === 'social_twitter_toggle') endpoint = '/api/social/twitter/toggle';
@@ -1023,6 +1025,8 @@ function App() {
                   on: health?.modules?.website?.active },
                 { label: '📌 PINTEREST', action: 'pin_toggle', color: '198, 106, 58',
                   on: health?.modules?.pin_agent?.active },
+                { label: '🟡 BINANCE', action: 'binance_toggle', color: '240, 185, 11',
+                  on: health?.binance?.active },
                 { label: '📣 SOCIAL', action: 'social_toggle', color: '236, 72, 153',
                   on: health?.social?.active },
                 { label: '📘 FACEBOOK', action: 'social_facebook_toggle', color: '24, 119, 242',
@@ -1051,6 +1055,7 @@ function App() {
                       let endpoint = '';
                       if (btn.action === 'news_toggle') endpoint = '/api/news/toggle';
                       if (btn.action === 'pin_toggle') endpoint = '/api/pins/toggle';
+                      if (btn.action === 'binance_toggle') endpoint = '/api/binance/toggle';
                       if (btn.action === 'social_toggle') endpoint = '/api/social/toggle';
                       if (btn.action === 'social_facebook_toggle') endpoint = '/api/social/facebook/toggle';
                       if (btn.action === 'social_twitter_toggle') endpoint = '/api/social/twitter/toggle';

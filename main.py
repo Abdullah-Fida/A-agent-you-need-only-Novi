@@ -389,6 +389,36 @@ async def main():
         logger.error(f"Pinterest agent could not be initialised: {type(e).__name__}: {e}")
         pin_agent = None
 
+    # 12c. Binance Square agent. Finds a story in the market, writes it and
+    # hands it to Telegram to paste -- Binance Square has no posting API, and
+    # driving their web UI would breach the terms on an account holding money.
+    binance_agent = None
+    try:
+        from binance_agent.bot import BinanceAgent
+        from binance_agent.config import load_binance_config
+
+        bnb_config = load_binance_config()
+        bnb_ai = ai_engine
+        if bnb_config.ai_api_keys:
+            bnb_ai = AIEngine(api_keys=bnb_config.ai_api_keys, db=db,
+                              provider=bnb_config.ai_provider,
+                              base_url=bnb_config.ai_base_url,
+                              default_model=bnb_config.ai_model,
+                              label="BinanceAI")
+        binance_agent = BinanceAgent(
+            config=bnb_config, ai_engine=bnb_ai,
+            # Shares the signal copier's connected client rather than opening
+            # a second Telegram session, which would look like a new device.
+            client_owner=signal_copier, db=db)
+        logger.info(f"Binance agent ready — drafts to "
+                    f"{bnb_config.draft_group or '(no group configured)'}, "
+                    f"{bnb_config.drafts_per_day}/day.")
+    except Exception as e:
+        logger.error(f"Binance agent could not be initialised: "
+                     f"{type(e).__name__}: {e}")
+        binance_agent = None
+
+    api_app.state.binance_agent = binance_agent
     api_app.state.pin_agent = pin_agent
     api_app.state.brain = brain
     api_app.state.notification_manager = notification_manager
@@ -633,6 +663,24 @@ async def main():
                 except Exception as e:
                     logger.error(f"Evergreen failed: {type(e).__name__}: {e}")
                     fired_slots.discard(ever_slot["key"])
+
+            # ---- Binance Square drafts ----
+            # Above the sleep gate with the website: the draft only lands in
+            # a Telegram group for you to read later, so it wakes nobody.
+            if binance_agent:
+                bnb_slot = binance_agent.due_slot()
+                if bnb_slot and bnb_slot["key"] not in fired_slots:
+                    fired_slots.add(bnb_slot["key"])
+                    try:
+                        d = await binance_agent.run_slot()
+                        if d:
+                            logger.info(f"Binance draft ready: ${d['base']}")
+                        else:
+                            fired_slots.discard(bnb_slot["key"])
+                    except Exception as e:
+                        logger.error(f"Binance draft failed: "
+                                     f"{type(e).__name__}: {e}")
+                        fired_slots.discard(bnb_slot["key"])
 
             # ---- Deferred website articles ----
             # A story held back because it had no picture, or because it

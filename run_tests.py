@@ -32,6 +32,9 @@ def main():
     # Pinterest agent: sourcing, selection and the compliance gate
     ok &= run("PIN AGENT TESTS",
               ["-m", "unittest", "pin_agent.tests.test_pin_agent"])
+    # Binance Square: market selection, the advice gate, the draft agent
+    ok &= run("BINANCE AGENT TESTS",
+              ["-m", "unittest", "binance_agent.tests.test_binance_agent"])
 
     print(f"\n{'=' * 64}")
     print("  ALL TESTS PASSED" if ok else "  SOME TESTS FAILED")
