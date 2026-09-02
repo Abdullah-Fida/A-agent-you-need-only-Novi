@@ -362,6 +362,88 @@ class TestSourcing(unittest.TestCase):
         asyncio.run(client._diagnose_empty("anything"))
         self.assertEqual(client.last_error, "")
 
+    # -- per-product affiliate links ------------------------------
+
+    def test_the_detail_url_is_kept_and_cleaned(self):
+        """
+        The search response's promotion_link is shared across every product,
+        so the per-product link has to be generated from the product page
+        URL. That URL is echoed back as `source_value`, so its query string
+        is stripped to keep both sides of the match identical.
+        """
+        out = AliExpressClient._normalise({
+            "product_id": "1", "product_title": "A thing",
+            "promotion_link": "https://s.click.aliexpress.com/s/shared",
+            "product_detail_url":
+                "https://www.aliexpress.com/item/1005.html?pdp_npi=6%40dis",
+        })
+        self.assertEqual(out["detail_url"],
+                         "https://www.aliexpress.com/item/1005.html")
+
+    def test_links_are_matched_by_url_not_by_position(self):
+        """
+        The platform returns the batch in a DIFFERENT ORDER from the
+        request -- confirmed against the live API. Zipping positionally
+        would attach a valid affiliate link for the wrong product to every
+        row, which no test of link validity would ever catch.
+        """
+        payload = {"aliexpress_affiliate_link_generate_response": {
+            "resp_result": {"result": {"promotion_links": {"promotion_link": [
+                {"promotion_link": "https://s.click.aliexpress.com/e/_cTHIRD",
+                 "source_value": "https://www.aliexpress.com/item/3.html"},
+                {"promotion_link": "https://s.click.aliexpress.com/e/_cFIRST",
+                 "source_value": "https://www.aliexpress.com/item/1.html"},
+                {"promotion_link": "https://s.click.aliexpress.com/e/_cSECOND",
+                 "source_value": "https://www.aliexpress.com/item/2.html"},
+            ]}}}}}
+        links = AliExpressClient._parse_links(payload)
+        self.assertEqual(links["https://www.aliexpress.com/item/1.html"],
+                         "https://s.click.aliexpress.com/e/_cFIRST")
+        self.assertEqual(links["https://www.aliexpress.com/item/3.html"],
+                         "https://s.click.aliexpress.com/e/_cTHIRD")
+
+    def test_a_malformed_link_payload_does_not_raise(self):
+        for junk in (None, [], "text", {}, {"unexpected": {}},
+                     {"aliexpress_affiliate_link_generate_response": {}}):
+            self.assertEqual(AliExpressClient._parse_links(junk), {})
+
+    def test_products_without_a_generated_link_are_dropped(self):
+        """
+        A pin whose link earns nothing is worse than no pin: it still costs
+        a queue slot and a reader's click.
+        """
+        client = AliExpressClient("key", "secret", "default")
+        products = [
+            {"product_id": "1", "detail_url": "https://x/1.html", "affiliate_url": "shared"},
+            {"product_id": "2", "detail_url": "https://x/2.html", "affiliate_url": "shared"},
+        ]
+
+        async def only_the_first(urls):
+            return {"https://x/1.html": "https://s.click.aliexpress.com/e/_cONE"}
+
+        client._generate_links = only_the_first
+        kept = asyncio.run(client._attach_links(products))
+        self.assertEqual([p["product_id"] for p in kept], ["1"])
+        self.assertEqual(kept[0]["affiliate_url"],
+                         "https://s.click.aliexpress.com/e/_cONE")
+
+    def test_the_shared_search_link_never_survives(self):
+        client = AliExpressClient("key", "secret", "default")
+        shared = "https://s.click.aliexpress.com/s/pyFri10M6ltAv61YZY9Tfr"
+        products = [{"product_id": str(i), "detail_url": f"https://x/{i}.html",
+                     "affiliate_url": shared} for i in (1, 2, 3)]
+
+        async def unique(urls):
+            return {u: f"https://s.click.aliexpress.com/e/_c{i}"
+                    for i, u in enumerate(urls)}
+
+        client._generate_links = unique
+        kept = asyncio.run(client._attach_links(products))
+        self.assertEqual(len(kept), 3)
+        self.assertEqual(len({p["affiliate_url"] for p in kept}), 3)
+        for p in kept:
+            self.assertNotEqual(p["affiliate_url"], shared)
+
 
 class TestChannelSelection(unittest.TestCase):
     """

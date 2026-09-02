@@ -160,7 +160,116 @@ class AliExpressClient:
 
         if not products and not self.last_error:
             await self._diagnose_empty(keywords)
-        return products
+            return products
+
+        return await self._attach_links(products)
+
+    # ── per-product affiliate links ──────────────────────────────
+
+    # The platform accepts a batch of source URLs. Twenty keeps the query
+    # string well inside any limit while making one call do the work of
+    # twenty.
+    LINK_BATCH = 20
+
+    async def _attach_links(self, products: List[Dict]) -> List[Dict]:
+        """
+        Replaces the shared promotion link with a real per-product one.
+
+        A search response carries the SAME promotion_link on every row --
+        verified live, five products all pointing at
+        s.click.aliexpress.com/s/pyFri10M... Publishing that would send
+        every pin in a batch to the same page and attribute nothing
+        correctly.
+
+        The per-product link comes from aliexpress.affiliate.link.generate.
+        Anything that does not come back with one is DROPPED: a pin whose
+        link earns nothing is worse than no pin, because it still costs a
+        slot and a reader's click.
+        """
+        wanted = [p for p in products if p.get("detail_url")]
+        if not wanted:
+            return []
+
+        links: Dict[str, str] = {}
+        for start in range(0, len(wanted), self.LINK_BATCH):
+            batch = wanted[start:start + self.LINK_BATCH]
+            links.update(await self._generate_links(
+                [p["detail_url"] for p in batch]))
+
+        kept = []
+        for product in wanted:
+            link = links.get(product["detail_url"], "")
+            if not link:
+                continue
+            product["affiliate_url"] = link
+            kept.append(product)
+
+        missing = len(products) - len(kept)
+        if missing:
+            logger.warning(f"{missing} product(s) dropped: no affiliate link "
+                           f"could be generated.")
+        return kept
+
+    async def _generate_links(self, urls: List[str]) -> Dict[str, str]:
+        """
+        {source url: affiliate link} for one batch.
+
+        Results come back in a DIFFERENT ORDER from the request, so they are
+        matched on the echoed source_value. Zipping them positionally would
+        silently attach the wrong link to every product -- each one valid,
+        each one for the wrong item.
+        """
+        if not urls:
+            return {}
+        params = self._build_params("aliexpress.affiliate.link.generate", {
+            "promotion_link_type": 0,
+            "source_values": ",".join(urls),
+            "tracking_id": self.tracking_id,
+        })
+        try:
+            async with httpx.AsyncClient(timeout=40) as client:
+                response = await client.get(API_URL, params=params)
+            if response.status_code != 200:
+                self.last_error = f"link generation HTTP {response.status_code}"
+                logger.error(self.last_error)
+                return {}
+            payload = response.json()
+        except Exception as e:
+            self.last_error = f"link generation failed: {type(e).__name__}: {e}"
+            logger.error(self.last_error)
+            return {}
+
+        return self._parse_links(payload)
+
+    @staticmethod
+    def _parse_links(payload: Dict) -> Dict[str, str]:
+        """
+        {source url: affiliate link}, matched on the echoed source_value.
+
+        Separate from the request so the matching can be tested without a
+        network call -- it is the part that silently corrupts everything if
+        it is wrong.
+        """
+        node = payload
+        for key in ("aliexpress_affiliate_link_generate_response", "resp_result",
+                    "result", "promotion_links"):
+            if not isinstance(node, dict):
+                return {}
+            node = node.get(key, {})
+
+        rows = node.get("promotion_link") if isinstance(node, dict) else node
+        if not isinstance(rows, list):
+            return {}
+
+        out = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            source = str(row.get("source_value") or "").strip()
+            link = str(row.get("promotion_link") or "").strip()
+            if source and link:
+                out[source] = link
+        return out
 
     async def _diagnose_empty(self, keywords: str) -> None:
         """
@@ -253,7 +362,20 @@ class AliExpressClient:
         product_id = str(item.get("product_id") or item.get("productId") or "").strip()
         title = (item.get("product_title") or item.get("productTitle") or "").strip()
         promo = (item.get("promotion_link") or item.get("promotionLink") or "").strip()
-        if not product_id or not title or not promo:
+
+        # THE PRODUCT PAGE, kept because the promotion_link that comes back
+        # from a search is NOT per-product.
+        #
+        # Verified against the live API: a search returns the same
+        # s.click.aliexpress.com/s/pyFri10M... link on every row, so every
+        # pin in a batch would have sent readers to the same place. The
+        # per-product link comes from aliexpress.affiliate.link.generate,
+        # which needs this URL. Query parameters are stripped because that
+        # string is echoed back as `source_value` and is what the results
+        # are matched on.
+        detail = str(item.get("product_detail_url")
+                     or item.get("productDetailUrl") or "").split("?")[0].strip()
+        if not product_id or not title or not (promo or detail):
             return None
 
         images = []
@@ -277,7 +399,10 @@ class AliExpressClient:
             "category_id": str(item.get("first_level_category_id") or ""),
             "category_name": (item.get("first_level_category_name") or "").strip(),
             "images": images[:6],
+            # Replaced with a per-product link by _attach_links(). The
+            # shared one is a placeholder, never what gets published.
             "affiliate_url": promo,
+            "detail_url": detail,
             "shop_name": (item.get("shop_name") or "").strip(),
         }
 
