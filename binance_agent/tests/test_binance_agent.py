@@ -324,14 +324,40 @@ class TestImagery(unittest.TestCase):
         self.assertGreaterEqual(len(subjects), 4)
 
     def test_every_query_is_from_the_verified_vocabulary(self):
-        """An invented query means no picture at all."""
+        """
+        An invented query means no picture at all.
+
+        Checked against the evergreen topic bank rather than a list copied
+        into the test, because a copied list stops being the truth the first
+        time someone edits one of the two.
+        """
         from binance_agent.imaging import (BTC_QUERY, DEFAULT_QUERY,
                                            NEUTRAL_QUERIES)
-        verified = {"bitcoin cryptocurrency", "stock exchange trading floor",
-                    "data chart", "laptop screen", "server rack", "source code",
-                    "financial documents", "stock market", "fiber optic"}
+        from modules.evergreen import TOPIC_BANK
+        verified = {t["photo"] for t in TOPIC_BANK}
         for q in list(NEUTRAL_QUERIES) + [BTC_QUERY, DEFAULT_QUERY]:
             self.assertIn(q, verified, f"unverified photo query: {q!r}")
+
+    def test_no_subject_was_dropped_by_the_wikimedia_check(self):
+        """
+        The four subjects that failed on the fallback source are gone.
+
+        Openverse went down on 2 September 2026 and these returned either
+        nothing at all or the wrong thing entirely from Commons -- an
+        aircraft negative for "data chart", a confused elderly woman for
+        "laptop screen". A subject has to work on both sources or a draft
+        goes out bare the next time one of them is unreachable.
+        """
+        from binance_agent.imaging import NEUTRAL_QUERIES, BTC_QUERY
+        for dropped in ("data chart", "laptop screen", "source code",
+                        "financial documents", "office workspace", "microchip",
+                        "data centre", "central bank building",
+                        "financial report documents", "inflation money currency",
+                        "stock exchange trading floor"):
+            self.assertNotIn(dropped, NEUTRAL_QUERIES)
+        # "bitcoin cryptocurrency" returns a Bitcoin on a judge's gavel,
+        # which reads as a regulation story rather than a price move.
+        self.assertEqual(BTC_QUERY, "bitcoin coin")
 
     def test_a_draft_survives_having_no_photograph(self):
         """

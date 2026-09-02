@@ -2381,6 +2381,176 @@ class TestStockPhotoLicensing(unittest.TestCase):
             "solar panels rooftop"))
 
 
+class TestWikimediaFallback(unittest.TestCase):
+    """
+    The second photo source.
+
+    Openverse went down on 2 September 2026 -- root healthy, every image
+    search hanging until the timeout -- and a Binance draft went out with no
+    picture because it was the only source wired. Commons backs it up, but
+    it is an encyclopaedia's file store rather than a stock library, so it
+    needs stricter matching than Openverse ever did.
+    """
+
+    def setUp(self):
+        from modules.stock_photos import StockPhotoFinder
+        self.F = StockPhotoFinder
+        self.f = StockPhotoFinder()
+
+    def _page(self, title, **kw):
+        info = {"url": "https://upload.wikimedia.org/x/Photo.jpg",
+                "width": 1600, "height": 900, "mime": "image/jpeg",
+                "extmetadata": {"License": {"value": "cc0"},
+                                "Artist": {"value": "Someone"}}}
+        info.update(kw)
+        return {"title": title, "imageinfo": [info]}
+
+    # -- licence handling -----------------------------------------
+
+    def test_wikimedia_public_domain_needs_no_credit(self):
+        # Openverse calls it "pdm", Wikimedia calls it "pd". Both mean the
+        # same thing and neither needs an attribution line.
+        self.assertEqual(self.F.credit_for({"license": "pd"}), "")
+
+    def test_licence_label_is_not_doubled(self):
+        # Wikimedia returns "cc-by-sa-2.0" where Openverse returns "by-sa".
+        # Prefixing both gave credit lines reading "(CC CC-BY-SA-2.0)".
+        credit = self.F.credit_for({"license": "cc-by-sa-2.0",
+                                    "creator": "B", "source": "Wikimedia Commons"})
+        self.assertIn("(CC-BY-SA-2.0)", credit)
+        self.assertNotIn("CC CC", credit)
+
+    def test_openverse_label_still_gets_its_prefix(self):
+        self.assertIn("(CC BY-SA)",
+                      self.F.credit_for({"license": "by-sa", "creator": "B"}))
+
+    # -- normalising a MediaWiki page -----------------------------
+
+    def test_page_becomes_the_same_shape_openverse_returns(self):
+        item = self.F._from_wikimedia(self._page("File:Trading_floor_Chicago.jpg"))
+        self.assertEqual(item["title"], "Trading floor Chicago")
+        self.assertEqual(item["license"], "cc0")
+        self.assertEqual(item["source"], "Wikimedia Commons")
+        self.assertTrue(self.F._usable(item))
+
+    def test_tracking_parameters_are_stripped_from_the_url(self):
+        # Wikimedia appends utm_source. Left on, the same photograph looks
+        # like a different one to the exclude list on the next run.
+        page = self._page("File:A_photo.jpg",
+                          url="https://upload.wikimedia.org/x/A.jpg?utm_source=en")
+        self.assertEqual(self.F._from_wikimedia(page)["url"],
+                         "https://upload.wikimedia.org/x/A.jpg")
+
+    def test_the_scaled_copy_is_preferred_over_the_original(self):
+        """
+        Commons serves the ORIGINAL file -- routinely a 3648x5419 camera
+        frame over the 12MB download cap, so a good photograph was found and
+        then thrown away. Openverse hands back web-sized images, which is why
+        this never came up before there was a second source.
+        """
+        page = self._page("File:Bank_building.jpg", width=3648, height=5419,
+                          url="https://upload.wikimedia.org/x/Bank.jpg",
+                          thumburl="https://upload.wikimedia.org/x/thumb/1600px-Bank.jpg")
+        item = self.F._from_wikimedia(page)
+        self.assertIn("1600px", item["url"])
+        # The size check still judges the ORIGINAL, which is what says
+        # whether the photograph was ever good enough to use.
+        self.assertTrue(self.F._usable(item))
+
+    def test_the_original_is_used_when_there_is_no_thumbnail(self):
+        # MediaWiki returns no thumbnail for a file already narrower than
+        # the width asked for.
+        page = self._page("File:Small_but_fine.jpg", width=900, height=600,
+                          url="https://upload.wikimedia.org/x/Small.jpg")
+        self.assertEqual(self.F._from_wikimedia(page)["url"],
+                         "https://upload.wikimedia.org/x/Small.jpg")
+
+    def test_artist_html_is_reduced_to_a_name(self):
+        page = self._page("File:A_photo.jpg", extmetadata={
+            "License": {"value": "cc-by-4.0"},
+            "Artist": {"value": '<a href="/wiki/User:X" title="U">Ank Kumar</a>'}})
+        self.assertEqual(self.F._from_wikimedia(page)["creator"], "Ank Kumar")
+
+    def test_vector_and_tiff_files_are_refused(self):
+        # Pillow cannot open an SVG, so it would fail at compose time.
+        for mime in ("image/svg+xml", "image/tiff", "application/pdf"):
+            self.assertIsNone(
+                self.F._from_wikimedia(self._page("File:Chart.svg", mime=mime)),
+                mime)
+
+    def test_icons_and_diagrams_are_refused(self):
+        # "data center" returned an icon and "computer monitor" returned a
+        # transparent PNG cut-out. Both look like a mistake once cropped.
+        for title in ("File:Rubin_Data_Center_Icon.jpg",
+                      "File:Computer_monitor_remix_transparent.png",
+                      "File:Bank_logo.png",
+                      "File:Map_of_the_trading_region.jpg",
+                      "File:Network_diagram.png"):
+            self.assertIsNone(self.F._from_wikimedia(self._page(title)), title)
+
+    def test_a_real_photograph_survives_the_filter(self):
+        self.assertIsNotNone(self.F._from_wikimedia(
+            self._page("File:UPS_units_in_the_main_server_room.jpg")))
+
+    # -- the stricter matching ------------------------------------
+
+    def test_the_wikimedia_ladder_never_reaches_one_word(self):
+        # Broadening "source code" to "source" returned Anse Source d'Argent,
+        # a beach in the Seychelles, and it passed every check because the
+        # word was in the title.
+        ladder = self.F._wiki_ladder("source code")
+        self.assertNotIn("source", ladder)
+        self.assertIn("source code", ladder)
+
+        long_ladder = self.F._wiki_ladder("stock exchange trading floor")
+        self.assertEqual(long_ladder, ["stock exchange trading floor",
+                                       "stock exchange"])
+        for rung in long_ladder:
+            self.assertGreater(len(rung.split()), 1)
+
+    def test_openverse_ladder_still_broadens_all_the_way(self):
+        # The two sources need different ladders: Openverse indexes stock
+        # libraries, where one word is a thousand usable photographs.
+        self.assertIn("hardware", self.F._query_ladder("hardware wallet security"))
+
+    def test_a_two_word_query_must_match_both_words(self):
+        # "financial documents" matching only "financial" gave the Toronto
+        # financial district skyline: a fine photograph of the wrong thing.
+        self.assertEqual(self.F._required_score("financial documents"), 2)
+        skyline = {"title": "Toronto Financial District August 2017"}
+        self.assertLess(self.F._match_score(skyline, "financial documents"),
+                        self.F._required_score("financial documents"))
+
+    def test_a_genuine_match_clears_the_bar(self):
+        floor = {"title": "Trading Floor in the Chicago Board of Trade Building"}
+        self.assertGreaterEqual(self.F._match_score(floor, "trading floor"),
+                                self.F._required_score("trading floor"))
+
+    def test_a_single_word_query_only_needs_the_one(self):
+        self.assertEqual(self.F._required_score("bitcoin"), 1)
+
+    # -- the circuit breaker --------------------------------------
+
+    def test_openverse_is_rested_after_repeated_failures(self):
+        # Six requests at twelve seconds each, per article, for the whole
+        # outage. The breaker skips straight to the fallback instead.
+        self.assertTrue(self.f._openverse_awake())
+        for _ in range(self.F.FAILURES_BEFORE_REST):
+            self.f._openverse_failed()
+        self.assertFalse(self.f._openverse_awake())
+        self.assertTrue(self.f.status["openverse_resting"])
+
+    def test_one_good_answer_wakes_openverse_again(self):
+        for _ in range(self.F.FAILURES_BEFORE_REST):
+            self.f._openverse_failed()
+        self.f._openverse_worked()
+        self.assertTrue(self.f._openverse_awake())
+
+    def test_a_near_miss_does_not_rest_it(self):
+        self.f._openverse_failed()
+        self.assertTrue(self.f._openverse_awake())
+
+
 class TestEvergreenDesk(unittest.TestCase):
     """The explainer desk: what it writes and what it refuses to repeat."""
 

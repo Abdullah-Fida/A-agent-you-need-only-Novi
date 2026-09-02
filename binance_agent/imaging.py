@@ -53,20 +53,33 @@ FONTS_REG = ["C:\\Windows\\Fonts\\arial.ttf", "arial.ttf",
 # None can be read as claiming to be a particular asset. Only Bitcoin gets
 # Bitcoin imagery, because there it is simply true.
 #
-# Every query is from the vocabulary already verified to return a real
-# openly-licensed photograph.
-BTC_QUERY = "bitcoin cryptocurrency"
+# Every query here is verified against Openverse AND looked at on the
+# Wikimedia fallback, so a draft still gets a sensible picture when Openverse
+# is down -- which is exactly what happened on 2 September 2026, when the
+# first live draft went out bare.
+#
+# The list is SHORT on purpose. Eleven other subjects from the same verified
+# vocabulary were tried and dropped after looking at what they actually
+# return: "office workspace" gave a lipstick flatlay, "data chart" an
+# aircraft negative, "laptop screen" a confused elderly woman, "microchip" an
+# unreadable brown blur, "financial report documents" a 1939 Polish ledger,
+# and "inflation money currency" a line graph, which on a price post reads as
+# a claim about this coin. Five subjects that are always right beat eight
+# where three are wrong; the photograph still varies inside each subject,
+# because `exclude` carries the last dozen pictures used.
+#
+# Bitcoin gets "bitcoin coin", not "bitcoin cryptocurrency": the latter
+# returns a Bitcoin resting on a judge's GAVEL, which reads as a regulation
+# story rather than a price move.
+BTC_QUERY = "bitcoin coin"
 NEUTRAL_QUERIES = [
-    "stock exchange trading floor",
-    "data chart",
-    "laptop screen",
-    "server rack",
-    "source code",
-    "financial documents",
-    "stock market",
-    "fiber optic",
+    "stock market",        # a macro shot of a chart on screen
+    "bank building",
+    "credit cards",
+    "dollar bills",
+    "smartphone",
 ]
-DEFAULT_QUERY = "stock exchange trading floor"
+DEFAULT_QUERY = "stock market"
 
 
 def _font(paths, size):

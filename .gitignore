@@ -21,3 +21,4 @@ website/.env*
 render.env
 *.env
 assets/pins/
+assets/binance/
