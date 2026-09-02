@@ -223,14 +223,77 @@ class TestReviewQueueSurvivesRestart(unittest.TestCase):
         async def performance():
             return {}
 
+        async def first_pin_at():
+            return None
+
         agent.store.posted_history = history
         agent.store.posted_today = posted_today
         agent.store.pending_pins = pending
         agent.store.category_performance = performance
+        agent.store.first_pin_at = first_pin_at
 
         asyncio.run(agent.connect())
         self.assertEqual(len(agent.pending_review), 1)
         self.assertEqual(agent.pending_review[0]["title"], "Survived the restart")
+
+
+class TestVolumeRamp(unittest.TestCase):
+    """
+    Pin volume is earned, not configured.
+
+    A brand-new Pinterest account posting fifteen a day looks like a bought
+    account being drained, and the reach penalty for that is not appealable.
+    """
+
+    def setUp(self):
+        from pin_agent.pin_bot import PinAgent
+        from types import SimpleNamespace
+        self.agent = PinAgent.__new__(PinAgent)
+        self.agent.config = SimpleNamespace(pins_per_day=15)
+
+    def _cap_on_day(self, day):
+        from datetime import datetime, timezone, timedelta
+        self.agent._first_pin_at = (None if day is None else
+                                    datetime.now(timezone.utc) - timedelta(days=day))
+        return self.agent.daily_cap()
+
+    def test_day_one_is_the_lowest_step(self):
+        self.assertEqual(self._cap_on_day(0), 4)
+
+    def test_before_any_pin_exists_it_is_still_day_zero(self):
+        """
+        days_live is None until the first pin publishes. Falling back to the
+        configured maximum there would run the very first day at full
+        volume -- the exact day the ramp exists to protect.
+        """
+        self.assertEqual(self._cap_on_day(None), 4)
+
+    def test_the_ramp_climbs_on_schedule(self):
+        for day, expected in ((10, 4), (11, 6), (20, 6), (21, 8),
+                              (30, 8), (31, 11), (45, 11), (46, 15)):
+            self.assertEqual(self._cap_on_day(day), expected, f"day {day}")
+
+    def test_it_never_climbs_past_the_ceiling(self):
+        for day in (60, 120, 400):
+            self.assertEqual(self._cap_on_day(day), 15, f"day {day}")
+
+    def test_the_configured_maximum_still_wins(self):
+        # The ramp raises the floor over time; it must never post more than
+        # the owner asked for.
+        from types import SimpleNamespace
+        self.agent.config = SimpleNamespace(pins_per_day=6)
+        self.assertEqual(self._cap_on_day(400), 6)
+        self.assertEqual(self._cap_on_day(0), 4)
+
+    def test_the_age_comes_from_the_pins_not_a_setting(self):
+        """
+        A stored "started on" value is what a redeploy wipes -- which is how
+        the social module quietly went back to its full cap on day one.
+        """
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        source = inspect.getsource(PinAgent.connect)
+        self.assertIn("first_pin_at", source)
 
 
 class TestPinCopyAssembly(unittest.TestCase):

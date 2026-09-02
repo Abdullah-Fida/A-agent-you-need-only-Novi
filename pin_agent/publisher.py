@@ -338,8 +338,17 @@ class PinterestPublisher:
             "channelId": channel["id"],
             "text": pin.get("description") or "",
             "assets": [{"image": {"url": image_url, "thumbnailUrl": image_url}}],
-            "mode": "addToQueue",
-            "schedulingType": "automatic",
+            # Published immediately rather than queued.
+            #
+            # Buffer's free plan holds only ten posts in the queue, and this
+            # account carries Bluesky as well as Pinterest, so eight pins a
+            # day plus three Bluesky posts competed for the same ten slots.
+            # A full queue is reported as LimitReachedError and the pin is
+            # simply dropped for that cycle -- quietly, since it is logged as
+            # a warning rather than an error. The agent already spaces pins
+            # 45 minutes apart and caps the day, so Buffer's scheduling adds
+            # nothing here except a limit to collide with.
+            "mode": "shareNow",
             "needsApproval": False,
             "saveToDraft": False,
             "aiAssisted": True,
@@ -355,7 +364,7 @@ class PinterestPublisher:
             post = result.get("post") or {}
             self.pins_sent += 1
             self.last_error = ""
-            logger.info(f"Pin queued: '{pin.get('title', '')[:44]}' "
+            logger.info(f"Pin published: '{pin.get('title', '')[:44]}' "
                         f"id={post.get('id')} status={post.get('status')}")
             if self.db:
                 await self.db.log_social_post(

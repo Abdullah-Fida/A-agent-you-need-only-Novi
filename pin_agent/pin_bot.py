@@ -58,6 +58,9 @@ class PinAgent:
         # Pins waiting for a human yes/no while review is on.
         self.pending_review: List[Dict] = []
         self.published_today = 0
+        # When the very first pin went out. Read from the pins themselves
+        # on connect, so a redeploy cannot reset the ramp.
+        self._first_pin_at: Optional[datetime] = None
         self.last_run: Optional[datetime] = None
         self.last_error = ""
 
@@ -70,12 +73,57 @@ class PinAgent:
             "aliexpress_live": self.sourcing.is_live,
             "publisher": self.publisher.status,
             "published_today": self.published_today,
-            "max_per_day": self.config.pins_per_day,
+            "max_per_day": self.daily_cap(),
+            "max_per_day_configured": self.config.pins_per_day,
+            "days_live": self.days_live,
             "awaiting_review": len(self.pending_review),
             "review_required": self.config.require_review,
             "last_run": self.last_run.isoformat() if self.last_run else None,
             "last_error": self.last_error,
         }
+
+    # A brand-new Pinterest account that starts at fifteen pins a day looks
+    # exactly like a bought account being drained, and the reach penalty for
+    # that is not something you appeal. Volume is earned instead: each step
+    # holds for ten days, which is long enough for Pinterest to see the
+    # account behave consistently at that level.
+    #
+    #   (day the step ends, pins allowed up to that day)
+    RAMP = ((10, 4), (20, 6), (30, 8), (45, 11))
+    RAMP_CEILING = 15
+
+    def daily_cap(self) -> int:
+        """
+        Today's ceiling, which grows with the account's age.
+
+        Never above PIN_MAX_PER_DAY: the ramp raises the floor over time but
+        the configured number is still the limit the owner asked for.
+        """
+        configured = self.config.pins_per_day
+        # No pin has gone out yet, so this is day zero -- the newest the
+        # account will ever be. Falling back to the configured maximum here
+        # would let the very first day run at full volume, which is exactly
+        # the day the ramp exists to protect.
+        age = self.days_live if self.days_live is not None else 0
+
+        for last_day, allowed in self.RAMP:
+            if age <= last_day:
+                return min(configured, allowed)
+        return min(configured, self.RAMP_CEILING)
+
+    @property
+    def days_live(self) -> Optional[int]:
+        """
+        Days since the first pin went out, or None before there is one.
+
+        Derived from the pins themselves rather than stored separately, so a
+        redeploy cannot reset it -- the same mistake that silently raised the
+        social module's cap back to full on day one.
+        """
+        if not self._first_pin_at:
+            return None
+        delta = datetime.now(timezone.utc) - self._first_pin_at
+        return max(0, delta.days)
 
     async def connect(self) -> bool:
         ok = await self.publisher.connect()
@@ -83,6 +131,7 @@ class PinAgent:
         self.gate.load_history(history["product_ids"], history["urls"],
                                history["image_hashes"])
         self.published_today = await self.store.posted_today()
+        self._first_pin_at = await self.store.first_pin_at()
 
         # Pins that were waiting for a decision when the process last
         # stopped. Without this the queue is empty after every deploy and
@@ -183,7 +232,7 @@ class PinAgent:
         """
         self.last_run = datetime.now(timezone.utc)
 
-        if self.published_today >= self.config.pins_per_day:
+        if self.published_today >= self.daily_cap():
             logger.info(f"Daily pin limit reached "
                         f"({self.published_today}/{self.config.pins_per_day}).")
             return None

@@ -104,6 +104,34 @@ class PinStore:
 
     # ── writing ──────────────────────────────────────────────────
 
+    async def first_pin_at(self) -> Optional[datetime]:
+        """
+        When the first pin was published, or None if none has been.
+
+        Feeds the volume ramp. Derived from the pins rather than stored as
+        its own setting, because a separate "started on" value is exactly
+        what a redeploy wipes -- which silently put the social module back
+        on its full daily cap on day one.
+        """
+        if not self.enabled:
+            return None
+
+        def query():
+            return (self.client.table("pin_posts").select("created_at")
+                    .eq("status", "published")
+                    .order("created_at", desc=False).limit(1).execute())
+
+        result = await self._run(query)
+        rows = getattr(result, "data", None) or []
+        if not rows:
+            return None
+        try:
+            stamp = str(rows[0].get("created_at") or "").replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(stamp)
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            return None
+
     async def pending_pins(self, days: int = 14) -> List[Dict]:
         """
         Pins still waiting for a human decision.
