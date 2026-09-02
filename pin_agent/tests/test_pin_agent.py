@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import unittest
+from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))))
@@ -161,6 +162,75 @@ class TestRatingScaleAndRanking(unittest.TestCase):
             self._product(product_id="2", title="Under Sink Pull Out Storage Shelf"),
         ], limit=5)
         self.assertEqual(len(chosen), 2)
+
+
+class TestReviewQueueSurvivesRestart(unittest.TestCase):
+    """
+    The review queue lived only in memory.
+
+    Every Render restart -- which is every deploy -- emptied it. A pin was
+    built, saved, and emailed asking for approval, and then pressing Approve
+    found an empty list. Worse, posted_history() reads every pin_posts row
+    regardless of status, so the orphaned product entered the dedupe set and
+    could not be featured again for 120 days. The pin was lost AND the
+    product was burned.
+    """
+
+    def setUp(self):
+        from pin_agent.store import PinStore
+        self.store = PinStore(client=None)      # offline mode
+
+    def test_pins_awaiting_review_are_returned(self):
+        self.store._memory = [
+            {"product_id": "1", "status": "awaiting_review", "title": "Waiting"},
+            {"product_id": "2", "status": "published", "title": "Already out"},
+            {"product_id": "3", "status": "awaiting_review", "title": "Also waiting"},
+        ]
+        pending = asyncio.run(self.store.pending_pins())
+        self.assertEqual([p["product_id"] for p in pending], ["1", "3"])
+
+    def test_nothing_pending_is_an_empty_list_not_an_error(self):
+        self.store._memory = [{"product_id": "2", "status": "published"}]
+        self.assertEqual(asyncio.run(self.store.pending_pins()), [])
+
+    def test_the_agent_restores_the_queue_on_connect(self):
+        """The whole point: Approve must still find the pin after a deploy."""
+        import pin_agent.pin_bot as pin_bot
+
+        agent = pin_bot.PinAgent.__new__(pin_bot.PinAgent)
+        agent.pending_review = []
+        agent.published_today = 0
+        agent.gate = MagicMock()
+        agent.selector = MagicMock()
+        agent.publisher = MagicMock()
+
+        async def connected():
+            return True
+
+        agent.publisher.connect = connected
+        agent.store = MagicMock()
+
+        async def history():
+            return {"product_ids": [], "urls": [], "image_hashes": []}
+
+        async def posted_today():
+            return 0
+
+        async def pending():
+            return [{"product_id": "1", "status": "awaiting_review",
+                     "title": "Survived the restart"}]
+
+        async def performance():
+            return {}
+
+        agent.store.posted_history = history
+        agent.store.posted_today = posted_today
+        agent.store.pending_pins = pending
+        agent.store.category_performance = performance
+
+        asyncio.run(agent.connect())
+        self.assertEqual(len(agent.pending_review), 1)
+        self.assertEqual(agent.pending_review[0]["title"], "Survived the restart")
 
 
 class TestPinCopyAssembly(unittest.TestCase):

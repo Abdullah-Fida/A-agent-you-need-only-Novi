@@ -4695,11 +4695,25 @@ class TestNothingRepeats(unittest.TestCase):
                 data=[{"slug": "yesterdays-article"}])
         fo = Fanout(db=db)
 
+        # A slot LATER TODAY, chosen so it cannot wrap past midnight.
+        #
+        # This used to be `now + 3 hours` and read only .hour off the result,
+        # which throws the date away: run at 22:09 PKT it asked about 01:09,
+        # a slot that had already happened that morning, and the test failed
+        # for three hours every night. The window between now and midnight is
+        # what makes "later today" meaningful, so the offset is taken from
+        # whatever is actually left of the day.
         now = datetime.now(timezone.utc) + timedelta(hours=5)
-        later = (now + timedelta(hours=3))
+        minutes_left = (23 - now.hour) * 60 + (59 - now.minute)
+        if minutes_left < 30:
+            self.skipTest("no slot left today; nothing to assert before midnight")
+        later = now + timedelta(minutes=min(180, minutes_left - 5))
+        self.assertEqual(later.day, now.day, "the chosen slot must be today")
+
         self.assertFalse(
             asyncio.run(fo.slot_already_filled(later.hour, later.minute)),
-            "a slot three hours away must not be treated as already done")
+            f"the {later.hour:02d}:{later.minute:02d} slot is still ahead of "
+            f"{now.hour:02d}:{now.minute:02d} and must not read as done")
 
     def test_a_failed_slot_check_still_lets_the_article_publish(self):
         from modules.fanout import Fanout

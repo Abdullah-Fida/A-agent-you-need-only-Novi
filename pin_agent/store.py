@@ -104,6 +104,35 @@ class PinStore:
 
     # ── writing ──────────────────────────────────────────────────
 
+    async def pending_pins(self, days: int = 14) -> List[Dict]:
+        """
+        Pins still waiting for a human decision.
+
+        The review queue lived only in memory, so every Render restart --
+        which is every deploy -- emptied it. A pin was built, saved, emailed
+        for approval, and then had nowhere to be approved: pressing Approve
+        found an empty list. Worse, posted_history() reads every pin_posts
+        row regardless of status, so the orphaned product entered the dedupe
+        set and was blocked from being featured again for 120 days.
+
+        Bounded by age because a pin nobody has judged in a fortnight is
+        stale: its price has moved and the listing may be gone.
+        """
+        if not self.enabled:
+            return [p for p in self._memory
+                    if p.get("status") == "awaiting_review"]
+
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+        def query():
+            return (self.client.table("pin_posts").select("*")
+                    .eq("status", "awaiting_review")
+                    .gte("created_at", since)
+                    .order("created_at", desc=False).limit(200).execute())
+
+        result = await self._run(query)
+        return getattr(result, "data", None) or []
+
     async def save_pin(self, pin: Dict) -> Optional[Dict]:
         record = {
             "product_id": str(pin.get("product_id", ""))[:64],

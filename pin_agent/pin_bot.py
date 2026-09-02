@@ -83,6 +83,15 @@ class PinAgent:
         self.gate.load_history(history["product_ids"], history["urls"],
                                history["image_hashes"])
         self.published_today = await self.store.posted_today()
+
+        # Pins that were waiting for a decision when the process last
+        # stopped. Without this the queue is empty after every deploy and
+        # Approve has nothing to act on, while the products stay burned in
+        # the dedupe set for four months.
+        self.pending_review = await self.store.pending_pins()
+        if self.pending_review:
+            logger.info(f"Restored {len(self.pending_review)} pin(s) still "
+                        f"awaiting review.")
         # Bias future picks toward what has actually performed.
         self.selector.performance = await self.store.category_performance()
         return ok
