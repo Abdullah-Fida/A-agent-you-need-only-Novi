@@ -86,6 +86,12 @@ class BotConfig:
     # Website
     site_url: str = ""
     site_name: str = "Novi News"
+    # The byline. Google treats finance and crypto as "Your Money or Your
+    # Life", where an anonymous publisher ranks badly however good the
+    # writing is. Empty falls back to "<site> Newsroom".
+    author_name: str = ""
+    author_role: str = ""
+    author_bio: str = ""
 
     # Reddit
     reddit_client_id: str = ""
@@ -230,6 +236,9 @@ def load_config() -> BotConfig:
         social_start_date=_clean(os.getenv("SOCIAL_START_DATE", "")),
         site_url=_clean(os.getenv("SITE_URL", "")),
         site_name=_clean(os.getenv("SITE_NAME", "")) or "PressVane",
+        author_name=_clean(os.getenv("AUTHOR_NAME", "")) or "Abdullah Fida",
+        author_role=_clean(os.getenv("AUTHOR_ROLE", "")),
+        author_bio=_clean(os.getenv("AUTHOR_BIO", "")),
         indexnow_key=_clean(os.getenv("INDEXNOW_KEY", "")),
         reddit_client_id=os.getenv("REDDIT_CLIENT_ID", ""),
         reddit_client_secret=os.getenv("REDDIT_CLIENT_SECRET", ""),

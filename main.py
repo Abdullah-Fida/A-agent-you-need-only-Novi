@@ -141,7 +141,8 @@ async def main():
         site_url=config.site_url,
         article_ai=article_ai,
         indexnow=indexnow,
-        photos=stock_photos
+        photos=stock_photos,
+        author=config.author_name
     )
 
     evergreen = EvergreenDesk(article_agent=content_engine.article_agent,

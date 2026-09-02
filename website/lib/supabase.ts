@@ -86,3 +86,36 @@ export async function getCategories(): Promise<string[]> {
     return [];
   }
 }
+
+/**
+ * Everything a given byline has published, newest first.
+ *
+ * Takes a LIST of names because the archive carries more than one: articles
+ * published before the named byline existed say "PressVane Newsroom", and
+ * two spellings of that were live at different times. Without them the
+ * author page would show a fraction of the work it is meant to evidence.
+ */
+export async function getArticlesByAuthor(
+  names: string[],
+  limit = 60,
+): Promise<Article[]> {
+  if (!supabase || names.length === 0) return [];
+  try {
+    const { data, error } = await supabase
+      .from('articles')
+      .select('*')
+      .eq('status', 'published')
+      .in('author', names)
+      .order('published_at', { ascending: false })
+      .limit(limit);
+
+    if (error) {
+      console.error('[pressvane] Failed to load author articles:', error.message);
+      return [];
+    }
+    return (data as Article[]) || [];
+  } catch (err) {
+    console.error('[pressvane] Unexpected error loading author articles:', err);
+    return [];
+  }
+}

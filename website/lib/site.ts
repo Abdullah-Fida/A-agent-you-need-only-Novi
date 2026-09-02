@@ -35,3 +35,51 @@ export const TELEGRAM_URL =
 export const SITE_DESCRIPTION =
   'Independent coverage of world affairs, crypto and Web3, technology, business ' +
   'and South Asia — published continuously, with the context behind each story.';
+
+/**
+ * The byline.
+ *
+ * Google's Search Quality Rater Guidelines treat finance, crypto and
+ * investing as "Your Money or Your Life" topics, where an anonymous
+ * publisher is ranked down however good the writing is. What they look for
+ * is a named person, a bio that explains why that person is worth reading
+ * on the subject, and a page where both live.
+ *
+ * Defaults are the real values rather than placeholders, so the site is
+ * correct with no configuration; the environment variables exist so the
+ * byline can change without a code edit.
+ */
+export const AUTHOR_NAME =
+  process.env.NEXT_PUBLIC_AUTHOR_NAME?.trim() || 'Abdullah Fida';
+
+export const AUTHOR_ROLE =
+  process.env.NEXT_PUBLIC_AUTHOR_ROLE?.trim() || 'Founder & Editor';
+
+/** Kept in sync with the Python side's slugify: lowercase, hyphenated. */
+export const AUTHOR_SLUG = AUTHOR_NAME.toLowerCase()
+  .replace(/[^a-z0-9]+/g, '-')
+  .replace(/^-+|-+$/g, '');
+
+export const AUTHOR_URL = `${SITE_URL}/author/${AUTHOR_SLUG}`;
+
+export const AUTHOR_BIO: string[] = [
+  `${AUTHOR_NAME} is the Founder and Editor of ${SITE_NAME}, an independent ` +
+    'digital publication covering news, current affairs, technology, business ' +
+    'and useful evergreen topics. He focuses on creating clear, informative and ' +
+    'reader-friendly content that helps people understand important stories and ' +
+    'discover practical information.',
+  'As the founder and editor, Abdullah oversees the publication\u2019s content ' +
+    'direction, editorial standards and publishing process, with an emphasis on ' +
+    'accuracy, clarity and useful journalism.',
+];
+
+/**
+ * Bylines used before the named byline existed. The author page still has to
+ * claim those articles, or two thirds of the archive would show a byline
+ * that leads nowhere. Two spellings because both were live.
+ */
+export const LEGACY_BYLINES = [
+  'PressVane Newsroom',
+  'Press Vane Newsroom',
+  `${SITE_NAME} Newsroom`,
+];

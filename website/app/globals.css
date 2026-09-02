@@ -1075,3 +1075,89 @@ img {
 
 /* The headline list gains the chip, so it scans by section too. */
 .headline-list .chip--sm { margin-bottom: 0; align-self: center; }
+
+/* ── Attribution: where the story and the photograph came from ──────────
+   Both sit at the foot of the article and must read as apparatus rather
+   than as the last paragraph of the piece, so they are smaller, quieter
+   and separated by a rule. */
+.prose .source-note,
+.prose .photo-credit {
+  margin: 1.8em 0 0;
+  padding-top: 1em;
+  border-top: 1px solid var(--rule);
+  font-size: .82rem;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+.prose .photo-credit + .source-note,
+.prose .source-note + .photo-credit {
+  margin-top: .5em;
+  padding-top: 0;
+  border-top: 0;
+}
+.prose .source-note a { color: var(--ink-3); }
+.prose .source-note a:hover { color: var(--accent); }
+
+/* ── Author page ───────────────────────────────────────────────────────
+   The page Google reads to decide whether the byline is worth trusting on
+   money and crypto, so the bio gets the reading measure and real space
+   rather than being tucked under the articles. */
+.author-head {
+  max-width: var(--measure);
+  margin-top: 18px;
+  padding-bottom: 26px;
+  border-bottom: 1px solid var(--rule);
+}
+.author-head h1 {
+  font-family: var(--font-display);
+  font-size: clamp(1.9rem, 4.5vw, 2.6rem);
+  line-height: 1.12;
+  letter-spacing: -.02em;
+  margin: 0;
+  text-wrap: balance;
+}
+.author-role {
+  margin: 8px 0 18px;
+  font-size: .9rem;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.author-bio {
+  margin: 0 0 1em;
+  font-size: 1.02rem;
+  line-height: 1.65;
+  color: var(--ink-2);
+}
+.author-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 34px;
+  margin: 22px 0 0;
+}
+.author-facts div { margin: 0; }
+.author-facts dt {
+  font-size: .7rem;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--ink-4);
+}
+.author-facts dd {
+  margin: 3px 0 0;
+  font-size: .9rem;
+  color: var(--ink-2);
+}
+.author-facts a {
+  color: var(--accent-deep);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--rule-2);
+}
+.author-facts a:hover { text-decoration-color: var(--accent); }
+
+.byline a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--rule-2);
+}
+.byline a:hover { text-decoration-color: var(--accent); }

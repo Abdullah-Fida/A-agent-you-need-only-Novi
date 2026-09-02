@@ -1,6 +1,6 @@
 import { MetadataRoute } from 'next';
 import { getArticles, getCategories } from '@/lib/supabase';
-import { SITE_URL } from '@/lib/site';
+import { SITE_URL, AUTHOR_SLUG } from '@/lib/site';
 
 export const revalidate = 3600;
 
@@ -18,6 +18,15 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
       lastModified: new Date(),
       changeFrequency: 'yearly',
       priority: 0.4,
+    },
+    {
+      // The byline's bio. Google reads this alongside every article's
+      // author field to decide whether the writing is worth trusting on
+      // money and crypto topics, so it has to be crawlable in its own right.
+      url: `${SITE_URL}/author/${AUTHOR_SLUG}`,
+      lastModified: new Date(),
+      changeFrequency: 'weekly',
+      priority: 0.5,
     },
     {
       url: `${SITE_URL}/privacy`,

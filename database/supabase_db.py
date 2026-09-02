@@ -311,6 +311,22 @@ class SupabaseDB:
         result = await self._run(q, "get_articles")
         return (result.data or []) if result else []
 
+    async def recent_articles(self, limit: int = 80) -> List[Dict]:
+        """
+        Just enough of each published article to decide whether to link it.
+
+        Deliberately not get_articles(): that selects *, and pulling eighty
+        full article bodies to choose four internal links moves megabytes to
+        read four slugs.
+        """
+        def q():
+            return (self.client.table("articles")
+                    .select("slug,title,category,seo_keywords,published_at")
+                    .eq("status", "published")
+                    .order("published_at", desc=True).limit(limit).execute())
+        result = await self._run(q, "recent_articles")
+        return (result.data or []) if result else []
+
     async def get_article_by_slug(self, slug: str) -> Optional[Dict]:
         result = await self._run(
             lambda: self.client.table("articles").select("*").eq("slug", slug).limit(1).execute(),

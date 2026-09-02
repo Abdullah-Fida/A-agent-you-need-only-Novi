@@ -5,7 +5,10 @@ import Image from 'next/image';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
 import { supabase, Article } from '@/lib/supabase';
-import { SITE_URL, SITE_NAME } from '@/lib/site';
+import {
+  SITE_URL, SITE_NAME, AUTHOR_NAME, AUTHOR_ROLE, AUTHOR_SLUG, AUTHOR_URL,
+  LEGACY_BYLINES,
+} from '@/lib/site';
 
 interface ArticlePageProps {
   params: Promise<{ slug: string }>;
@@ -65,6 +68,13 @@ export async function generateMetadata({ params }: ArticlePageProps): Promise<Me
     title,
     description,
     keywords: article.seo_keywords || [],
+    // Only a real person gets a profile URL. Pointing the old newsroom
+    // byline at a Person page would claim someone wrote articles they did not.
+    authors: [
+      article.author === AUTHOR_NAME
+        ? { name: AUTHOR_NAME, url: AUTHOR_URL }
+        : { name: article.author || SITE_NAME },
+    ],
     alternates: { canonical: url },
     openGraph: {
       type: 'article',
@@ -73,6 +83,8 @@ export async function generateMetadata({ params }: ArticlePageProps): Promise<Me
       url,
       siteName: SITE_NAME,
       publishedTime: article.published_at,
+      // OpenGraph takes plain names here; the linked form is the
+      // top-level `authors` field below.
       authors: [article.author || SITE_NAME],
       section: article.category,
       tags: article.seo_keywords || [],
@@ -106,6 +118,14 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
   const related = await getRelated(article.category, article.slug);
   const published = formatDate(article.published_at);
 
+  // Older articles carry a newsroom byline under two different spellings.
+  // Those are not a person and must not be dressed up as one.
+  const rawByline = article.author || SITE_NAME;
+  const byline = {
+    name: rawByline,
+    isPerson: rawByline === AUTHOR_NAME && !LEGACY_BYLINES.includes(rawByline),
+  };
+
   // NewsArticle structured data — required for Google News / Top Stories.
   // headline must stay under 110 characters or Google drops the rich result.
   const articleSchema = {
@@ -119,11 +139,25 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
       : [`${SITE_URL}/og-default.png`],
     datePublished: article.published_at,
     dateModified: article.created_at || article.published_at,
-    author: {
-      '@type': 'Organization',
-      name: article.author || SITE_NAME,
-      url: `${SITE_URL}/about`,
-    },
+    // A named Person, not the masthead. Google treats crypto, investing
+    // and business as "Your Money or Your Life" topics and ranks an
+    // anonymous publisher down however good the writing is; the byline has
+    // to resolve to someone with a bio explaining why they are worth
+    // reading. Articles filed under the old newsroom byline stay an
+    // Organization, because claiming a person wrote them would be false.
+    author: byline.isPerson
+      ? {
+          '@type': 'Person',
+          '@id': `${AUTHOR_URL}#person`,
+          name: byline.name,
+          url: AUTHOR_URL,
+          jobTitle: AUTHOR_ROLE,
+        }
+      : {
+          '@type': 'Organization',
+          name: byline.name,
+          url: `${SITE_URL}/about`,
+        },
     publisher: { '@id': `${SITE_URL}/#organization` },
     mainEntityOfPage: { '@type': 'WebPage', '@id': `${SITE_URL}/${article.slug}` },
     articleSection: article.category,
@@ -181,7 +215,13 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
             <h1>{article.title}</h1>
             {article.summary && <p className="standfirst">{article.summary}</p>}
             <div className="byline">
-              <span>{article.author || SITE_NAME}</span>
+              {byline.isPerson ? (
+                <span>
+                  By <Link href={`/author/${AUTHOR_SLUG}`} rel="author">{byline.name}</Link>
+                </span>
+              ) : (
+                <span>{byline.name}</span>
+              )}
               {published && <><span aria-hidden="true">·</span><time dateTime={article.published_at}>{published}</time></>}
               {article.reading_minutes ? (
                 <><span aria-hidden="true">·</span><span>{article.reading_minutes} min read</span></>
@@ -196,7 +236,10 @@ export default async function ArticlePage({ params }: ArticlePageProps) {
             <Image
               className="hero"
               src={article.main_image_url}
-              alt={article.title}
+              // Describes the picture in context rather than repeating the
+              // headline verbatim, which is what a screen reader announced
+              // immediately after reading the same words as the <h1>.
+              alt={`${article.category} — ${article.title}`}
               width={1200}
               height={675}
               sizes="(max-width: 780px) 100vw, 720px"

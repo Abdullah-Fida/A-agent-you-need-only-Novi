@@ -16,6 +16,8 @@ import re
 from typing import Optional, Dict, List, Tuple
 
 from core.ai_engine import AIEngine
+from modules import house_style
+from modules.internal_links import InternalLinker
 
 logger = logging.getLogger("OmniBot.ArticleAgent")
 
@@ -41,11 +43,19 @@ class ArticleAgent:
     RETRY_MINUTES = 30
 
     def __init__(self, ai_engine: AIEngine, db=None, site_name: str = "Novi News",
-                 site_url: str = "", image_gen=None, indexnow=None, photos=None):
+                 site_url: str = "", image_gen=None, indexnow=None, photos=None,
+                 author: str = ""):
         self.ai = ai_engine
         self.db = db
         self.site_name = site_name
         self.site_url = (site_url or "").rstrip("/")
+        # Who the byline names. Google's guidelines treat finance and crypto
+        # as "Your Money or Your Life", where an anonymous publisher ranks
+        # badly however good the writing is. Configured rather than derived,
+        # because it is a real person's name on a public page and nothing
+        # should be guessing it.
+        self.author = (author or "").strip() or f"{site_name} Newsroom"
+        self.linker = InternalLinker(db=db)
         self.image_gen = image_gen
         self.indexnow = indexnow
         # Openly-licensed photography, used when the story arrived without a
@@ -163,6 +173,9 @@ class ArticleAgent:
             logger.warning(f"No article body generated for '{title[:50]}'. Skipping.")
             return None
 
+        # Before the word count, because it removes a heading.
+        body_html = self._drop_echo_heading(body_html, title)
+
         words = self._word_count(body_html)
         if words < self.MIN_ACCEPTABLE_WORDS:
             logger.warning(f"Article too short ({words} words) for '{title[:50]}'. Skipping.")
@@ -191,6 +204,20 @@ class ArticleAgent:
 
         base_slug = self._slugify(seo.get("slug_hint") or title)
         slug = await self._unique_slug(base_slug)
+
+        # Contextual links to what we have already published. Done here and
+        # not in the prompt: a model handed a list of slugs invents an
+        # eleventh that reads plausibly and 404s. These come from rows that
+        # are known to exist.
+        body_html, linked = await self.linker.link(body_html, category, slug=slug)
+        if not linked:
+            logger.info(f"No internal link fitted '{title[:44]}' — "
+                        f"{self.linker.last_error or 'no candidate phrase appeared in the text'}.")
+
+        # Where the story came from, said out loud.
+        note = self._source_note(source_name, source_url)
+        if note:
+            body_html = body_html.rstrip() + note
 
         # A required photo credit is printed with the article. Appended to the
         # body rather than stored in a new column, so it survives every render
@@ -222,7 +249,7 @@ class ArticleAgent:
             "word_count": words,
             "source_url": source_url,
             "source_name": source_name,
-            "author": f"{self.site_name} Newsroom",
+            "author": self.author,
             "status": "published",
         }
 
@@ -684,7 +711,9 @@ class ArticleAgent:
         a year from now, so "this week" and "recently" are banned outright.
         """
         if evergreen:
-            return await self._write_evergreen_body(title, summary, category)
+            return await self._enforce_house_style(
+                await self._write_evergreen_body(title, summary, category) or "",
+                title)
         system_prompt = (
             f"You are a senior journalist writing for {self.site_name}, covering "
             f"international news, crypto, technology, business and South Asia.\n\n"
@@ -702,22 +731,175 @@ CONTEXT: {summary}
 CATEGORY: {category}
 
 Structure it as:
-1. A strong opening paragraph that states what happened and why it matters.
-2. At least three <h2> sections with substantive analysis, background and context.
-3. A short bulleted <ul> of the key takeaways.
-4. A forward-looking closing paragraph.
+1. A "Key points" <ul> of three short bullets, FIRST, before any prose.
+   Each bullet is one plain sentence a reader could repeat to a colleague.
+2. A strong opening paragraph that states what happened and why it matters.
+   Do NOT open with an <h2> restating the headline -- the page already
+   shows the headline above your text.
+3. At least three <h2> sections with substantive analysis, background and
+   context. Write the headings as what the section answers, not as labels:
+   "Why the volumes matter" beats "Analysis".
+4. A closing paragraph on what happens next and what would change it.
 
-Be factual and analytical. Do not invent specific statistics, quotes or
-names that were not provided. Where detail is unknown, write about the
-broader implications instead."""
+{self._FACT_RULES}
 
-        return self._clean_html(await self.ai.generate(
+{self._STYLE_RULES}"""
+
+        draft = self._clean_html(await self.ai.generate(
             task="article",
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             max_tokens=3000,
             temperature=0.7,
         ) or "")
+        return await self._enforce_house_style(draft, title)
+
+    # WHY THIS IS SO BLUNT.
+    #
+    # The rule used to read "do not invent specific statistics, quotes or
+    # names that were not provided". A dry run under that wording produced
+    # "Bitcoin fell about 2%", "Solana, Ether and XRP each dropped between
+    # 5% and 7%", a named 2023 comparison, and an exchange suspending margin
+    # trading -- none of it in the brief, all of it stated as fact.
+    #
+    # A polite negative does not work, because the model has no way to tell
+    # which specifics it is allowed to recall. So the rule is positive and
+    # closed: figures may come from the brief, and from nowhere else. That
+    # is checkable by a person reading the piece against the source, which
+    # the old wording never was.
+    _FACT_RULES = """WHAT YOU MAY STATE AS FACT -- this is not negotiable:
+- ONLY the facts in CONTEXT above. Nothing else is known to you.
+- Every number, date, percentage, price, company name, person's name and
+  quotation must appear in CONTEXT. If it is not there, you may not write
+  it. This includes historical comparisons and "in early 2023"-style
+  references -- you do not have that data and must not supply it.
+- Do NOT invent events. No exchange announced anything, no regulator said
+  anything and no report was published unless CONTEXT says so.
+- Where you do not know a figure, write about the mechanism instead: why
+  high-beta assets move further than bitcoin, what forced selling looks
+  like, who is exposed. That is analysis, and it needs no invented data.
+- Attribute anything uncertain: "traders expect", "analysts have argued".
+  Never present an expectation as something that has happened."""
+
+    # House rules, given to the writer up front and enforced afterwards by
+    # modules/house_style.py. Stating them here does not make the gate
+    # redundant -- the first 84 articles were written under a prompt saying
+    # "be factual and analytical" and 78 of them still came back reading
+    # like a machine -- but it does cut how often a rewrite is needed.
+    _STYLE_RULES = """HOW IT MUST READ -- this is what gets the piece rejected:
+- Never write "underscores", "highlights the", "moreover", "furthermore",
+  "landscape", "testament to", "serves as a", "paving the way", "a stark
+  reminder", "remains to be seen", "delve", "realm", "navigate the",
+  "in today's", "ever-evolving", "poised to" or "game-changer".
+- No sentence may begin "Moreover," "Furthermore," or "Additionally,".
+- Short sentences. If a sentence runs past about 25 words, split it.
+- Prefer the plain verb. Something "shows" or "means" -- it does not
+  "underscore" or "serve as a testament to".
+- Every paragraph must add a fact. If a paragraph only restates the one
+  above in grander words, delete it.
+- Write like a reporter filing to an editor who charges by the word."""
+
+    _LEADING_H2 = re.compile(r"\A\s*<h2[^>]*>(?P<text>.*?)</h2>\s*", re.S | re.I)
+
+    @classmethod
+    def _drop_echo_heading(cls, body: str, title: str) -> str:
+        """
+        Removes an opening <h2> that just restates the headline.
+
+        Eight of the first 84 articles opened by saying the title again in
+        slightly different words. The page already prints the headline as
+        <h1> directly above, so the reader gets it twice before a single
+        fact, and Google sees two competing headings for one idea.
+
+        Only the FIRST heading, and only when it genuinely echoes: a real
+        opening section heading is worth keeping.
+        """
+        m = cls._LEADING_H2.match(body or "")
+        if not m:
+            return body
+
+        def key(text: str) -> str:
+            text = re.sub(r"<[^>]+>", " ", text or "").lower()
+            # Curly quotes and non-breaking spaces make two identical
+            # headings look different to a comparison.
+            text = text.replace("’", "'").replace("‘", "'")
+            return re.sub(r"[^a-z0-9 ]", "", re.sub(r"\s+", " ", text)).strip()
+
+        import difflib
+        if difflib.SequenceMatcher(None, key(title), key(m.group("text"))).ratio() < 0.55:
+            return body
+        logger.info(f"Dropped an opening heading that restated the headline: "
+                    f"'{key(m.group('text'))[:52]}'")
+        return body[m.end():].lstrip()
+
+    @staticmethod
+    def _source_note(source_name: str, source_url: str) -> str:
+        """
+        The visible citation.
+
+        Every one of the first 84 articles stored where the story came from
+        and showed it nowhere. Hiding the source does not make the piece
+        look more original -- it removes the one signal that says a real
+        story sits behind it, which is the opposite of what it costs.
+        """
+        url = (source_url or "").strip()
+        name = (source_name or "").strip()
+        if not url.startswith(("http://", "https://")):
+            return ""
+        if not name:
+            name = re.sub(r"^www\.", "", url.split("/")[2]) if "/" in url[8:] else "the original report"
+        # The full stop is load-bearing. The pre-publish gate blocks a body
+        # that does not end in terminal punctuation -- a truncated
+        # generation looks exactly like that -- and without it every article
+        # would end on the source's name and be deferred.
+        return ('<p class="source-note"><small>Source: '
+                f'<a href="{html.escape(url, quote=True)}" rel="noopener" '
+                f'target="_blank">{html.escape(name)}</a>.</small></p>')
+
+    async def _enforce_house_style(self, body: str, title: str) -> str:
+        """
+        The gate. A draft that reads like a machine is sent back once.
+
+        One retry, not three: each costs a model call and the second rewrite
+        reliably comes back blander rather than better. A draft that still
+        trips the gate is published anyway -- the tells are a quality
+        problem, not a correctness one, and holding the story helps nobody.
+        """
+        body = house_style.strip_openers(body)
+        verdict = house_style.report(body)
+        if verdict["passes"]:
+            return body
+
+        before = verdict["banned_total"]
+        logger.info(f"House style: '{title[:44]}' tripped the gate "
+                    f"({before} banned phrase(s)). Rewriting.")
+
+        rewritten = self._clean_html(await self.ai.generate(
+            task="article",
+            system_prompt=(
+                "You are a newspaper sub-editor. You fix how a piece READS. "
+                "You never change what it says: every fact, figure, name, "
+                "quote and HTML tag survives exactly as it is. Return the "
+                "full corrected HTML fragment and nothing else."),
+            user_prompt=(
+                f"Rewrite the phrasing flagged below. Keep every fact and "
+                f"every heading. Do not shorten the article.\n\n"
+                f"FLAGGED:\n{house_style.instructions(body)}\n\n"
+                f"ARTICLE:\n{body}"),
+            max_tokens=4000, temperature=0.4,
+        ) or "")
+
+        # A rewrite that drops a quarter of the article has not fixed the
+        # style, it has eaten the reporting. Keep the original.
+        if not rewritten or self._word_count(rewritten) < self._word_count(body) * 0.75:
+            logger.warning("House style rewrite came back short — keeping the "
+                           "original draft.")
+            return body
+
+        rewritten = house_style.strip_openers(rewritten)
+        after = house_style.report(rewritten)["banned_total"]
+        logger.info(f"House style: {before} -> {after} banned phrase(s).")
+        return rewritten
 
     async def _write_seo(self, title: str, summary: str,
                          body_html: str, category: str) -> Dict:

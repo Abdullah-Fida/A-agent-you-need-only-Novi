@@ -2601,6 +2601,280 @@ class TestWikimediaFallback(unittest.TestCase):
         self.assertTrue(self.f._openverse_awake())
 
 
+class TestHouseStyle(unittest.TestCase):
+    """
+    The register gate.
+
+    An audit of the first 84 published articles found AI phrasing in 78 of
+    them -- "underscores" 60 times across 43 articles, "landscape" 57 across
+    41, "moreover" 40 across 38. Every one of those was written under a
+    prompt asking for factual, analytical copy, which is why this is a gate
+    and not a politer prompt.
+    """
+
+    def setUp(self):
+        from modules import house_style
+        self.hs = house_style
+
+    def test_the_worst_offenders_are_caught(self):
+        body = ("<p>The result underscores a broader shift. Moreover, it is a "
+                "testament to the changing landscape.</p>")
+        found = dict(self.hs.find_banned(body))
+        for phrase in ("underscores", "a broader shift", "moreover", "testament to"):
+            self.assertIn(phrase, found, phrase)
+
+    def test_clean_copy_passes(self):
+        body = ("<p>The bank raised rates by half a point. Traders had "
+                "expected a quarter. Bond yields rose within the hour.</p>")
+        self.assertTrue(self.hs.report(body)["passes"])
+
+    def test_markup_is_not_prose(self):
+        """
+        A source URL containing a banned word must not fail the article.
+        Detection reads the visible text, or a link to
+        example.com/landscape-report rewrites a piece for something no
+        reader can see.
+        """
+        body = '<p>Rates rose. <a href="https://x.com/landscape-report">Report</a>.</p>'
+        self.assertNotIn("landscape", dict(self.hs.find_banned(body)))
+        self.assertEqual(self.hs.find_overused(body), [])
+
+    def test_watched_words_are_counted_not_banned(self):
+        once = "<p>This is a crucial point about rates.</p>"
+        self.assertEqual(self.hs.find_overused(once), [])
+        many = ("<p>A crucial point. Another crucial detail. A crucial "
+                "factor. The crucial question.</p>")
+        self.assertTrue(any(w == "crucial" for w, _, _ in self.hs.find_overused(many)))
+
+    def test_the_rewrite_note_names_the_phrase_and_the_fix(self):
+        # "Write less like an AI" produces the same words reordered. Naming
+        # the phrase and giving the alternative produces a fix.
+        note = self.hs.instructions("<p>It underscores the shift.</p>")
+        self.assertIn("underscores", note)
+        self.assertIn("->", note)
+
+    def test_typographic_apostrophes_are_still_caught(self):
+        """
+        Models write curly quotes. "in today's" in the ban list never
+        matched "in today’s" in the prose, so the gate passed a draft with
+        the phrase in its third paragraph -- found in a live dry run.
+        """
+        self.assertIn("in today's",
+                      dict(self.hs.find_banned("<p>In today’s drop.</p>")))
+        self.assertIn("it's important to note",
+                      dict(self.hs.find_banned(
+                          "<p>It’s important to note this.</p>")))
+
+    def test_a_phrase_broken_across_lines_is_caught(self):
+        # re.escape stopped escaping spaces in Python 3.7, so the old
+        # whitespace substitution silently did nothing.
+        self.assertIn("testament to",
+                      dict(self.hs.find_banned("<p>A testament\n  to change.</p>")))
+
+    def test_sentence_openers_are_removed_safely(self):
+        out = self.hs.strip_openers(
+            "<p>Moreover, the bank held. Furthermore, it fell. "
+            "Notably, yields rose.</p>")
+        for opener in ("Moreover", "Furthermore", "Notably"):
+            self.assertNotIn(opener, out)
+        self.assertIn("The bank held.", out)
+        self.assertIn("It fell.", out)
+        self.assertIn("Yields rose.", out)
+
+    def test_an_opener_without_a_comma_is_left_alone(self):
+        # Removing it would need the sentence rewritten, and a mangled
+        # sentence is worse than a stilted one.
+        text = "<p>Moreover the comma is missing here.</p>"
+        self.assertEqual(self.hs.strip_openers(text), text)
+
+    def test_the_word_notably_inside_a_sentence_survives(self):
+        text = "<p>Rates rose, notably in Europe.</p>"
+        self.assertIn("notably in Europe", self.hs.strip_openers(text))
+
+
+class TestInternalLinks(unittest.TestCase):
+    """
+    Contextual links between articles.
+
+    The first 84 published articles contained ZERO links to each other.
+    Every piece was an island, which costs a reader somewhere to go next and
+    costs Google the map of what the site covers deeply.
+    """
+
+    def setUp(self):
+        from modules.internal_links import InternalLinker, anchor_phrases
+        self.L = InternalLinker
+        self.linker = InternalLinker()
+        self.anchor_phrases = anchor_phrases
+
+    def _art(self, slug, title, keywords=(), category="Crypto"):
+        return {"slug": slug, "title": title, "category": category,
+                "seo_keywords": list(keywords)}
+
+    # -- choosing the anchor --------------------------------------
+
+    def test_no_anchor_begins_or_ends_on_a_function_word(self):
+        # A window slid across a headline lands on "of Ethereum" as often as
+        # on "Ethereum supply", and a link starting with "of" reads as a bug.
+        phrases = self.anchor_phrases(
+            self._art("x", "Bitmine now controls 4.9% of Ethereum supply"))
+        for p in phrases:
+            words = p.lower().split()
+            self.assertNotIn(words[0], {"of", "the", "and", "in", "to"}, p)
+            self.assertNotIn(words[-1], {"of", "the", "and", "in", "to"}, p)
+
+    def test_a_lone_headline_word_is_not_an_anchor(self):
+        # "Ethereum" lifted out of a Sberbank headline pointed readers at a
+        # Sberbank story. A misleading link is worse than a missing one.
+        phrases = self.anchor_phrases(
+            self._art("s", "Russia's Sberbank Sees $46 Billion in Crypto Trading"))
+        self.assertNotIn("crypto", [p.lower() for p in phrases])
+
+    def test_a_keyword_may_stand_alone(self):
+        # Keywords describe the whole article, so one is allowed to carry a
+        # link by itself.
+        phrases = [p.lower() for p in self.anchor_phrases(
+            self._art("p", "Remittances to Pakistan hit a record",
+                      keywords=["remittances", "Pakistan"]))]
+        self.assertIn("remittances", phrases)
+
+    def test_vague_words_never_anchor(self):
+        phrases = [p.lower() for p in self.anchor_phrases(
+            self._art("v", "Market sentiment shifts",
+                      keywords=["sentiment", "credibility", "services"]))]
+        for vague in ("sentiment", "credibility", "services"):
+            self.assertNotIn(vague, phrases)
+
+    # -- placing the link -----------------------------------------
+
+    def test_a_link_is_inserted_on_a_real_phrase(self):
+        html = "<p>Growth in decentralized finance continued this month.</p>"
+        out, slugs = self.linker.insert(
+            html, [self._art("defi", "Ether.fi adds tokenized stocks",
+                             keywords=["decentralized finance"])])
+        self.assertEqual(slugs, ["defi"])
+        self.assertIn('<a href="/defi">decentralized finance</a>', out)
+
+    def test_headings_are_never_linked(self):
+        # A link inside an <h2> reads as a navigation error.
+        html = "<h2>Decentralized finance grows</h2><p>Nothing to match here.</p>"
+        out, slugs = self.linker.insert(
+            html, [self._art("defi", "x", keywords=["decentralized finance"])])
+        self.assertEqual(slugs, [])
+        self.assertNotIn("<a", out)
+
+    def test_text_already_inside_a_link_is_not_relinked(self):
+        html = ('<p>See <a href="https://example.com">decentralized finance</a> '
+                'coverage.</p>')
+        out, slugs = self.linker.insert(
+            html, [self._art("defi", "x", keywords=["decentralized finance"])])
+        self.assertEqual(slugs, [])
+        self.assertEqual(out, html)
+
+    def test_one_link_per_paragraph(self):
+        html = ("<p>Both decentralized finance and monetary policy here.</p>")
+        out, slugs = self.linker.insert(html, [
+            self._art("a", "x", keywords=["decentralized finance"]),
+            self._art("b", "y", keywords=["monetary policy"]),
+        ])
+        self.assertEqual(len(slugs), 1)
+
+    def test_the_same_article_is_not_linked_twice(self):
+        html = ("<p>Talk of decentralized finance.</p>"
+                "<p>More decentralized finance.</p>")
+        out, slugs = self.linker.insert(
+            html, [self._art("defi", "x", keywords=["decentralized finance"])])
+        self.assertEqual(slugs, ["defi"])
+        self.assertEqual(out.count('href="/defi"'), 1)
+
+    def test_link_count_is_capped(self):
+        html = "".join(f"<p>Paragraph about topic{i} here.</p>" for i in range(12))
+        out, slugs = self.linker.insert(
+            html, [self._art(f"s{i}", "x", keywords=[f"topic{i} here"])
+                   for i in range(12)])
+        self.assertLessEqual(len(slugs), 4)
+
+    def test_nothing_matching_means_no_links_not_a_forced_one(self):
+        html = "<p>An article about shipping routes.</p>"
+        out, slugs = self.linker.insert(
+            html, [self._art("d", "x", keywords=["decentralized finance"])])
+        self.assertEqual(slugs, [])
+        self.assertEqual(out, html)
+
+    def test_the_sentence_is_never_rewritten(self):
+        import re
+        html = "<p>Growth in decentralized finance continued.</p>"
+        out, _ = self.linker.insert(
+            html, [self._art("d", "x", keywords=["decentralized finance"])])
+        self.assertEqual(re.sub(r"<[^>]+>", "", out),
+                         re.sub(r"<[^>]+>", "", html))
+
+
+class TestArticleAttribution(unittest.TestCase):
+    """The byline, the source line, and the heading that said it twice."""
+
+    def setUp(self):
+        from modules.article_engine import ArticleAgent
+        self.A = ArticleAgent
+
+    def test_an_opening_heading_that_restates_the_headline_is_dropped(self):
+        body = ("<h2>Bitcoin ETFs register strongest month of 2026</h2>"
+                "<p>Real reporting.</p>")
+        out = self.A._drop_echo_heading(
+            body, "Bitcoin ETFs notch best month of 2026 as BTC gains 25%")
+        self.assertTrue(out.startswith("<p>"))
+
+    def test_a_real_section_heading_is_kept(self):
+        body = "<h2>Why the volumes matter</h2><p>Real reporting.</p>"
+        self.assertEqual(self.A._drop_echo_heading(body, "Bitcoin ETFs notch best"),
+                         body)
+
+    def test_only_the_first_heading_is_considered(self):
+        body = ("<p>Opening.</p><h2>Bitcoin ETFs notch best month</h2>"
+                "<p>More.</p>")
+        self.assertEqual(self.A._drop_echo_heading(body, "Bitcoin ETFs notch best month"),
+                         body)
+
+    def test_the_source_line_ends_in_a_full_stop(self):
+        """
+        Load-bearing. The pre-publish gate blocks a body that does not end
+        in terminal punctuation, because that is what a truncated
+        generation looks like. Without the stop, every article would end on
+        the source's name and be deferred.
+        """
+        import re
+        note = self.A._source_note("CoinDesk", "https://coindesk.com/x")
+        text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", note)).strip()
+        self.assertIn(text[-1], ".!?\"')")
+
+    def test_the_source_line_links_out_safely(self):
+        note = self.A._source_note("CoinDesk", "https://coindesk.com/x")
+        self.assertIn('rel="noopener"', note)
+        self.assertIn("CoinDesk", note)
+
+    def test_no_source_line_without_a_real_url(self):
+        for bad in ("", "not-a-url", "javascript:alert(1)"):
+            self.assertEqual(self.A._source_note("CoinDesk", bad), "")
+
+    def test_a_missing_source_name_falls_back_to_the_domain(self):
+        note = self.A._source_note("", "https://www.reuters.com/world/a")
+        self.assertIn("reuters.com", note)
+
+    def test_the_byline_is_configured_not_derived(self):
+        from modules.article_engine import ArticleAgent
+        agent = ArticleAgent.__new__(ArticleAgent)
+        ArticleAgent.__init__(agent, ai_engine=None, site_name="PressVane",
+                              author="Abdullah Fida")
+        self.assertEqual(agent.author, "Abdullah Fida")
+
+    def test_an_unset_byline_falls_back_to_the_newsroom(self):
+        # Never invent a person: an empty setting means the masthead.
+        from modules.article_engine import ArticleAgent
+        agent = ArticleAgent.__new__(ArticleAgent)
+        ArticleAgent.__init__(agent, ai_engine=None, site_name="PressVane", author="")
+        self.assertEqual(agent.author, "PressVane Newsroom")
+
+
 class TestEvergreenDesk(unittest.TestCase):
     """The explainer desk: what it writes and what it refuses to repeat."""
 
