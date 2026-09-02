@@ -76,7 +76,17 @@ class DraftDelivery:
         header = (f"<b>BINANCE SQUARE — draft {index} of {total}</b>\n"
                   f"<code>${_esc(draft['base'])}</code>  ·  "
                   f"tap the block to copy, paste into Square.")
-        post = f"<pre>{_esc(draft['text'])}</pre>"
+        # A required photo credit rides INSIDE the copy block, so it is
+        # pasted with the post rather than noticed separately and forgotten.
+        # The picture is embedded in the card being posted, so the licence
+        # obligation travels with it -- and the Wikimedia fallback returns
+        # attributed licences far more often than Openverse did, which is
+        # what turned this from theoretical into a real omission.
+        body = draft["text"]
+        credit = (draft.get("credit") or "").strip()
+        if credit:
+            body = f"{body}\n\n{credit}"
+        post = f"<pre>{_esc(body)}</pre>"
         image = draft.get("image_path") or ""
 
         try:

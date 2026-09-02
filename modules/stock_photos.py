@@ -401,25 +401,44 @@ class StockPhotoFinder:
         # through for "source code". Every candidate is scored on how much
         # of the query it actually matches, the best one wins, and a weak
         # best is refused outright. No picture beats the wrong picture.
-        best, best_score = None, 0
-        for page in pages.values():
-            item = self._from_wikimedia(page)
-            if not item or item["url"] in exclude or not self._usable(item):
-                continue
-            score = self._match_score(item, query)
-            if score > best_score:
-                best, best_score = item, score
-
-        if not best or best_score < self._required_score(query):
+        best = self._pick_wikimedia(pages, query, exclude)
+        if not best:
             return None, ""
 
         self.found += 1
         credit = self.credit_for(best)
         logger.info(f"Wikimedia photo for '{query[:36]}' "
-                    f"(matched {best_score} words): {best.get('license')} "
+                    f"(matched {self._match_score(best, query)} words): "
+                    f"{best.get('license')} "
                     f"{best.get('width')}x{best.get('height')}"
                     f"{' (credit required)' if credit else ''}")
         return best["url"], credit
+
+    @classmethod
+    def _pick_wikimedia(cls, pages: Dict, query: str,
+                        exclude=()) -> Optional[Dict]:
+        """
+        The best candidate, or None when none is good enough.
+
+        Ties break toward public domain. Openverse asks for cc0/pdm in its
+        first pass and only widens to attributed licences afterwards; Commons
+        has no such tiering, so without this the fallback returns an
+        attribution-required photograph far more often than the primary
+        source ever did, for no gain in quality.
+        """
+        best, best_key = None, None
+        for page in (pages or {}).values():
+            item = cls._from_wikimedia(page)
+            if not item or item["url"] in exclude or not cls._usable(item):
+                continue
+            free = (item.get("license") or "").lower() in NO_CREDIT_NEEDED
+            key = (cls._match_score(item, query), 1 if free else 0)
+            if best_key is None or key > best_key:
+                best, best_key = item, key
+
+        if not best or best_key[0] < cls._required_score(query):
+            return None
+        return best
 
     @classmethod
     def _meaningful(cls, query: str) -> set:

@@ -2529,6 +2529,56 @@ class TestWikimediaFallback(unittest.TestCase):
     def test_a_single_word_query_only_needs_the_one(self):
         self.assertEqual(self.F._required_score("bitcoin"), 1)
 
+    # -- choosing between candidates ------------------------------
+
+    def test_the_best_match_wins_not_the_first_result(self):
+        pages = {"1": self._page("File:Bank_holiday_parade.jpg"),
+                 "2": self._page("File:Bank_building_downtown.jpg")}
+        self.assertIn("building",
+                      self.F._pick_wikimedia(pages, "bank building")["title"].lower())
+
+    def test_a_tie_breaks_toward_public_domain(self):
+        # Commons has no licence tiering of its own, so without this the
+        # fallback demands attribution far more often than Openverse did.
+        attributed = self._page(
+            "File:Bank_building_one.jpg",
+            url="https://upload.wikimedia.org/x/One.jpg",
+            extmetadata={"License": {"value": "cc-by-sa-4.0"},
+                         "Artist": {"value": "Someone"}})
+        free = self._page(
+            "File:Bank_building_two.jpg",
+            url="https://upload.wikimedia.org/x/Two.jpg",
+            extmetadata={"License": {"value": "pd"}, "Artist": {"value": ""}})
+        for pages in ({"1": attributed, "2": free}, {"1": free, "2": attributed}):
+            picked = self.F._pick_wikimedia(pages, "bank building")
+            self.assertEqual(picked["license"], "pd")
+            self.assertEqual(self.F.credit_for(picked), "")
+
+    def test_a_stronger_match_beats_a_free_licence(self):
+        # Public domain is a tie-break, not an override: the right subject
+        # matters more than saving a credit line.
+        weak_free = self._page("File:Bank_holiday.jpg")
+        strong_attributed = self._page(
+            "File:Bank_building_downtown.jpg",
+            url="https://upload.wikimedia.org/x/Strong.jpg",
+            extmetadata={"License": {"value": "cc-by-4.0"},
+                         "Artist": {"value": "Someone"}})
+        picked = self.F._pick_wikimedia({"1": weak_free, "2": strong_attributed},
+                                        "bank building")
+        self.assertEqual(picked["license"], "cc-by-4.0")
+
+    def test_excluded_photographs_are_passed_over(self):
+        page = self._page("File:Bank_building_downtown.jpg",
+                          url="https://upload.wikimedia.org/x/Used.jpg")
+        self.assertIsNone(self.F._pick_wikimedia(
+            {"1": page}, "bank building",
+            exclude={"https://upload.wikimedia.org/x/Used.jpg"}))
+
+    def test_nothing_good_enough_returns_nothing(self):
+        self.assertIsNone(self.F._pick_wikimedia(
+            {"1": self._page("File:A_beach_in_the_Seychelles.jpg")},
+            "source code"))
+
     # -- the circuit breaker --------------------------------------
 
     def test_openverse_is_rested_after_repeated_failures(self):

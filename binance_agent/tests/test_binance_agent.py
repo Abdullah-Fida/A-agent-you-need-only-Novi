@@ -388,6 +388,45 @@ class TestDelivery(unittest.TestCase):
         from binance_agent.delivery import _esc
         self.assertEqual(_esc("a < b & c > d"), "a &lt; b &amp; c &gt; d")
 
+    def _sent_messages(self, draft):
+        """Delivers to a fake client and returns everything it was asked to
+        send, so the copy block can be inspected."""
+        owner, sent = MagicMock(), []
+
+        async def send_message(entity, message="", **kw):
+            sent.append(message)
+
+        owner.client.send_message = send_message
+        d = DraftDelivery(client_owner=owner, group="-100")
+        d._entity = object()          # already resolved
+        self.assertTrue(asyncio.run(d.send(draft)))
+        return sent
+
+    def test_a_required_photo_credit_is_inside_the_copy_block(self):
+        """
+        The picture is embedded in the card being posted, so the licence
+        obligation travels with it. The credit was being computed and then
+        never shown anywhere, which the Wikimedia fallback turned from
+        theoretical into a real omission: Commons returns attributed
+        licences far more often than Openverse's public-domain-first search.
+        """
+        sent = self._sent_messages(
+            {"base": "SOL", "text": "SOL moved. What do you think?",
+             "facts": "f", "score": 5,
+             "credit": "Photo: A Person / Wikimedia Commons (CC-BY-SA-4.0)"})
+        block = next(m for m in sent if "<pre>" in m)
+        self.assertIn("A Person", block)
+        self.assertIn("CC-BY-SA-4.0", block)
+        # Inside the copy block, so one tap takes the credit with the post.
+        self.assertLess(block.index("A Person"), block.index("</pre>"))
+
+    def test_no_credit_line_when_the_licence_needs_none(self):
+        sent = self._sent_messages(
+            {"base": "SOL", "text": "SOL moved. What do you think?",
+             "facts": "f", "score": 5, "credit": ""})
+        block = next(m for m in sent if "<pre>" in m)
+        self.assertNotIn("Photo:", block)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
