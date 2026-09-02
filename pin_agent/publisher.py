@@ -349,6 +349,17 @@ class PinterestPublisher:
             # 45 minutes apart and caps the day, so Buffer's scheduling adds
             # nothing here except a limit to collide with.
             "mode": "shareNow",
+            # REQUIRED by the schema (SchedulingType!), even when the post
+            # is published immediately and nothing is being scheduled.
+            # Dropping it alongside the old "addToQueue" line is what made
+            # the first live pin fail: Buffer answered "Field
+            # schedulingType of required type SchedulingType! was not
+            # provided" and the pin never went out.
+            #
+            # The enum is exactly ['automatic', 'notification'] -- confirmed
+            # by introspecting the live schema, not guessed. 'notification'
+            # would only ping a phone to post by hand.
+            "schedulingType": "automatic",
             "needsApproval": False,
             "saveToDraft": False,
             "aiAssisted": True,

@@ -237,6 +237,45 @@ class TestReviewQueueSurvivesRestart(unittest.TestCase):
         self.assertEqual(agent.pending_review[0]["title"], "Survived the restart")
 
 
+class TestBufferPostInput(unittest.TestCase):
+    """
+    The shape Buffer's createPost actually requires.
+
+    Read off the source rather than sent over the network, because the cost
+    of getting it wrong is a slot that fires, builds an image, writes copy,
+    and then throws all of it away on a validation error.
+    """
+
+    def setUp(self):
+        import inspect
+        from pin_agent.publisher import PinterestPublisher
+        self.src = inspect.getsource(PinterestPublisher)
+
+    def test_scheduling_type_is_present(self):
+        """
+        SchedulingType! is required even when publishing immediately. It was
+        deleted alongside the old "addToQueue" line, and the first live pin
+        died on 'Field "schedulingType" of required type "SchedulingType!"
+        was not provided' -- after the image had been built and uploaded.
+        """
+        self.assertIn('"schedulingType"', self.src)
+
+    def test_scheduling_type_is_a_real_enum_value(self):
+        # Introspected from the live schema: exactly these two.
+        # 'notification' would only ping a phone to post by hand.
+        self.assertIn('"schedulingType": "automatic"', self.src)
+
+    def test_pins_publish_immediately(self):
+        # Queued pins competed with Bluesky for the free plan's ten slots.
+        self.assertIn('"mode": "shareNow"', self.src)
+        self.assertNotIn('"mode": "addToQueue"', self.src)
+
+    def test_every_required_field_of_the_mutation_is_supplied(self):
+        for field in ('"channelId"', '"text"', '"assets"', '"mode"',
+                      '"schedulingType"'):
+            self.assertIn(field, self.src, f"{field} missing from the input")
+
+
 class TestVolumeRamp(unittest.TestCase):
     """
     Pin volume is earned, not configured.

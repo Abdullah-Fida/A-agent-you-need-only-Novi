@@ -260,7 +260,21 @@ class SupabaseDB:
             )
             return storage.get_public_url(name)
 
-        url = await self._run(_put, "upload_image", default="")
+        # Retried, because a single transient failure costs a whole slot.
+        # The first live pin's second attempt died on an HTTP 520 from
+        # Supabase storage -- a Cloudflare hiccup, gone seconds later --
+        # and the pin was dropped with "image not hosted". Storage sits
+        # behind a CDN, so 5xx here means "try again", not "give up".
+        url = ""
+        for attempt in range(1, 4):
+            url = await self._run(_put, "upload_image", default="")
+            if url:
+                break
+            if attempt < 3:
+                logger.warning(f"Image upload attempt {attempt} failed; "
+                               f"retrying in {attempt * 2}s.")
+                await asyncio.sleep(attempt * 2)
+
         if url:
             url = url.rstrip("?")          # supabase-py appends a bare '?' on some versions
             logger.info(f"Article image uploaded: {url}")
