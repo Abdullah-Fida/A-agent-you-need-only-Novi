@@ -90,7 +90,11 @@ class PinConfig:
     require_review: bool = True
 
     # ── Product filters ───────────────────────────────────────────
-    min_rating: float = 4.3
+    # A PERCENTAGE of positive feedback, which is how AliExpress reports
+    # satisfaction -- not a score out of five. This read 4.3 as though it
+    # were stars, so the filter compared 4.3 against values like 98.0 and
+    # rejected nothing: listings rated 81%, 86% and 88% all went through.
+    min_rating: float = 90.0
     min_orders: int = 100
     min_price: float = 12.0
     max_price: float = 80.0
@@ -124,7 +128,7 @@ def load_pin_config() -> PinConfig:
         min_minutes_between_pins=_int("PIN_MIN_GAP_MINUTES", 45),
         require_review=_clean(
             os.getenv("PIN_REQUIRE_REVIEW", "true")).lower() not in ("0", "false", "no"),
-        min_rating=_float("PIN_MIN_RATING", 4.3),
+        min_rating=_float("PIN_MIN_RATING", 90.0),
         min_orders=_int("PIN_MIN_ORDERS", 100),
         min_price=_float("PIN_MIN_PRICE", 12.0),
         max_price=_float("PIN_MAX_PRICE", 80.0),
