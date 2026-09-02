@@ -378,15 +378,28 @@ class AliExpressClient:
         if not product_id or not title or not (promo or detail):
             return None
 
-        images = []
-        main = item.get("product_main_image_url") or item.get("productMainImageUrl")
-        if main:
-            images.append(str(main))
+        # The main image is repeated as the first of the small ones, so the
+        # list arrived with images[0] == images[1] on every product checked.
+        # The builder tries images[:3] and stops at the first that
+        # downloads, which meant a "try three photos" loop only ever saw
+        # two -- and if the seller's collage was one of them, the fallback
+        # was the same collage again.
+        images: List[str] = []
+        seen: set = set()
+
+        def add(url) -> None:
+            url = str(url or "").strip()
+            if url and url not in seen:
+                seen.add(url)
+                images.append(url)
+
+        add(item.get("product_main_image_url") or item.get("productMainImageUrl"))
         extra = item.get("product_small_image_urls") or {}
         if isinstance(extra, dict):
             extra = extra.get("string") or []
         if isinstance(extra, list):
-            images.extend(str(u) for u in extra if u)
+            for url in extra:
+                add(url)
 
         return {
             "product_id": product_id,

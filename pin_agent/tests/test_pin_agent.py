@@ -542,6 +542,24 @@ class TestSourcing(unittest.TestCase):
 
     # -- per-product affiliate links ------------------------------
 
+    def test_duplicate_image_urls_are_collapsed(self):
+        """
+        The main image is repeated as the first of the small ones, so every
+        product arrived with images[0] == images[1]. The builder tries
+        images[:3] and stops at the first that downloads, so a "try three
+        photos" loop only ever saw two -- and if the seller's collage was
+        one of them, the fallback was that same collage again.
+        """
+        out = AliExpressClient._normalise({
+            "product_id": "1", "product_title": "A thing",
+            "product_detail_url": "https://www.aliexpress.com/item/1.html",
+            "product_main_image_url": "https://x/a.jpg",
+            "product_small_image_urls": {"string": [
+                "https://x/a.jpg", "https://x/b.jpg", "https://x/c.jpg"]},
+        })
+        self.assertEqual(out["images"],
+                         ["https://x/a.jpg", "https://x/b.jpg", "https://x/c.jpg"])
+
     def test_the_detail_url_is_kept_and_cleaned(self):
         """
         The search response's promotion_link is shared across every product,
