@@ -97,7 +97,11 @@ export async function getCategories(): Promise<string[]> {
  */
 export async function getArticlesByAuthor(
   names: string[],
-  limit = 60,
+  // High enough to hold the whole archive. At 60 the page said "60
+  // articles" when 84 matched, which understates the body of work the page
+  // exists to evidence -- and every card is also an internal link, so a
+  // truncated list costs crawl paths as well as credibility.
+  limit = 500,
 ): Promise<Article[]> {
   if (!supabase || names.length === 0) return [];
   try {
