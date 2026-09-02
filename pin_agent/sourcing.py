@@ -129,6 +129,10 @@ class AliExpressClient:
         if not self.is_live:
             return self._sample_products()
 
+        # Cleared per call. Left set, a failure from an hour ago makes the
+        # empty-result diagnosis below skip itself.
+        self.last_error = ""
+
         categories = NICHE_CATEGORIES.get(self.niche, [])
         params = self._build_params("aliexpress.affiliate.product.query", {
             "keywords": keywords or self.next_keywords(),
@@ -148,11 +152,57 @@ class AliExpressClient:
                 self.last_error = f"HTTP {response.status_code}"
                 logger.error(f"AliExpress returned {self.last_error}")
                 return []
-            return self._parse(response.json())
+            products = self._parse(response.json())
         except Exception as e:
             self.last_error = f"{type(e).__name__}: {e}"
             logger.error(f"AliExpress request failed: {self.last_error}")
             return []
+
+        if not products and not self.last_error:
+            await self._diagnose_empty(keywords)
+        return products
+
+    async def _diagnose_empty(self, keywords: str) -> None:
+        """
+        Works out WHY a search came back empty.
+
+        A tracking id the platform does not recognise returns HTTP 200, no
+        error object and an empty product list -- identical to a search that
+        genuinely matched nothing. Found the hard way: the same keyword
+        returned five products with the tracking id removed and zero with a
+        made-up one.
+
+        Without this the agent would report "no products found" forever
+        while the real fault was one wrong string in the environment, so the
+        same query is repeated once WITHOUT the tracking id. If that finds
+        stock, the tracking id is the problem and says so.
+        """
+        if not self.tracking_id:
+            return
+        probe = self._build_params("aliexpress.affiliate.product.query", {
+            "keywords": keywords or "kitchen organizer",
+            "page_no": 1, "page_size": 3,
+            "target_currency": "USD", "target_language": "EN",
+        })
+        try:
+            async with httpx.AsyncClient(timeout=40) as client:
+                response = await client.get(API_URL, params=probe)
+            if response.status_code != 200:
+                return
+            # _parse writes to last_error on an error envelope, and a fault
+            # in the PROBE must not be reported as the fault in the search.
+            found = self._parse(response.json())
+            self.last_error = ""
+            if found:
+                self.last_error = (
+                    f"tracking id {self.tracking_id!r} returns no products, but "
+                    f"the same search without it does. Check it against "
+                    f"portals.aliexpress.com -> Ad Center -> Tracking ID.")
+                logger.error(f"AliExpress: {self.last_error}")
+        except Exception:
+            # A failed diagnosis is not itself an error worth reporting; the
+            # caller already knows the search found nothing.
+            pass
 
     def _parse(self, payload: Dict) -> List[Dict]:
         """

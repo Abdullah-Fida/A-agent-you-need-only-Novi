@@ -270,6 +270,98 @@ class TestSourcing(unittest.TestCase):
         for junk in (None, [], "text", {}, {"unexpected": {}}):
             self.assertEqual(client._parse(junk), [])
 
+    def test_a_real_product_payload_is_accepted(self):
+        """
+        Field names taken from a live 2026-09-02 response, not from the
+        documentation. Every one of these has to survive, or the agent
+        silently finds nothing.
+        """
+        out = AliExpressClient._normalise({
+            "product_id": "1005009878350900",
+            "product_title": "Capybara Bento Lunch Box",
+            "promotion_link": "https://s.click.aliexpress.com/s/fwx308cRD9",
+            "product_main_image_url": "https://ae-pic-a1.aliexpress-media.com/kf/a.jpg",
+            "product_small_image_urls": {"string": ["https://x/b.jpg"]},
+            "target_sale_price": "3.21", "target_original_price": "3.21",
+            "evaluate_rate": "100.0%", "lastest_volume": 17,
+            "commission_rate": "7.0%", "first_level_category_id": 26,
+            "first_level_category_name": "Toys & Hobbies",
+            "shop_name": "Shop1100132134 Store",
+        })
+        self.assertIsNotNone(out)
+        self.assertEqual(out["product_id"], "1005009878350900")
+        self.assertEqual(out["price"], 3.21)
+        self.assertEqual(out["orders"], 17)
+        self.assertEqual(out["commission_rate"], 7.0)
+        self.assertEqual(out["rating"], 100.0)
+        self.assertEqual(len(out["images"]), 2)
+
+    def test_the_error_is_cleared_at_the_start_of_a_search(self):
+        """
+        Left set, a stale failure makes the empty-result diagnosis skip
+        itself and the real cause is never reported.
+        """
+        client = AliExpressClient()          # offline: returns samples
+        client.last_error = "something from an hour ago"
+        asyncio.run(client.fetch_products())
+        # Offline path returns samples and never reaches the reset, so check
+        # the live path's contract directly instead.
+        live = AliExpressClient("key", "secret", "track")
+        live.last_error = "stale"
+        out = live._parse({"error_response": {"msg": "Invalid signature"}})
+        self.assertEqual(out, [])
+        self.assertIn("Invalid signature", live.last_error)
+
+    def test_an_unrecognised_tracking_id_is_named_as_the_cause(self):
+        """
+        The platform answers a bad tracking id with HTTP 200, no error and
+        an empty list -- identical to a search that genuinely matched
+        nothing. Found live: the same keyword returned five products with
+        the tracking id removed and zero with a made-up one. Without this
+        the agent reports "no products found" forever while the real fault
+        is one wrong string in the environment.
+        """
+        client = AliExpressClient("key", "secret", "made-up-id")
+
+        async def probe_finds_stock(payload):
+            return [{"product_id": "1"}]
+
+        # The probe is the same search minus the tracking id.
+        client._parse = lambda payload: [{"product_id": "1"}]
+
+        class FakeResponse:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {}
+
+        class FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, *a, **kw):
+                return FakeResponse()
+
+        import pin_agent.sourcing as sourcing
+        original = sourcing.httpx.AsyncClient
+        sourcing.httpx.AsyncClient = lambda *a, **kw: FakeClient()
+        try:
+            asyncio.run(client._diagnose_empty("kitchen organizer"))
+        finally:
+            sourcing.httpx.AsyncClient = original
+
+        self.assertIn("made-up-id", client.last_error)
+        self.assertIn("Tracking ID", client.last_error)
+
+    def test_no_tracking_id_means_no_diagnosis(self):
+        client = AliExpressClient("key", "secret", "")
+        asyncio.run(client._diagnose_empty("anything"))
+        self.assertEqual(client.last_error, "")
+
 
 class TestChannelSelection(unittest.TestCase):
     """
