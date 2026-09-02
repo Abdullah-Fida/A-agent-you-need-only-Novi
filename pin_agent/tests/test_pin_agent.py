@@ -8,6 +8,7 @@ risks the account, and that is not recoverable by apologising.
     python -m unittest pin_agent.tests.test_pin_agent
 """
 import asyncio
+import json
 import os
 import sys
 import unittest
@@ -70,6 +71,183 @@ class TestLinkCompliance(unittest.TestCase):
 
     def test_empty_link_is_rejected(self):
         self.assertIsNotNone(self.gate.check_link(""))
+
+
+class TestRatingScaleAndRanking(unittest.TestCase):
+    """
+    Three faults found by running the selector over live AliExpress data,
+    none of which any offline test would have shown.
+    """
+
+    def setUp(self):
+        self.S = ProductSelector
+
+    def _product(self, **kw):
+        p = {"affiliate_url": "https://s.click.aliexpress.com/e/_x",
+             "images": ["https://x/1.jpg"],
+             "title": "Kitchen Drawer Organizer Tray Set",
+             "rating": 98.0, "orders": 1000, "price": 20.0,
+             "original_price": 40.0, "commission_rate": 7.0}
+        p.update(kw)
+        return p
+
+    def test_the_rating_floor_is_a_percentage_not_stars(self):
+        """
+        The floor was 4.3, written as if satisfaction were out of five. On
+        AliExpress it is a percentage, so 4.3 was compared against values
+        like 98.0 and rejected nothing at all -- listings rated 81.3%, 86.4%
+        and 88.2% went straight through.
+        """
+        selector = ProductSelector()
+        self.assertEqual(selector.min_rating, 90.0)
+        self.assertFalse(selector.is_eligible(self._product(rating=81.3)))
+        self.assertFalse(selector.is_eligible(self._product(rating=88.2)))
+        self.assertTrue(selector.is_eligible(self._product(rating=98.0)))
+
+    def test_a_five_point_rating_is_converted(self):
+        # Both fields feed the same key, so a perfect 5.0 must not read as
+        # a 5% approval rating.
+        self.assertEqual(self.S.as_percentage(4.8), 96.0)
+        self.assertEqual(self.S.as_percentage(98.0), 98.0)
+        self.assertEqual(self.S.as_percentage(0), 0.0)
+
+    def test_order_volume_outranks_a_marginally_better_rating(self):
+        """
+        The rating term was `(rating - min_rating) * 12`, about 1,124 of a
+        1,189-point score, so orders, commission and discount together moved
+        the result by half a percent. A listing with 544 orders outranked
+        one with 2,465 because its score was 99.3 rather than 98.0.
+        """
+        selector = ProductSelector()
+        popular = selector.score(self._product(orders=2465, rating=98.0))
+        niche = selector.score(self._product(orders=544, rating=99.3))
+        self.assertGreater(popular, niche)
+
+    def test_the_rating_bonus_is_capped(self):
+        selector = ProductSelector()
+        spread = (selector.score(self._product(rating=100.0))
+                  - selector.score(self._product(rating=90.0)))
+        self.assertLessEqual(spread, 20.5)
+
+    def test_the_same_product_from_two_sellers_is_pinned_once(self):
+        """
+        Deduplicating on product_id is not enough. A live batch returned the
+        same flatware organizer twice under different ids and prices, and
+        both were selected -- two of five pins showing one drawer tray,
+        which on Pinterest reads as a spam account.
+        """
+        selector = ProductSelector()
+        pair = [
+            self._product(product_id="1", orders=4288,
+                          title="1Pcs Upgradation Adjustable Flatware Tableware Organizer"),
+            self._product(product_id="2", orders=3084, price=8.17,
+                          title="1Pcs Upgradation Adjustable Flatware Tableware Organizer"),
+        ]
+        chosen = selector.select(pair + [
+            self._product(product_id="3", orders=1465,
+                          title="4 Layers Kitchen Spice Drawer Organizer Adjustable"),
+        ], limit=5)
+        self.assertEqual(len(chosen), 2)
+
+        # Which of the pair wins is the ranking's business -- the deeper
+        # discount can beat the higher order count. What matters here is
+        # that the survivor is the better-scored one, not the first seen.
+        best = max(pair, key=selector.score)["product_id"]
+        self.assertEqual({p["product_id"] for p in chosen}, {best, "3"})
+
+    def test_genuinely_different_products_both_survive(self):
+        chosen = ProductSelector().select([
+            self._product(product_id="1", title="Kitchen Spice Drawer Organizer Rack"),
+            self._product(product_id="2", title="Under Sink Pull Out Storage Shelf"),
+        ], limit=5)
+        self.assertEqual(len(chosen), 2)
+
+
+class TestPinCopyAssembly(unittest.TestCase):
+    """
+    How the model's reply becomes a publishable description.
+
+    Both faults here were found by running the real writer over real
+    products, not by reading the code.
+    """
+
+    def setUp(self):
+        from pin_agent.content import PinCopywriter
+        self.P = PinCopywriter
+
+    def _tags(self, hashtags):
+        body = "A short body sentence that is easily long enough to pass."
+        out = self.P._build_description({"description": body,
+                                         "hashtags": hashtags})
+        parts = out.split("\n\n")
+        return parts[1] if len(parts) > 2 else ""
+
+    def test_a_space_separated_string_becomes_separate_tags(self):
+        """
+        Splitting on commas alone made "organizer homehacks declutter" into
+        ONE tag: the split kept it whole, then the punctuation strip removed
+        the spaces and published #organizerhomehacksdeclutter. Useless for
+        discovery, and it looks broken.
+        """
+        self.assertEqual(self._tags("organizer homehacks declutter"),
+                         "#organizer #homehacks #declutter")
+
+    def test_a_comma_separated_string_still_works(self):
+        self.assertEqual(self._tags("kitchenorganization,giftideas"),
+                         "#kitchenorganization #giftideas")
+
+    def test_tags_that_arrive_with_hashes_are_not_doubled(self):
+        self.assertEqual(self._tags("#kitchen #storage"), "#kitchen #storage")
+
+    def test_a_multi_word_list_entry_stays_one_tag(self):
+        """
+        The other direction. A LIST entry with a space in it is a deliberate
+        multi-word tag; splitting it publishes #kitchen #organization, two
+        far vaguer searches than the one actually meant.
+        """
+        self.assertEqual(self._tags(["kitchen organization", "small kitchen"]),
+                         "#kitchenorganization #smallkitchen")
+
+    def test_one_and_two_letter_tags_are_dropped(self):
+        self.assertEqual(self._tags(["a", "ok", "goodtag"]), "#goodtag")
+
+    def test_the_disclosure_survives_every_tag_shape(self):
+        # Pinterest requires it on every affiliate pin, and it is added in
+        # code precisely so no reply shape can lose it.
+        for shape in ("a b c", "a,b", ["a b"], [], "", None):
+            body = self.P._build_description({"description": "x" * 60,
+                                              "hashtags": shape})
+            self.assertIn("#ad", body, repr(shape))
+
+    # -- salvaging a malformed reply ------------------------------
+
+    def test_fields_are_recovered_from_unparseable_json(self):
+        """
+        One product in four was skipped entirely because its reply would not
+        parse -- a raw newline inside a string is enough. The copy itself
+        was fine; only the punctuation around it was wrong.
+        """
+        blob = ('{"title": "A tidy drawer", "description": "Line one\n'
+                'line two", "hashtags": ["kitchen", "tidy"]}')
+        with self.assertRaises(json.JSONDecodeError):
+            json.loads(blob)
+        out = self.P._parse(blob)
+        self.assertEqual(out["title"], "A tidy drawer")
+        self.assertIn("Line one", out["description"])
+        self.assertEqual(out["hashtags"], ["kitchen", "tidy"])
+
+    def test_valid_json_is_never_salvaged(self):
+        out = self.P._parse('{"title": "T", "description": "D", "hashtags": ["a"]}')
+        self.assertEqual(out, {"title": "T", "description": "D", "hashtags": ["a"]})
+
+    def test_a_reply_missing_a_required_field_is_still_refused(self):
+        # Salvage must not turn a genuinely broken reply into a half-written
+        # pin: both fields have to be there.
+        self.assertIsNone(self.P._parse('{"title": "only a title"'))
+
+    def test_a_reply_with_no_object_is_refused(self):
+        for junk in ("no braces here", "", "```json```"):
+            self.assertIsNone(self.P._parse(junk))
 
 
 class TestDisclosureAndText(unittest.TestCase):

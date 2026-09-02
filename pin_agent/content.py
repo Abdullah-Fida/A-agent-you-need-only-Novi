@@ -156,8 +156,8 @@ class PinCopywriter:
             return False
         return '"title"' in lowered and '"description"' in lowered
 
-    @staticmethod
-    def _parse(raw: str) -> Optional[Dict]:
+    @classmethod
+    def _parse(cls, raw: str) -> Optional[Dict]:
         """Pulls the JSON object out of a reply that may have prose around it."""
         text = (raw or "").strip()
         text = re.sub(r"^```[a-z]*\s*", "", text, flags=re.I)
@@ -167,11 +167,53 @@ class PinCopywriter:
         end = text.rfind("}")
         if start == -1 or end <= start:
             return None
+
+        blob = text[start:end + 1]
         try:
-            parsed = json.loads(text[start:end + 1])
+            parsed = json.loads(blob)
             return parsed if isinstance(parsed, dict) else None
         except json.JSONDecodeError:
+            return cls._salvage(blob)
+
+    # The fields, read straight out of malformed JSON.
+    _FIELD = r'"{0}"\s*:\s*"((?:[^"\\]|\\.)*)"'
+
+    @classmethod
+    def _salvage(cls, blob: str) -> Optional[Dict]:
+        """
+        Reads the fields out of JSON that will not parse.
+
+        One product in four came back with a reply the parser rejected --
+        an unescaped quote or a raw newline inside a string is enough --
+        and the product was skipped entirely after four attempts. The text
+        itself was fine; only the punctuation around it was wrong.
+
+        Only ever used as a fallback, and it returns None unless BOTH
+        required fields are found, so a genuinely broken reply is still
+        refused rather than published half-written.
+        """
+        title = re.search(cls._FIELD.format("title"), blob, re.S)
+        description = re.search(cls._FIELD.format("description"), blob, re.S)
+        if not (title and description):
             return None
+
+        def unescape(value: str) -> str:
+            return (value.replace('\\"', '"').replace("\\n", " ")
+                         .replace("\\/", "/").replace("\\\\", "\\")).strip()
+
+        tags: List[str] = []
+        array = re.search(r'"hashtags"\s*:\s*\[(.*?)\]', blob, re.S)
+        if array:
+            tags = re.findall(r'"((?:[^"\\]|\\.)*)"', array.group(1))
+        else:
+            single = re.search(cls._FIELD.format("hashtags"), blob, re.S)
+            if single:
+                tags = [unescape(single.group(1))]
+
+        logger.info("Pin copy JSON was malformed; fields salvaged from it.")
+        return {"title": unescape(title.group(1)),
+                "description": unescape(description.group(1)),
+                "hashtags": tags}
 
     @staticmethod
     def _tidy_title(title: str) -> str:
@@ -197,13 +239,30 @@ class PinCopywriter:
         """
         body = re.sub(r"\s+", " ", str(parsed.get("description", ""))).strip()
 
-        tags = parsed.get("hashtags") or []
-        if isinstance(tags, str):
-            tags = [t.strip() for t in tags.split(",")]
+        # Split on commas AND whitespace AND stray hashes.
+        #
+        # Splitting on commas alone turned "organizer homehacks declutter"
+        # into ONE tag: the separator survived the split, then the
+        # punctuation strip below removed the spaces and produced
+        # #organizerhomehacksdeclutter. Useless for discovery, and it looks
+        # broken. The model returns the list both ways depending on the run,
+        # so both have to work.
+        raw_tags = parsed.get("hashtags") or []
+        if isinstance(raw_tags, str):
+            # ONE string, so the spaces between words are separators.
+            tags: List[str] = [t for t in re.split(r"[,\s#]+", raw_tags) if t]
+        else:
+            # A LIST, so each element is already one tag even when it
+            # contains spaces -- "kitchen organization" is a single tag and
+            # splitting it would publish #kitchen #organization, which are
+            # two far vaguer searches than the one actually meant.
+            tags = [str(t) for t in raw_tags if str(t).strip()]
+
         clean_tags = []
         for tag in tags[:5]:
             tag = re.sub(r"[^a-z0-9]", "", str(tag).lower())
-            if tag and tag not in clean_tags:
+            # A one-letter tag is noise, and Pinterest caps tag length.
+            if 2 < len(tag) <= 30 and tag not in clean_tags:
                 clean_tags.append(tag)
 
         parts = [body]

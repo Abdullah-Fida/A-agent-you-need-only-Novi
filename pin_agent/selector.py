@@ -38,10 +38,34 @@ TITLE_NOISE = [
 class ProductSelector:
     """Applies the hard filters, then ranks what is left."""
 
-    def __init__(self, min_rating: float = 4.3, min_orders: int = 100,
+    # AliExpress reports satisfaction as a PERCENTAGE of positive feedback,
+    # not as stars. The floor was 4.3, written as if it were a five-point
+    # scale, so it compared 4.3 against values like 98.0 and rejected
+    # nothing whatsoever -- listings rated 81.3%, 86.4% and 88.2% all sailed
+    # through. Below about 90% on this platform means real complaints about
+    # the item arriving broken, late, or not at all.
+    DEFAULT_MIN_RATING = 90.0
+
+    @staticmethod
+    def as_percentage(rating: float) -> float:
+        """
+        One scale, whichever field the value came from.
+
+        `evaluate_rate` is a percentage; `product_rating` is out of five.
+        Both feed the same key, so a five-point value has to be recognised
+        and converted or a perfect 5.0 looks like a 5% approval rating.
+        """
+        try:
+            value = float(rating or 0)
+        except (TypeError, ValueError):
+            return 0.0
+        return value * 20.0 if 0 < value <= 5.0 else value
+
+    def __init__(self, min_rating: float = DEFAULT_MIN_RATING,
+                 min_orders: int = 100,
                  min_price: float = 3.0, max_price: float = 80.0,
                  performance: Optional[Dict[str, float]] = None):
-        self.min_rating = min_rating
+        self.min_rating = self.as_percentage(min_rating)
         self.min_orders = min_orders
         self.min_price = min_price
         self.max_price = max_price
@@ -80,7 +104,7 @@ class ProductSelector:
                 self._reject(f"banned term: {term}")
                 return False
 
-        if product.get("rating", 0) < self.min_rating:
+        if self.as_percentage(product.get("rating", 0)) < self.min_rating:
             self._reject("rating too low")
             return False
 
@@ -107,13 +131,25 @@ class ProductSelector:
         Order count is compressed logarithmically: the gap between 100 and
         1000 orders matters far more than between 9000 and 10000, and without
         compression a single viral listing would dominate every batch forever.
+
+        EVERY TERM IS CAPPED, and that is the point. The rating term used to
+        be `(rating - min_rating) * 12`, which on a percentage scale came to
+        about 1,124 out of a total score of 1,189 -- so orders, commission
+        and discount together moved the result by half a percent. A listing
+        with 544 orders outranked one with 2,465 because its satisfaction
+        score was 99.3 rather than 98.0. The ranking existed but decided
+        nothing.
         """
         import math
 
         orders = max(1, product.get("orders", 0))
-        score = math.log10(orders) * 10          # 100 orders = 20, 10k = 40
+        score = math.log10(orders) * 14          # 100 orders = 28, 10k = 56
 
-        score += (product.get("rating", 0) - self.min_rating) * 12
+        # 0-20, so a strong rating is a bonus rather than the whole verdict.
+        rating = self.as_percentage(product.get("rating", 0))
+        headroom = max(1.0, 100.0 - self.min_rating)
+        score += max(0.0, min(rating - self.min_rating, headroom)) / headroom * 20
+
         score += min(product.get("commission_rate", 0), 15) * 1.5
 
         # A visible discount gives the pin a reason to exist today.
@@ -152,12 +188,47 @@ class ProductSelector:
                 eligible.append(product)
 
         eligible.sort(key=lambda p: p["score"], reverse=True)
+        eligible = self._drop_near_duplicates(eligible)
 
         if self.rejections:
             summary = ", ".join(f"{k}: {v}" for k, v in sorted(self.rejections.items()))
             logger.info(f"Filtered {len(products)} products down to "
                         f"{len(eligible)} ({summary})")
         return eligible[:limit]
+
+    # Above this, two listings are the same thing from different sellers.
+    NEAR_DUPLICATE = 0.78
+
+    @classmethod
+    def _drop_near_duplicates(cls, products: List[Dict]) -> List[Dict]:
+        """
+        Removes listings that are the same product under another seller.
+
+        Deduplicating on product_id is not enough. A live batch returned
+        "1Pcs Upgradation Adjustable Flatware Tableware Organizer" twice,
+        with different ids and different prices, and both were selected --
+        so two of five pins in one batch showed the same drawer tray. On
+        Pinterest that reads as a spam account, which is the one thing this
+        agent cannot afford to look like.
+
+        The list arrives sorted by score, so the better-ranked listing is
+        the one kept.
+        """
+        import difflib
+
+        kept: List[Dict] = []
+        seen: List[str] = []
+        for product in products:
+            key = re.sub(r"[^a-z0-9 ]", "",
+                         (product.get("clean_title") or "").lower()).strip()
+            if not key:
+                continue
+            if any(difflib.SequenceMatcher(None, key, s).ratio() >= cls.NEAR_DUPLICATE
+                   for s in seen):
+                continue
+            seen.append(key)
+            kept.append(product)
+        return kept
 
     # ── title cleanup ────────────────────────────────────────────
 
