@@ -130,6 +130,27 @@ class TestRatingScaleAndRanking(unittest.TestCase):
                   - selector.score(self._product(rating=90.0)))
         self.assertLessEqual(spread, 20.5)
 
+    def test_a_cheap_product_still_has_to_be_well_rated(self):
+        """
+        The price floor came down from $12 to $8 because at twelve a live
+        batch of forty was reduced to two, mostly on price. Widening the
+        price band must not widen the quality band with it: the two filters
+        are independent, and a $9 product rated 81% is still refused.
+        """
+        selector = ProductSelector(min_price=8.0)
+        self.assertTrue(selector.is_eligible(
+            self._product(price=8.66, rating=95.7)))
+        self.assertFalse(selector.is_eligible(
+            self._product(price=8.66, rating=81.3)),
+            "a cheap product must still clear the rating floor")
+        self.assertFalse(selector.is_eligible(
+            self._product(price=8.66, rating=98.0, orders=12)),
+            "a cheap product must still clear the order floor")
+
+    def test_the_price_floor_is_eight(self):
+        from pin_agent.config import PinConfig
+        self.assertEqual(PinConfig.min_price, 8.0)
+
     def test_the_same_product_from_two_sellers_is_pinned_once(self):
         """
         Deduplicating on product_id is not enough. A live batch returned the

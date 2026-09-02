@@ -96,7 +96,10 @@ class PinConfig:
     # rejected nothing: listings rated 81%, 86% and 88% all went through.
     min_rating: float = 90.0
     min_orders: int = 100
-    min_price: float = 12.0
+    # Eight, not twelve -- see load_pin_config below. Kept in step with
+    # it deliberately: min_rating had the same pair of defaults and the
+    # dataclass copy silently overrode the fix.
+    min_price: float = 8.0
     max_price: float = 80.0
 
     # The consumer-facing brand on the pin image and in the copy. Kept
@@ -138,7 +141,14 @@ def load_pin_config() -> PinConfig:
             os.getenv("PIN_REQUIRE_REVIEW", "false")).lower() in ("1", "true", "yes"),
         min_rating=_float("PIN_MIN_RATING", 90.0),
         min_orders=_int("PIN_MIN_ORDERS", 100),
-        min_price=_float("PIN_MIN_PRICE", 12.0),
+        # Eight, not twelve. At twelve the filter rejected most of the
+        # niche -- a live batch of forty came down to two, with "price
+        # below floor" the biggest single reason. Good kitchen
+        # organisers sit at $8-12 and that band converts best on
+        # Pinterest, so the floor was cutting away the inventory.
+        # Quality is held by the rating and order filters instead,
+        # which is the right place for it.
+        min_price=_float("PIN_MIN_PRICE", 8.0),
         max_price=_float("PIN_MAX_PRICE", 80.0),
         pin_brand=_clean(os.getenv("PIN_BRAND", "")) or "Tidy Nook",
         site_name=_clean(os.getenv("SITE_NAME", "")) or "Novi",
