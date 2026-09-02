@@ -10,7 +10,7 @@ Off by default. Novi's dashboard owns the switch, so this only runs when
 """
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from pin_agent import boards as board_routing
@@ -81,6 +81,84 @@ class PinAgent:
             "last_run": self.last_run.isoformat() if self.last_run else None,
             "last_error": self.last_error,
         }
+
+    # WHEN PINS GO OUT, and why none of it is keyed to Pakistan.
+    #
+    # Pinterest's audience is overwhelmingly American, and the site behaves
+    # like a search engine with an evening browsing peak rather than a feed.
+    # The hours that matter are US afternoon and evening: 8-11pm Eastern
+    # first, then early afternoon.
+    #
+    # PKT is Eastern + 9, so those peaks land between 23:00 and 08:00 local
+    # time. The bot's sleep window was 23:00-07:00 -- it covered almost
+    # exactly the best hours Pinterest has. Pins now run above that gate:
+    # the window exists so a TELEGRAM account looks like a person who sleeps,
+    # and a pin has no such problem.
+    #
+    # Ordered best-first. Today's cap takes the top N, so a day at four pins
+    # uses the four strongest slots rather than the four earliest.
+    #        PKT     US Eastern
+    SLOT_PRIORITY = [
+        (5, 0),    # 20:00  peak evening browsing
+        (23, 0),   # 14:00  early afternoon
+        (6, 0),    # 21:00
+        (1, 0),    # 16:00
+        (7, 0),    # 22:00
+        (0, 0),    # 15:00
+        (21, 0),   # 12:00  lunch
+        (8, 0),    # 23:00
+        (2, 0),    # 17:00
+        (20, 0),   # 11:00
+        (18, 0),   # 09:00
+        (4, 0),    # 19:00
+        (22, 0),   # 13:00
+        (3, 0),    # 18:00
+        (19, 0),   # 10:00
+    ]
+
+    # How long a slot stays open. The main loop ticks every 60 seconds, so
+    # this is generous on purpose: a slow sourcing call or a restart must not
+    # cause the slot to be missed entirely.
+    SLOT_WINDOW_MINUTES = 25
+
+    @staticmethod
+    def _pkt_now() -> datetime:
+        return datetime.now(timezone.utc) + timedelta(hours=5)
+
+    def due_slot(self) -> Optional[Dict]:
+        """
+        The slot that is open right now, or None.
+
+        Only slots inside today's cap count, so the ramp decides how many of
+        the fifteen are live rather than the agent simply stopping once it
+        hits a number.
+        """
+        now = self._pkt_now()
+        for rank, (hour, minute) in enumerate(self.SLOT_PRIORITY):
+            if rank >= self.daily_cap():
+                break
+            if (now.hour == hour
+                    and minute <= now.minute < minute + self.SLOT_WINDOW_MINUTES):
+                return {"hour": hour, "minute": minute,
+                        "rank": rank + 1, "key": f"pin_{hour}_{minute}"}
+        return None
+
+    async def slot_already_filled(self) -> bool:
+        """
+        Whether a pin already went out inside the current window.
+
+        Asked of the DATABASE, not of memory: a restart inside the window
+        would otherwise make the slot look unfired and publish a second pin.
+        That is exactly how two articles went out at 01:01 and 01:22.
+        """
+        try:
+            return await self.store.published_since(self.SLOT_WINDOW_MINUTES) > 0
+        except Exception as e:
+            # A failed check must not block publishing; the daily cap is
+            # still counted separately.
+            logger.warning(f"Slot check failed ({type(e).__name__}); "
+                           f"continuing.")
+            return False
 
     # A brand-new Pinterest account that starts at fifteen pins a day looks
     # exactly like a bought account being drained, and the reach penalty for

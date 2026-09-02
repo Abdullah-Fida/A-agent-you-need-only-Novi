@@ -104,6 +104,27 @@ class PinStore:
 
     # ── writing ──────────────────────────────────────────────────
 
+    async def published_since(self, minutes: int) -> int:
+        """
+        How many pins published in the last `minutes`.
+
+        Guards the slot against a restart: the loop's in-memory record of
+        which slots have fired is wiped on every deploy, and a restart
+        inside the window would publish the slot a second time.
+        """
+        if not self.enabled:
+            return 0
+
+        since = (datetime.now(timezone.utc)
+                 - timedelta(minutes=minutes)).isoformat()
+
+        def query():
+            return (self.client.table("pin_posts").select("id", count="exact")
+                    .eq("status", "published").gte("created_at", since).execute())
+
+        result = await self._run(query)
+        return getattr(result, "count", None) or 0
+
     async def first_pin_at(self) -> Optional[datetime]:
         """
         When the first pin was published, or None if none has been.

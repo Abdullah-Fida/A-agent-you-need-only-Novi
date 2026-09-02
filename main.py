@@ -584,7 +584,6 @@ async def main():
     # Track which slots we already fired TODAY by unique key, so two slots in
     # the same hour both run and a restart doesn't re-fire a done slot.
     fired_slots = set()
-    last_pin_at = None
     last_midnight_reset = brain._get_pkt_now().day
     
     while True:
@@ -696,6 +695,41 @@ async def main():
                 await fanout.retry_due_articles()
             except Exception as e:
                 logger.error(f"Deferred article pass failed: {type(e).__name__}: {e}")
+
+            # ---- Pinterest agent ----
+            # ABOVE the sleep gate, deliberately. Pinterest's audience is
+            # American and its peak hours are 8-11pm Eastern, which is
+            # 05:00-08:00 PKT -- almost entirely inside the 23:00-07:00
+            # window. That window exists so a TELEGRAM account looks like a
+            # person who sleeps; a pin has no such problem, and leaving pins
+            # below the gate meant the four best slots of the day could
+            # never fire.
+            if brain.pin_module_active and pin_agent:
+                pin_slot = pin_agent.due_slot()
+                if pin_slot and pin_slot["key"] not in fired_slots:
+                    fired_slots.add(pin_slot["key"])
+                    try:
+                        # The in-memory set above is wiped by every deploy,
+                        # so the database is what actually stops a restart
+                        # inside the window publishing the slot twice.
+                        if await pin_agent.slot_already_filled():
+                            logger.info(
+                                f"Pin slot {pin_slot['hour']:02d}:"
+                                f"{pin_slot['minute']:02d} already filled.")
+                        else:
+                            pin = await pin_agent.run_once()
+                            if pin:
+                                logger.info(
+                                    f"Pin {pin.get('status')} "
+                                    f"(slot {pin_slot['rank']}): "
+                                    f"{pin['title'][:46]}")
+                            else:
+                                fired_slots.discard(pin_slot["key"])
+                    except Exception as e:
+                        logger.error(f"Pin agent cycle failed: "
+                                     f"{type(e).__name__}: {e}")
+                        fired_slots.discard(pin_slot["key"])
+                        await brain.handle_error("PinAgent", e)
 
             # ---- Sleep applies to TELEGRAM ONLY, from here down ----
             # The website runs ABOVE this line deliberately. The sleep window
@@ -810,22 +844,6 @@ async def main():
                         await brain.handle_error("ContentEngine", e)
 
             
-            # ---- Pinterest agent ----
-            # Spaced deliberately: Pinterest reads a burst of pins as
-            # automation, and Buffer's free queue holds ten per channel.
-            if (brain.pin_module_active and pin_agent
-                    and (last_pin_at is None
-                         or (pkt_now - last_pin_at).total_seconds()
-                         >= pin_agent.config.min_minutes_between_pins * 60)):
-                last_pin_at = pkt_now
-                try:
-                    pin = await pin_agent.run_once()
-                    if pin:
-                        logger.info(f"Pin {pin.get('status')}: {pin['title'][:50]}")
-                except Exception as e:
-                    logger.error(f"Pin agent cycle failed: {type(e).__name__}: {e}")
-                    await brain.handle_error("PinAgent", e)
-
             # ---- Periodic Metric Ingestion (every 3 hours) ----
             if (brain.last_metric_check is None or 
                 (pkt_now - brain.last_metric_check).total_seconds() > 10800):

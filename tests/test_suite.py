@@ -2292,6 +2292,32 @@ class TestWebsiteRunIsNotGatedBySleep(unittest.TestCase):
         self.assertNotEqual(i, -1, f"could not find {needle!r} in main.py")
         return i
 
+    def test_pins_come_before_the_sleep_gate(self):
+        """
+        The same bug, one module along.
+
+        Pinterest's audience is American and its peak hours are 8-11pm
+        Eastern, which is 05:00-08:00 PKT. The sleep window is 23:00-07:00,
+        so it covered almost exactly the best hours Pinterest has -- and the
+        four highest-ranked slots, the only ones live while the account is
+        still ramping, all sit inside it. Below the gate, none of them could
+        ever fire.
+        """
+        pins = self._index("pin_agent.due_slot()")
+        sleep_gate = self._index("if brain.is_sleep_time():")
+        self.assertLess(pins, sleep_gate,
+                        "the Pinterest block sits below the sleep gate, so "
+                        "its four best slots can never fire")
+
+    def test_the_best_pin_slots_really_are_inside_the_sleep_window(self):
+        """Proves the test above is guarding something real, not a theory."""
+        from pin_agent.pin_bot import PinAgent
+        first_four = [h for h, _ in PinAgent.SLOT_PRIORITY[:4]]
+        inside = [h for h in first_four if h >= 23 or h < 7]
+        self.assertGreaterEqual(
+            len(inside), 3,
+            f"expected most top slots inside 23:00-07:00, got {first_four}")
+
     def test_article_run_comes_before_the_sleep_gate(self):
         article = self._index("publish_scheduled_article()")
         sleep_gate = self._index("if brain.is_sleep_time():")
@@ -4728,10 +4754,17 @@ class TestNothingRepeats(unittest.TestCase):
         """
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         src = open(os.path.join(root, "main.py"), encoding="utf-8").read()
-        self.assertEqual(src.count("slot_already_filled"), 2,
-                         "both the article and the explainer slot need it")
-        i = src.index("get_due_article_slot()")
-        self.assertIn("slot_already_filled", src[i:i + 500])
+
+        # Checks the two slots that need the guard, rather than counting
+        # occurrences. A bare count fails the moment any OTHER scheduled
+        # thing adopts the same protection -- which the Pinterest slot then
+        # did, and a test should not object to a bug being fixed twice.
+        for caller in ("get_due_article_slot()", "get_due_evergreen_slot()"):
+            i = src.find(caller)
+            self.assertNotEqual(i, -1, f"{caller} is missing from main.py")
+            self.assertIn("slot_already_filled", src[i:i + 500],
+                          f"{caller} publishes without the database guard, so "
+                          f"a restart inside the window repeats the slot")
 
     def test_the_slot_carries_its_minute(self):
         """
