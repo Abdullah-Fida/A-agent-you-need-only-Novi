@@ -711,9 +711,9 @@ class ArticleAgent:
         a year from now, so "this week" and "recently" are banned outright.
         """
         if evergreen:
-            return await self._enforce_house_style(
-                await self._write_evergreen_body(title, summary, category) or "",
-                title)
+            draft = await self._write_evergreen_body(title, summary, category) or ""
+            draft = await self._reach_length(draft, title, summary, category)
+            return await self._enforce_house_style(draft, title)
         system_prompt = (
             f"You are a senior journalist writing for {self.site_name}, covering "
             f"international news, crypto, technology, business and South Asia.\n\n"
@@ -752,6 +752,9 @@ Structure it as:
             max_tokens=3000,
             temperature=0.7,
         ) or "")
+        # Length first, style second: the expansion writes new sentences and
+        # they have to face the same register gate as the original draft.
+        draft = await self._reach_length(draft, title, summary, category)
         return await self._enforce_house_style(draft, title)
 
     # WHY THIS IS SO BLUNT.
@@ -856,6 +859,90 @@ Structure it as:
                 f'<a href="{html.escape(url, quote=True)}" rel="noopener" '
                 f'target="_blank">{html.escape(name)}</a>.</small></p>')
 
+    # What a piece has to reach to be worth ranking. Not the same as
+    # MIN_ACCEPTABLE_WORDS, which is the floor below which something has
+    # gone wrong: this is the length a thin-but-correct article is expanded
+    # towards.
+    TARGET_WORDS = 600
+
+    # A figure: 42.4, 1,200, 25%, $63,500. Used to prove an expansion added
+    # explanation rather than invented data.
+    _FIGURE = re.compile(r"\d[\d,]*(?:\.\d+)?%?")
+
+    @classmethod
+    def _new_figures(cls, before: str, brief: str, after: str) -> List[str]:
+        """
+        Figures in the expansion that were in neither the draft nor the brief.
+
+        This is the whole safety net. Asking a model for more words is asking
+        it to invent, and the last time the rules were loose it produced a 2%
+        bitcoin move, a 2023 comparison and an exchange suspending margin
+        trading -- none of it real. A longer article is not worth one
+        fabricated number, so an expansion that introduces a figure from
+        nowhere is thrown away.
+        """
+        def figures(text: str) -> set:
+            return set(cls._FIGURE.findall(re.sub(r"<[^>]+>", " ", text or "")))
+
+        known = figures(before) | figures(brief)
+        return sorted(figures(after) - known)
+
+    async def _reach_length(self, body: str, title: str, summary: str,
+                            category: str) -> str:
+        """
+        Expands a thin article, WITHOUT letting it invent anything.
+
+        The strict fact rules cut invented detail and shortened the pieces
+        with it -- one came in at 432 words against a brief asking for 800.
+        That trade was right, but 432 words is too thin to rank, so the fix
+        is to name the things a piece can legitimately say more about:
+        mechanism, who is affected, what would change the situation. All of
+        that is explanation, and none of it needs a new fact.
+        """
+        words = self._word_count(body)
+        if not body or words >= self.TARGET_WORDS:
+            return body
+
+        logger.info(f"'{title[:44]}' came in at {words} words; expanding "
+                    f"towards {self.TARGET_WORDS}.")
+
+        expanded = self._clean_html(await self.ai.generate(
+            task="article",
+            system_prompt=(
+                "You lengthen an article by EXPLAINING more, never by adding "
+                "new facts. Return the full HTML fragment and nothing else."),
+            user_prompt=(
+                f"This piece is {words} words. Bring it to at least "
+                f"{self.TARGET_WORDS} by developing what is already there.\n\n"
+                "You may add:\n"
+                "- how the thing described actually works, mechanically\n"
+                "- who is affected and in what way\n"
+                "- what would confirm the situation, and what would change it\n"
+                "- what the reader should watch next\n\n"
+                "You may NOT add:\n"
+                "- any number, date, price, percentage, name or quotation "
+                "that is not already in the article or the context below\n"
+                "- any event, announcement, report or comparison not already "
+                "stated\n\n"
+                "Keep every existing sentence's meaning, every heading and "
+                "every link exactly as they are.\n\n"
+                f"CONTEXT: {summary}\n\nARTICLE:\n{body}"),
+            max_tokens=4000, temperature=0.5,
+        ) or "")
+
+        if not expanded or self._word_count(expanded) <= words:
+            logger.info("Expansion produced nothing longer; keeping the original.")
+            return body
+
+        invented = self._new_figures(body, f"{title} {summary}", expanded)
+        if invented:
+            logger.warning(f"Expansion invented figures {invented[:6]} — "
+                           f"discarded, keeping the {words}-word original.")
+            return body
+
+        logger.info(f"Expanded {words} -> {self._word_count(expanded)} words.")
+        return expanded
+
     async def _enforce_house_style(self, body: str, title: str) -> str:
         """
         The gate. A draft that reads like a machine is sent back once.
@@ -898,6 +985,15 @@ Structure it as:
 
         rewritten = house_style.strip_openers(rewritten)
         after = house_style.report(rewritten)["banned_total"]
+
+        # A rewrite is only accepted if it actually improved. The count was
+        # logged but never compared, so a version that swapped one tell for
+        # two would have been published as the fix.
+        if after > before:
+            logger.warning(f"House style rewrite made it worse "
+                           f"({before} -> {after}); keeping the original.")
+            return body
+
         logger.info(f"House style: {before} -> {after} banned phrase(s).")
         return rewritten
 

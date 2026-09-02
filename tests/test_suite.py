@@ -2627,6 +2627,67 @@ class TestWikimediaFallback(unittest.TestCase):
         self.assertTrue(self.f._openverse_awake())
 
 
+class TestArticleLength(unittest.TestCase):
+    """
+    Thin articles are expanded, but never by inventing.
+
+    The strict fact rules cut fabricated detail and shortened the pieces with
+    it -- one published at 432 words against a brief asking for 800. The trade
+    was right; 432 words is still too thin to rank.
+    """
+
+    def setUp(self):
+        from modules.article_engine import ArticleAgent
+        self.A = ArticleAgent
+
+    def test_the_target_is_six_hundred(self):
+        self.assertEqual(self.A.TARGET_WORDS, 600)
+
+    def test_the_hard_floor_is_unchanged(self):
+        # TARGET_WORDS is what a thin piece is expanded towards.
+        # MIN_ACCEPTABLE_WORDS is the floor below which something has gone
+        # wrong and the story is deferred. Raising the floor to 600 would
+        # have thrown good articles away instead of lengthening them.
+        self.assertEqual(self.A.MIN_ACCEPTABLE_WORDS, 250)
+        self.assertLess(self.A.MIN_ACCEPTABLE_WORDS, self.A.TARGET_WORDS)
+
+    def test_an_expansion_that_invents_a_figure_is_caught(self):
+        """
+        The whole safety net. Asking a model for more words is asking it to
+        invent: the last time the rules were loose it produced a 2% bitcoin
+        move, a 2023 comparison and an exchange suspending margin trading,
+        none of it real.
+        """
+        before = "<p>Bitcoin fell 2% today to $63,500.</p>"
+        brief = "Bitcoin slipped after CPI."
+        invented = ("<p>Bitcoin fell 2% today to $63,500. In 2023 it fell 8% "
+                    "in a similar episode.</p>")
+        found = self.A._new_figures(before, brief, invented)
+        self.assertIn("2023", found)
+        self.assertIn("8%", found)
+
+    def test_explaining_more_is_not_inventing(self):
+        before = "<p>Bitcoin fell 2% today to $63,500.</p>"
+        brief = "Bitcoin slipped after CPI."
+        explained = ("<p>Bitcoin fell 2% today to $63,500. High-beta assets "
+                     "move further because their order books are thinner, so "
+                     "a given sale pushes the price harder.</p>")
+        self.assertEqual(self.A._new_figures(before, brief, explained), [])
+
+    def test_figures_already_in_the_brief_are_allowed(self):
+        # The brief is a legitimate source; only figures from nowhere count.
+        self.assertEqual(
+            self.A._new_figures("<p>Prices fell.</p>",
+                                "Solana dropped 7% over 24 hours.",
+                                "<p>Prices fell 7% over the day.</p>"), [])
+
+    def test_markup_is_not_mistaken_for_data(self):
+        # A width="1200" in a tag must not read as an invented figure.
+        self.assertEqual(
+            self.A._new_figures('<img width="1200">', "", '<img width="1200">'),
+            [])
+
+
 class TestHouseStyle(unittest.TestCase):
     """
     The register gate.

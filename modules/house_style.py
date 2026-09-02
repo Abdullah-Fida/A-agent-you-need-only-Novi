@@ -110,10 +110,15 @@ WATCHED: Dict[str, int] = {
     "additionally": 1,
 }
 
-# How many banned hits a draft may carry before it is sent back. Not zero:
-# one slip in a thousand words is not worth a second model call and the
-# retry can easily come back worse.
-MAX_BANNED = 1
+# How many banned hits a draft may carry before it is sent back.
+#
+# This was 1, on the reasoning that a single slip in a thousand words was not
+# worth a second model call. In practice it meant "underscores" kept reaching
+# the site -- the single most recognisable tell in the list, and the one the
+# audit found sixty times. Six articles a day makes the occasional extra call
+# cheap, and the rewrite is guarded: a version that comes back shorter or
+# worse is discarded and the original kept.
+MAX_BANNED = 0
 
 TAG = re.compile(r"<[^>]+>")
 

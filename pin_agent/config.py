@@ -124,10 +124,18 @@ def load_pin_config() -> PinConfig:
         ai_base_url=_clean(os.getenv("PIN_AI_BASE", "")),
         ai_model=_clean(os.getenv("PIN_AI_MODEL", "")),
         niche=_clean(os.getenv("PIN_NICHE", "")) or "home_kitchen",
-        pins_per_day=_int("PIN_MAX_PER_DAY", 8),
+        # The CEILING, not the daily number. PinAgent.RAMP starts the
+        # account at four a day and climbs to this over about six weeks;
+        # left at 8 the ramp would stop there and never reach fifteen.
+        pins_per_day=_int("PIN_MAX_PER_DAY", 15),
         min_minutes_between_pins=_int("PIN_MIN_GAP_MINUTES", 45),
+        # Off by default: the owner reviewed the first pins, accepted the
+        # output and asked for it to publish unattended. Set
+        # PIN_REQUIRE_REVIEW=true to put the human check back without a
+        # code change -- the compliance gate still runs either way, so a
+        # bad link, a missing #ad or a stale price claim is still blocked.
         require_review=_clean(
-            os.getenv("PIN_REQUIRE_REVIEW", "true")).lower() not in ("0", "false", "no"),
+            os.getenv("PIN_REQUIRE_REVIEW", "false")).lower() in ("1", "true", "yes"),
         min_rating=_float("PIN_MIN_RATING", 90.0),
         min_orders=_int("PIN_MIN_ORDERS", 100),
         min_price=_float("PIN_MIN_PRICE", 12.0),
