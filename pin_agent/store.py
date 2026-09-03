@@ -125,6 +125,25 @@ class PinStore:
         result = await self._run(query)
         return getattr(result, "count", None) or 0
 
+    async def recent_titles(self, limit: int = 40) -> List[str]:
+        """
+        Titles of the most recent pins, whatever their status.
+
+        Status is deliberately ignored: a pin waiting for review or already
+        published both mean the product has been covered, and a near
+        duplicate of either is what makes a board look automated.
+        """
+        if not self.enabled:
+            return [str(p.get("title") or "") for p in self._memory[-limit:]]
+
+        def query():
+            return (self.client.table("pin_posts").select("title")
+                    .order("created_at", desc=True).limit(limit).execute())
+
+        result = await self._run(query)
+        return [str(r.get("title") or "")
+                for r in (getattr(result, "data", None) or [])]
+
     async def first_pin_at(self) -> Optional[datetime]:
         """
         When the first pin was published, or None if none has been.

@@ -10,6 +10,7 @@ Off by default. Novi's dashboard owns the switch, so this only runs when
 """
 import asyncio
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
@@ -61,6 +62,9 @@ class PinAgent:
         # When the very first pin went out. Read from the pins themselves
         # on connect, so a redeploy cannot reset the ramp.
         self._first_pin_at: Optional[datetime] = None
+        # Titles of recent pins, so the same product from a different
+        # seller is not pinned twice days apart.
+        self.recent_titles: List[str] = []
         self.last_run: Optional[datetime] = None
         self.last_error = ""
 
@@ -203,6 +207,61 @@ class PinAgent:
         delta = datetime.now(timezone.utc) - self._first_pin_at
         return max(0, delta.days)
 
+    # Two pin titles sharing this much of their meaningful vocabulary are
+    # describing the same product. "4-layer adjustable spice drawer
+    # organizer" and "4-layer adjustable spice rack slides into a drawer"
+    # share five words out of seven.
+    TITLE_OVERLAP = 0.5
+
+    # Titles are compared against roughly a fortnight of pins. Beyond that
+    # the board has moved on and a repeat is fair.
+    RECENT_TITLE_COUNT = 40
+
+    _TITLE_NOISE = {
+        "this", "that", "the", "a", "an", "and", "or", "with", "for", "your",
+        "you", "keep", "make", "makes", "made", "from", "into", "onto", "any",
+        "every", "all", "one", "two", "get", "gets", "have", "has", "its",
+        "it", "in", "on", "of", "to", "is", "are", "up", "out", "off", "at",
+        "by", "no", "so", "can", "will", "perfect", "great", "ideal", "best",
+        "kitchen", "home", "space", "saving", "saver", "small", "clear",
+        "tidy", "organized", "organised", "organizer", "storage",
+    }
+
+    @classmethod
+    def _title_words(cls, title: str) -> set:
+        words = re.findall(r"[a-z0-9]+", (title or "").lower())
+        return {w for w in words if len(w) > 2 and w not in cls._TITLE_NOISE}
+
+    def _too_similar_to_recent(self, title: str) -> bool:
+        """
+        Whether this pin describes something already pinned lately.
+
+        Compares meaningful words only. The generic vocabulary of the niche
+        -- kitchen, storage, organizer, space-saving -- appears in every
+        title and would make everything look like a duplicate, so it is
+        stripped before comparing.
+        """
+        words = self._title_words(title)
+        if len(words) < 2:
+            return False
+
+        for previous in self.recent_titles:
+            other = self._title_words(previous)
+            if len(other) < 2:
+                continue
+            common = words & other
+            # TWO conditions, not one. A ratio alone collapses when a title
+            # reduces to a single meaningful word: "kitchen storage
+            # organizer for small space saving homes" leaves just {homes},
+            # and one shared word out of one is a perfect score. Requiring
+            # two real words in common as well is what separates the same
+            # product from the same vocabulary.
+            if len(common) < 2:
+                continue
+            if len(common) / min(len(words), len(other)) >= self.TITLE_OVERLAP:
+                return True
+        return False
+
     async def connect(self) -> bool:
         ok = await self.publisher.connect()
         history = await self.store.posted_history()
@@ -210,6 +269,8 @@ class PinAgent:
                                history["image_hashes"])
         self.published_today = await self.store.posted_today()
         self._first_pin_at = await self.store.first_pin_at()
+        self.recent_titles = await self.store.recent_titles(
+            self.RECENT_TITLE_COUNT)
 
         # Pins that were waiting for a decision when the process last
         # stopped. Without this the queue is empty after every deploy and
@@ -251,6 +312,22 @@ class PinAgent:
         for product in candidates:
             copy = await self.copywriter.write(product, recent_angles)
             if not copy:
+                continue
+
+            # THE SAME ITEM FROM A DIFFERENT SELLER, DAYS APART.
+            #
+            # Deduplicating on product_id only catches the identical
+            # listing. Two sellers list the same 4-layer spice drawer
+            # organiser under different ids, and both were pinned a day
+            # apart -- which on a young board is the most visible possible
+            # sign of automation.
+            #
+            # Checked here, after the copy and before the image, because
+            # the copy is what describes the product and the image is the
+            # expensive step.
+            if self._too_similar_to_recent(copy["title"]):
+                logger.info(f"Skipping '{copy['title'][:44]}' — too close to "
+                            f"something pinned recently.")
                 continue
 
             image_path, image_bytes = await self.imaging.build(
@@ -323,6 +400,18 @@ class PinAgent:
             pin["status"] = "awaiting_review"
             self.pending_review.append(pin)
             await self.store.save_pin(pin)
+            # Suppressed the moment it is queued, not when it publishes.
+            #
+            # remember() was only called on a successful publish or an
+            # explicit rejection, so a pin waiting for a decision left its
+            # product free to be picked again -- and it was: the egg
+            # organiser 1005008248056658 was built twice, six seconds apart,
+            # under two different titles. A restart hid the bug, because
+            # posted_history() reloads every row regardless of status; it
+            # only showed inside a single running session.
+            self.gate.remember(pin["product_id"], pin["link"],
+                               pin.get("image_hash", ""))
+            self.recent_titles.insert(0, pin["title"])
             logger.info(f"Pin awaiting review: '{pin['title'][:50]}'")
             await self._notify_review(pin)
             return pin

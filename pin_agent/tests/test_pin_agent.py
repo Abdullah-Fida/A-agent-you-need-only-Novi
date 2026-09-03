@@ -247,15 +247,79 @@ class TestReviewQueueSurvivesRestart(unittest.TestCase):
         async def first_pin_at():
             return None
 
+        async def recent_titles(limit=40):
+            return []
+
         agent.store.posted_history = history
         agent.store.posted_today = posted_today
         agent.store.pending_pins = pending
         agent.store.category_performance = performance
         agent.store.first_pin_at = first_pin_at
+        agent.store.recent_titles = recent_titles
 
         asyncio.run(agent.connect())
         self.assertEqual(len(agent.pending_review), 1)
         self.assertEqual(agent.pending_review[0]["title"], "Survived the restart")
+
+
+class TestNoRepeatedProducts(unittest.TestCase):
+    """
+    Two ways the same product reached the board twice, both seen live.
+    """
+
+    def setUp(self):
+        from pin_agent.pin_bot import PinAgent
+        self.agent = PinAgent.__new__(PinAgent)
+        self.agent.recent_titles = []
+
+    def _seen(self, *titles):
+        self.agent.recent_titles = list(titles)
+
+    def test_the_same_item_from_another_seller_is_caught(self):
+        """
+        Two sellers list the same 4-layer spice drawer organiser under
+        different product ids, so id-based dedupe misses it entirely. Both
+        were pinned a day apart -- on a young board that is the most visible
+        possible sign of automation.
+        """
+        self._seen("This 4-layer adjustable spice drawer organizer fits snugly")
+        self.assertTrue(self.agent._too_similar_to_recent(
+            "This 4-layer adjustable spice rack slides into a drawer"))
+
+    def test_genuinely_different_products_are_allowed(self):
+        self._seen("This 4-layer adjustable spice drawer organizer fits snugly")
+        for title in ("Stackable soda can dispenser makes fridge tidy",
+                      "Keep eggs fresh in a two-layer fridge box",
+                      "Under sink pull out shelf for cleaning bottles"):
+            self.assertFalse(self.agent._too_similar_to_recent(title), title)
+
+    def test_the_niche_vocabulary_does_not_count_as_similarity(self):
+        """
+        Almost every title contains "kitchen", "storage", "organizer" or
+        "space saving". Counting those would make everything a duplicate and
+        the agent would publish nothing at all.
+        """
+        self._seen("Kitchen storage organizer for small space saving homes")
+        self.assertFalse(self.agent._too_similar_to_recent(
+            "Kitchen storage organizer saves space in small homes for mugs"))
+
+    def test_an_empty_history_blocks_nothing(self):
+        self._seen()
+        self.assertFalse(self.agent._too_similar_to_recent("Anything at all here"))
+
+    def test_a_pin_awaiting_review_suppresses_its_product(self):
+        """
+        remember() ran only on a successful publish or an explicit
+        rejection, so a pin waiting for a decision left its product free to
+        be picked again -- and it was: the egg organiser 1005008248056658
+        was built twice, six seconds apart, under two different titles.
+        """
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        source = inspect.getsource(PinAgent.run_once)
+        review = source[source.index("require_review"):]
+        self.assertIn("self.gate.remember", review,
+                      "a pin queued for review must suppress its product")
 
 
 class TestBufferPostInput(unittest.TestCase):
