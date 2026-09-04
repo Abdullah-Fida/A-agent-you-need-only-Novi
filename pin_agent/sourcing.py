@@ -35,23 +35,45 @@ NICHE_CATEGORIES = {
 # Every term is a thing somebody types when they have a problem to solve, not
 # a thing they browse for. That intent is what makes the category convert.
 NICHE_KEYWORDS = {
+    # FOUR PER BOARD, INTERLEAVED.
+    #
+    # The old list was sixteen terms, fifteen of them kitchen. "Kitchen
+    # Gadgets Worth Buying" matched none of them at all and could never
+    # receive a pin, while "Bathroom Storage Ideas" had exactly one -- so a
+    # profile with six boards was really a profile with four, filling up
+    # with drawer organisers.
+    #
+    # The order rotates through the boards rather than grouping them, so
+    # consecutive pins land in different places. Every term was checked
+    # against boards.choose_board() and routes where the comment says.
     "home_kitchen": [
-        "kitchen drawer organizer",
-        "under sink organizer",
-        "spice rack organizer",
-        "pantry storage container",
+        "bathroom storage shelf",          # Bathroom Storage Ideas
+        "pantry storage container",        # Pantry and Fridge Storage
+        "under sink organizer",            # Under Sink and Cabinet Storage
+        "closet organizer box",            # Tiny Apartment Solutions
+        "herb scissors kitchen",           # Kitchen Gadgets Worth Buying
+        "kitchen drawer organizer",        # Small Kitchen Organization
+
+        "shower caddy organizer",
         "fridge organizer bin",
         "cabinet shelf riser",
-        "over the sink rack",
-        "airtight food container",
+        "over door hanging rack",
+        "vegetable chopper slicer",
         "utensil holder organizer",
+
+        "toothbrush holder set",
+        "airtight food container",
+        "pull out cabinet drawer",
+        "foldable storage basket",
+        "jar opener gadget",
         "pot lid organizer rack",
+
+        "towel rack bathroom",
+        "cereal storage jar",
         "stackable storage bin",
-        "corner shelf organizer",
-        "bathroom storage shelf",
-        "wall mounted kitchen rack",
-        "closet organizer box",
-        "kitchen sink caddy",
+        "shoe rack space saving",
+        "digital kitchen thermometer",
+        "countertop dish rack",
     ],
     "home_decor": [
         "wall shelf floating",

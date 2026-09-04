@@ -400,6 +400,7 @@ class PinAgent:
             pin["status"] = "awaiting_review"
             self.pending_review.append(pin)
             await self.store.save_pin(pin)
+            pin["_recorded"] = True
             # Suppressed the moment it is queued, not when it publishes.
             #
             # remember() was only called on a successful publish or an
@@ -432,15 +433,32 @@ class PinAgent:
         sent = await self.publisher.publish(pin)
         pin["status"] = "published" if sent else "failed"
 
+        # WRITE THE ROW, do not merely update one.
+        #
+        # save_pin() was only called in the review branch, so with review
+        # OFF nothing was ever inserted and mark_status() patched a row that
+        # did not exist. Eight pins were live on Pinterest while pin_posts
+        # held zero published records -- and everything that reads that
+        # table was quietly broken with it: the duplicate guard had no
+        # history to compare against, the daily cap counted zero, the ramp
+        # believed it was day zero forever, and the slot guard could never
+        # see its own work.
+        if pin.get("_recorded"):
+            await self.store.mark_status(pin["product_id"], pin["status"])
+        else:
+            await self.store.save_pin(pin)
+            pin["_recorded"] = True
+
         if sent:
             self.published_today += 1
             self.gate.remember(pin["product_id"], pin["link"], pin["image_hash"])
-            await self.store.mark_status(pin["product_id"], "published")
+            # Kept in memory too, so two pins in the same session cannot
+            # describe the same product before the next connect() reload.
+            self.recent_titles.insert(0, pin.get("title", ""))
             logger.info(f"Pin published ({self.published_today}/"
-                        f"{self.config.pins_per_day} today).")
+                        f"{self.daily_cap()} today).")
         else:
             self.last_error = self.publisher.last_error
-            await self.store.mark_status(pin["product_id"], "failed")
 
         return pin if sent else None
 

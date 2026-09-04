@@ -322,6 +322,94 @@ class TestNoRepeatedProducts(unittest.TestCase):
                       "a pin queued for review must suppress its product")
 
 
+class TestAllSixBoardsGetFed(unittest.TestCase):
+    """
+    The profile has six boards; the search terms only reached four.
+
+    "Kitchen Gadgets Worth Buying" matched none of the sixteen keywords and
+    could never receive a pin at all, and "Bathroom Storage Ideas" had
+    exactly one. Board routing was never the problem -- sourcing was.
+    """
+
+    def setUp(self):
+        from pin_agent.sourcing import NICHE_KEYWORDS
+        from pin_agent.boards import ALL_BOARDS, choose_board
+        self.keywords = NICHE_KEYWORDS["home_kitchen"]
+        self.boards = ALL_BOARDS
+        self.route = choose_board
+
+    def test_every_board_has_search_terms(self):
+        from collections import Counter
+        covered = Counter(self.route(k) for k in self.keywords)
+        for board in self.boards:
+            self.assertGreater(covered[board], 0,
+                               f"nothing ever searched for {board}")
+
+    def test_the_boards_are_fed_evenly(self):
+        from collections import Counter
+        covered = Counter(self.route(k) for k in self.keywords)
+        counts = [covered[b] for b in self.boards]
+        self.assertLessEqual(max(counts) - min(counts), 1,
+                             f"uneven board coverage: {dict(covered)}")
+
+    def test_consecutive_searches_land_on_different_boards(self):
+        """
+        Grouped keywords would put four bathroom pins out in a row. The
+        rotation is what keeps the profile looking browsed rather than
+        batch-uploaded.
+        """
+        routed = [self.route(k) for k in self.keywords]
+        for i in range(len(routed) - 1):
+            self.assertNotEqual(routed[i], routed[i + 1],
+                                f"{self.keywords[i]} and {self.keywords[i+1]} "
+                                f"both go to {routed[i]}")
+
+    def test_the_keyword_rotation_covers_every_board_before_repeating(self):
+        from pin_agent.sourcing import AliExpressClient
+        client = AliExpressClient(niche="home_kitchen")
+        first_pass = {self.route(client.next_keywords())
+                      for _ in range(len(self.boards))}
+        self.assertEqual(first_pass, set(self.boards))
+
+    def test_the_category_ids_were_not_clobbered(self):
+        # A careless edit once replaced NICHE_CATEGORIES with the keyword
+        # list, which would have sent every search to no category at all.
+        from pin_agent.sourcing import NICHE_CATEGORIES
+        self.assertEqual(NICHE_CATEGORIES["home_kitchen"], ["1501", "15"])
+
+
+class TestPublishedPinsAreRecorded(unittest.TestCase):
+    """
+    With review OFF, nothing was ever written to the database.
+
+    save_pin() lived only in the review branch, so mark_status() patched a
+    row that did not exist. Eight pins were live on Pinterest while
+    pin_posts held zero published records -- and every guard that reads that
+    table was broken with it: the duplicate check had no history, the daily
+    cap counted zero, the ramp believed it was day zero forever, and the
+    slot guard could not see its own work.
+    """
+
+    def setUp(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        self.publish_src = inspect.getsource(PinAgent.publish)
+
+    def test_publishing_writes_a_row(self):
+        self.assertIn("save_pin", self.publish_src,
+                      "a published pin must be recorded, not just patched")
+
+    def test_an_already_recorded_pin_is_updated_not_duplicated(self):
+        # A review-approved pin already has its row from run_once.
+        self.assertIn("_recorded", self.publish_src)
+        self.assertIn("mark_status", self.publish_src)
+
+    def test_a_published_pin_joins_the_duplicate_history(self):
+        self.assertIn("recent_titles", self.publish_src,
+                      "without this, two pins in one session can describe "
+                      "the same product")
+
+
 class TestBufferPostInput(unittest.TestCase):
     """
     The shape Buffer's createPost actually requires.
