@@ -341,6 +341,22 @@ class SupabaseDB:
         result = await self._run(q, "recent_articles")
         return (result.data or []) if result else []
 
+    async def article_bodies(self, limit: int = 400) -> List[Dict]:
+        """
+        Article bodies, for counting how many internal links point where.
+
+        Deliberately separate from recent_articles(), which is kept lean so
+        that choosing four links does not move megabytes. This one DOES move
+        the bodies, so the caller reads it a few times a day rather than
+        once per article.
+        """
+        def q():
+            return (self.client.table("articles").select("slug,content")
+                    .eq("status", "published")
+                    .order("published_at", desc=True).limit(limit).execute())
+        result = await self._run(q, "article_bodies")
+        return (result.data or []) if result else []
+
     async def get_article_by_slug(self, slug: str) -> Optional[Dict]:
         result = await self._run(
             lambda: self.client.table("articles").select("*").eq("slug", slug).limit(1).execute(),

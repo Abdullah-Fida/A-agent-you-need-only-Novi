@@ -2931,6 +2931,35 @@ class TestInternalLinks(unittest.TestCase):
         # A different phrase for the same page is still fine.
         self.assertTrue(budget.allows("page", "digital assets"))
 
+    def test_the_running_pipeline_uses_the_budget_too(self):
+        """
+        The cap only ever applied to the bulk backfill, so the day-to-day
+        path drifted into the same over-optimisation slowly instead of all
+        at once: "inflation" appeared in two of three test articles pointing
+        at the same page, and at eight articles a day that reaches thirty
+        links to one target inside a month.
+        """
+        import inspect
+        from modules.internal_links import InternalLinker
+        source = inspect.getsource(InternalLinker.link)
+        self.assertIn("budget", source,
+                      "the runtime path links without a site-wide cap")
+
+    def test_the_budget_is_read_a_few_times_a_day_not_per_article(self):
+        # Counting inbound links means reading article bodies, which is
+        # expensive; recent_articles() is kept lean precisely so choosing
+        # four links does not move megabytes.
+        from modules.internal_links import InternalLinker
+        self.assertGreaterEqual(InternalLinker.BUDGET_TTL_SECONDS, 3600)
+
+    def test_a_missing_budget_source_does_not_break_linking(self):
+        # An older database object has no article_bodies(); linking must
+        # still work, just uncapped.
+        import asyncio as _a
+        from modules.internal_links import InternalLinker
+        linker = InternalLinker(db=object())
+        self.assertIsNone(_a.run(linker._site_budget()))
+
     def test_the_budget_is_optional(self):
         # The runtime path links one article at a time and needs no budget.
         html = "<p>Growth in decentralized finance continued.</p>"

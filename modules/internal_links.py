@@ -218,6 +218,9 @@ class InternalLinker:
         self.db = db
         self.linked = 0
         self.last_error = ""
+        # Site-wide link counts, refreshed periodically. See _site_budget.
+        self._budget: Optional["LinkBudget"] = None
+        self._budget_expires = 0.0
 
     async def candidates(self, category: str, exclude_slug: str = "",
                          limit: int = 80) -> List[Dict]:
@@ -346,12 +349,52 @@ class InternalLinker:
         logger.info(f"Inserted {len(edits)} internal link(s): {', '.join(slugs)}")
         return out, slugs
 
+    # How long the site-wide link counts are trusted before being re-read.
+    BUDGET_TTL_SECONDS = 6 * 3600
+
+    async def _site_budget(self) -> Optional["LinkBudget"]:
+        """
+        The site's current inbound-link counts, cached.
+
+        Without this the cap only ever applied to a bulk backfill, and the
+        day-to-day path drifted into the same over-optimisation slowly
+        instead of all at once: "inflation" appeared in two of three test
+        articles pointing at the same page, and at eight articles a day
+        that reaches thirty links to one target inside a month.
+
+        Counted from article bodies, which means reading them -- so it is
+        done once every six hours rather than per article.
+        """
+        import time
+        now = time.monotonic()
+        if self._budget is not None and now < self._budget_expires:
+            return self._budget
+        if not self.db or not hasattr(self.db, "article_bodies"):
+            return None
+        try:
+            from collections import Counter
+            counts: Counter = Counter()
+            for row in await self.db.article_bodies(limit=400):
+                for slug in re.findall(r'<a href="/([a-z0-9][a-z0-9-]{6,})"',
+                                       row.get("content") or ""):
+                    counts[slug] += 1
+            self._budget = LinkBudget(counts)
+            self._budget_expires = now + self.BUDGET_TTL_SECONDS
+            logger.info(f"Link budget refreshed: {sum(counts.values())} existing "
+                        f"internal links across {len(counts)} targets.")
+        except Exception as e:
+            self.last_error = f"{type(e).__name__}: {e}"
+            logger.warning(f"Could not build the link budget: {self.last_error}")
+            return None
+        return self._budget
+
     async def link(self, html: str, category: str, slug: str = "",
                    max_links: int = MAX_LINKS) -> Tuple[str, List[str]]:
         """Read the candidates and link them. Never raises."""
         try:
             found = await self.candidates(category, exclude_slug=slug)
-            return self.insert(html, found, max_links=max_links)
+            budget = await self._site_budget()
+            return self.insert(html, found, max_links=max_links, budget=budget)
         except Exception as e:
             self.last_error = f"{type(e).__name__}: {e}"
             logger.warning(f"Internal linking failed: {self.last_error}")
