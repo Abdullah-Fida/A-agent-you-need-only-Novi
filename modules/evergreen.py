@@ -2290,6 +2290,43 @@ class EvergreenDesk:
                 n += 1
         return n
 
+    # Which explainers to write first, from Search Console rather than taste.
+    #
+    # Explainers earn about four times what a news report does per article --
+    # "How to read a company earnings report" alone took 254 Bing
+    # impressions, and "What determines the price of rare earth metals" 74,
+    # against 20-90 for the best news pieces. But the bank is not balanced:
+    # it holds 190 Pakistan topics and 130 business ones, while business and
+    # tech are what actually rank.
+    #
+    # The bank is left alone -- every topic in it is still worth writing --
+    # and the ORDER is weighted instead, so the sections that earn come up
+    # sooner. Nothing is excluded; a Pakistan explainer still appears, just
+    # less often than a business one.
+    TOPIC_WEIGHTS = {
+        "business_markets": 0.32,
+        "tech_ai": 0.30,
+        "pakistan": 0.18,
+        "crypto": 0.12,
+        "world_news": 0.08,
+    }
+
+    @classmethod
+    def _weighted_order(cls):
+        """
+        The bank shuffled, but biased towards the sections that rank.
+
+        Uses the standard weighted-random-order trick: give each item a key
+        of random()**(1/weight) and take the largest first. A plain
+        random.sample() gave every topic the same chance, so the mix of
+        explainers simply followed the bank's own shape.
+        """
+        def key(topic):
+            weight = cls.TOPIC_WEIGHTS.get(topic.get("category"), 0.05)
+            return random.random() ** (1.0 / max(weight, 0.01))
+
+        return sorted(TOPIC_BANK, key=key, reverse=True)
+
     async def next_topic(self) -> Optional[Dict[str, str]]:
         """
         The next topic to write.
@@ -2300,7 +2337,7 @@ class EvergreenDesk:
         at two a day, and a content pipeline that silently halts after five
         weeks is not a pipeline.
         """
-        for topic in random.sample(TOPIC_BANK, len(TOPIC_BANK)):
+        for topic in self._weighted_order():
             if not await self._already_written(topic["title"]):
                 left = await self.remaining()
                 if left <= self.LOW_STOCK:

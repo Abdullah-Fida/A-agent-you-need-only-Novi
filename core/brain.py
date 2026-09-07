@@ -70,7 +70,6 @@ class BotBrain:
         #
         #     PKT     UTC    London  New York
         "article_slots": [
-            {"hour": 11, "minute": 30},  # 06:30   07:30   02:30  UK commute
             {"hour": 15, "minute": 0},   # 10:00   11:00   06:00  US wakes
             {"hour": 18, "minute": 0},   # 13:00   14:00   09:00  US PEAK
             {"hour": 21, "minute": 0},   # 16:00   17:00   12:00  US lunch
@@ -84,7 +83,18 @@ class BotBrain:
         # later, but the first day still helps.
         #
         #     PKT     UTC    London  New York
+        # THREE a day now, not two. Search Console says an explainer earns
+        # roughly four times what a news report does: "How to read a company
+        # earnings report" took 254 Bing impressions on its own, against
+        # 20-90 for the best news pieces. The 11:30 slot moved across from
+        # the news desk because it was the weakest one there -- 02:30 in New
+        # York, which is a poor hour to break a story and an irrelevant one
+        # for an explainer, since an explainer is found by search weeks
+        # later rather than on the day.
+        #
+        # The daily total is unchanged at eight.
         "evergreen_slots": [
+            {"hour": 11, "minute": 30},  # 06:30   07:30   02:30
             {"hour": 13, "minute": 0},   # 08:00   09:00   04:00
             {"hour": 19, "minute": 30},  # 14:30   15:30   10:30  US morning
         ],

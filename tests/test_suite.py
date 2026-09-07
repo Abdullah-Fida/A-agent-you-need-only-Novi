@@ -2125,8 +2125,15 @@ class TestWebsiteHasItsOwnSchedule(unittest.TestCase):
     def _zone(slot, offset_from_pkt):
         return (slot["hour"] - 5 + offset_from_pkt) % 24
 
-    def test_six_article_slots(self):
-        self.assertEqual(len(self.slots), 6)
+    def test_five_article_slots(self):
+        """
+        Five, not six. The 11:30 slot moved to the explainer desk: Search
+        Console showed an explainer earning about four times what a news
+        report does, and 11:30 PKT is 02:30 in New York -- the weakest hour
+        the news desk had. The daily total is still eight.
+        """
+        self.assertEqual(len(self.slots), 5)
+        self.assertEqual(len(self.B.SCHEDULE["evergreen_slots"]), 3)
 
     def test_slots_run_through_the_sleep_window(self):
         # This is the whole point of the separate schedule. If no slot falls
@@ -3032,18 +3039,31 @@ class TestEvergreenDesk(unittest.TestCase):
         # Stored in source_url, which also holds real article URLs.
         self.assertTrue(self.D._topic_key("Anything").startswith("evergreen:"))
 
-    def test_enough_topics_for_a_full_year(self):
+    def test_the_bank_runs_unattended_for_months(self):
         """
-        The bank is the one thing that has to keep working unattended. A
-        year of it means nobody has to think about explainers again, and the
-        self-replenishment below 6 remaining becomes a safety net rather
-        than the normal path.
+        The bank is the one thing that has to keep working unattended.
+
+        It held a full year at two explainers a day. Search Console then
+        showed an explainer earning about four times what a news report
+        does, so a third slot was moved across -- which spends the bank
+        faster: 730 topics is 365 days at two a day and 243 at three.
+
+        Eight months is still a long unattended runway, and the desk invents
+        its own topics below LOW_STOCK rather than halting. The number is
+        asserted so that shrinking the bank, or adding a fourth slot,
+        surfaces here rather than as silence one morning.
         """
         from core.brain import BotBrain
         per_day = len(BotBrain.SCHEDULE["evergreen_slots"])
         days = len(self.bank) / per_day
-        self.assertGreaterEqual(days, 365,
+        self.assertGreaterEqual(days, 240,
                                 f"only {days:.0f} days of explainers banked")
+
+    def test_the_desk_invents_topics_rather_than_stopping(self):
+        # The safety net that makes a finite bank acceptable.
+        import inspect
+        source = inspect.getsource(self.D.next_topic)
+        self.assertIn("_invent_topic", source)
 
     def test_the_bank_leans_where_the_competition_is_thinnest(self):
         """

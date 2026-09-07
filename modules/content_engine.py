@@ -23,12 +23,32 @@ class ContentEngine:
     """
     
     # Content mix ratios: International + Crypto + Pakistani
+    # RETUNED FROM SEARCH CONSOLE, 7 September 2026.
+    #
+    # The first 122 articles gave a clear read on what earns impressions and
+    # what does not:
+    #
+    #     section     articles          impressions
+    #     crypto      39 (32%)          ~0
+    #     world       32 (26%)          ~0
+    #     business    21 (17%)          254  (one explainer)
+    #     tech        18 (15%)          139  (two product launches)
+    #     pakistan    12 (10%)           38
+    #
+    # A third of everything written was crypto, and it earned nothing: those
+    # stories compete with CoinDesk on CoinDesk's own reporting and lose. The
+    # tech product launches won because "hoto snapbloq i-a06" is a search
+    # almost nobody else answers.
+    #
+    # So the mix follows the evidence: tech first, crypto and world cut back
+    # hard. Neither is removed -- a section with no new articles dies in the
+    # index -- but neither gets the volume any more.
     CONTENT_MIX = [
-        ("tech_ai", 0.25),
-        ("business_markets", 0.20),
-        ("world_news", 0.20),
-        ("crypto", 0.25),
-        ("pakistan", 0.10),
+        ("tech_ai", 0.42),
+        ("business_markets", 0.25),
+        ("pakistan", 0.13),
+        ("crypto", 0.12),
+        ("world_news", 0.08),
     ]
 
     # The same story is not equally interesting everywhere. Crypto, tech,
@@ -44,18 +64,21 @@ class ContentEngine:
     US_FACING_HOURS_PKT = {16, 18, 20, 22}
 
     GLOBAL_MIX = [
-        ("crypto", 0.30),
-        ("tech_ai", 0.28),
-        ("business_markets", 0.22),
-        ("world_news", 0.20),
+        ("tech_ai", 0.46),
+        ("business_markets", 0.28),
+        ("crypto", 0.16),
+        ("world_news", 0.10),
     ]
 
+    # Pakistan earns a bigger share here than its global weight, because it
+    # is where the CLICKS are: eight of the site's ten clicks came from
+    # Pakistani readers, against ninety-six US impressions and none.
     REGIONAL_MIX = [
-        ("pakistan", 0.28),
-        ("world_news", 0.24),
-        ("tech_ai", 0.18),
-        ("crypto", 0.16),
-        ("business_markets", 0.14),
+        ("pakistan", 0.34),
+        ("tech_ai", 0.30),
+        ("business_markets", 0.20),
+        ("crypto", 0.10),
+        ("world_news", 0.06),
     ]
     
     def __init__(self, ai_engine: AIEngine, scraper: NewsScraper,
