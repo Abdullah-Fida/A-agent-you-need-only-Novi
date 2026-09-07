@@ -213,6 +213,10 @@ class PinAgent:
     # share five words out of seven.
     TITLE_OVERLAP = 0.5
 
+    # Meaningful words in common that mean "same product" regardless of
+    # ratio. Two genuinely different listings on this board shared NONE.
+    SHARED_WORDS = 3
+
     # Titles are compared against roughly a fortnight of pins. Beyond that
     # the board has moved on and a repeat is fair.
     RECENT_TITLE_COUNT = 40
@@ -220,6 +224,7 @@ class PinAgent:
     _TITLE_NOISE = {
         "this", "that", "the", "a", "an", "and", "or", "with", "for", "your",
         "you", "keep", "make", "makes", "made", "from", "into", "onto", "any",
+        "these", "those", "our", "ours", "their", "them", "who", "what",
         "every", "all", "one", "two", "get", "gets", "have", "has", "its",
         "it", "in", "on", "of", "to", "is", "are", "up", "out", "off", "at",
         "by", "no", "so", "can", "will", "perfect", "great", "ideal", "best",
@@ -250,15 +255,27 @@ class PinAgent:
             if len(other) < 2:
                 continue
             common = words & other
-            # TWO conditions, not one. A ratio alone collapses when a title
-            # reduces to a single meaningful word: "kitchen storage
-            # organizer for small space saving homes" leaves just {homes},
-            # and one shared word out of one is a perfect score. Requiring
-            # two real words in common as well is what separates the same
-            # product from the same vocabulary.
-            if len(common) < 2:
-                continue
-            if len(common) / min(len(words), len(other)) >= self.TITLE_OVERLAP:
+            # A ratio alone is not enough, in BOTH directions.
+            #
+            # Too loose: it collapses when a title reduces to one meaningful
+            # word -- "kitchen storage organizer for small space saving
+            # homes" leaves just {homes}, and one shared word out of one is
+            # a perfect score.
+            #
+            # Too tight: comparing full pin text, the word sets get large
+            # and a real duplicate scores badly. Two listings of the same
+            # herb scissors shared {scissors, stainless, steel} but only
+            # rated 0.40, and the second one published.
+            #
+            # So an absolute count catches what the ratio misses. Measured
+            # against the live board: three shared words caught all four
+            # confirmed duplicates and flagged none of four genuinely
+            # different products, which shared no meaningful words at all.
+            if len(common) >= self.SHARED_WORDS:
+                return True
+            if (len(common) >= 2
+                    and len(common) / min(len(words), len(other))
+                    >= self.TITLE_OVERLAP):
                 return True
         return False
 
@@ -325,7 +342,8 @@ class PinAgent:
             # Checked here, after the copy and before the image, because
             # the copy is what describes the product and the image is the
             # expensive step.
-            if self._too_similar_to_recent(copy["title"]):
+            if self._too_similar_to_recent(
+                    f"{copy['title']} {copy.get('description', '')}"):
                 logger.info(f"Skipping '{copy['title'][:44]}' — too close to "
                             f"something pinned recently.")
                 continue
@@ -412,7 +430,8 @@ class PinAgent:
             # only showed inside a single running session.
             self.gate.remember(pin["product_id"], pin["link"],
                                pin.get("image_hash", ""))
-            self.recent_titles.insert(0, pin["title"])
+            self.recent_titles.insert(
+                0, f"{pin.get('title', '')} {pin.get('description', '')}")
             logger.info(f"Pin awaiting review: '{pin['title'][:50]}'")
             await self._notify_review(pin)
             return pin
@@ -454,7 +473,8 @@ class PinAgent:
             self.gate.remember(pin["product_id"], pin["link"], pin["image_hash"])
             # Kept in memory too, so two pins in the same session cannot
             # describe the same product before the next connect() reload.
-            self.recent_titles.insert(0, pin.get("title", ""))
+            self.recent_titles.insert(
+                0, f"{pin.get('title', '')} {pin.get('description', '')}")
             logger.info(f"Pin published ({self.published_today}/"
                         f"{self.daily_cap()} today).")
         else:

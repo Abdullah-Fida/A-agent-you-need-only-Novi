@@ -133,16 +133,21 @@ class PinStore:
         published both mean the product has been covered, and a near
         duplicate of either is what makes a board look automated.
         """
+        def whole(row) -> str:
+            # Title AND description. A pin title is five or six words, and
+            # comparing two of them missed a duplicate that shared
+            # "scissors, stainless, steel" in the body text.
+            return f"{row.get('title') or ''} {row.get('description') or ''}".strip()
+
         if not self.enabled:
-            return [str(p.get("title") or "") for p in self._memory[-limit:]]
+            return [whole(p) for p in self._memory[-limit:]]
 
         def query():
-            return (self.client.table("pin_posts").select("title")
+            return (self.client.table("pin_posts").select("title,description")
                     .order("created_at", desc=True).limit(limit).execute())
 
         result = await self._run(query)
-        return [str(r.get("title") or "")
-                for r in (getattr(result, "data", None) or [])]
+        return [whole(r) for r in (getattr(result, "data", None) or [])]
 
     async def first_pin_at(self) -> Optional[datetime]:
         """

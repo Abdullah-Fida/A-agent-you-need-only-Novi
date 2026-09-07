@@ -303,6 +303,50 @@ class TestNoRepeatedProducts(unittest.TestCase):
         self.assertFalse(self.agent._too_similar_to_recent(
             "Kitchen storage organizer saves space in small homes for mugs"))
 
+    def test_a_duplicate_is_caught_on_shared_words_when_the_ratio_is_low(self):
+        """
+        The ratio alone let a real duplicate through.
+
+        Two listings of the same herb scissors published five days apart.
+        Compared as whole pins the word sets are large, so they shared
+        {scissors, stainless, steel} but scored only 0.40 -- under the
+        threshold, so the second one went out. Three meaningful words in
+        common is the signal the ratio was missing.
+        """
+        self._seen("Elegant herb scissors for the culinary enthusiast "
+                   "These stainless steel herb scissors feature five "
+                   "precision blades and a cleaning comb")
+        self.assertTrue(self.agent._too_similar_to_recent(
+            "Save minutes chopping herbs with 5-blade scissors "
+            "These stainless steel 5-blade scissors make chopping herbs "
+            "a breeze and rinse clean"))
+
+    def test_products_sharing_no_meaningful_words_are_allowed(self):
+        """
+        Measured on the live board: four genuinely different products
+        shared ZERO meaningful words with each other, so a three-word bar
+        has real headroom.
+        """
+        self._seen("Keep your bathroom countertop clutter-free with this "
+                   "no-drill toilet paper shelf")
+        for other in (
+            "Keep your leftovers fresh and ready for guests with this set "
+            "of airtight containers",
+            "Tired of uneven slices? Our 12-in-1 slicer takes the effort "
+            "out of prep",
+            "Magnetic knife strip mounts without drilling and frees the "
+            "worktop completely",
+        ):
+            self.assertFalse(self.agent._too_similar_to_recent(other), other[:40])
+
+    def test_filler_words_do_not_count_as_shared(self):
+        # "These" and "our" open half the descriptions written; counting
+        # them would push unrelated pins over the three-word bar.
+        from pin_agent.pin_bot import PinAgent
+        for filler in ("these", "those", "our", "their"):
+            self.assertNotIn(filler, PinAgent._title_words(
+                f"These our their those {filler} items"))
+
     def test_an_empty_history_blocks_nothing(self):
         self._seen()
         self.assertFalse(self.agent._too_similar_to_recent("Anything at all here"))
