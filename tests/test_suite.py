@@ -2888,6 +2888,49 @@ class TestInternalLinks(unittest.TestCase):
         self.assertEqual(slugs, [])
         self.assertEqual(out, html)
 
+    def test_a_word_with_two_meanings_is_never_an_anchor(self):
+        """
+        Each of these shipped a wrong link on the live site. The word was
+        genuinely in the target's title; it just meant something else
+        there -- "contract" pointed at a story about Lebanon's economy
+        CONTRACTING, and "recovery" pointed at a bitcoin bounty and a Nepal
+        flood at the same time.
+        """
+        for word in ("contract", "deposits", "recovery", "struggle",
+                     "distress", "analysis", "growth", "surge"):
+            phrases = [p.lower() for p in self.anchor_phrases(
+                self._art("x", f"A story about {word} and its effects",
+                          keywords=[word]))]
+            self.assertNotIn(word, phrases, f"{word!r} must not anchor alone")
+
+    def test_a_site_wide_budget_caps_inbound_links(self):
+        """
+        Linking a whole archive at once concentrates badly. A dry run over
+        121 articles produced 24 links reading "cryptocurrency" pointing at
+        one page, 18 reading "blockchain" at another. Identical anchor text
+        repeated at that scale reads as manipulation.
+        """
+        from modules.internal_links import LinkBudget
+        budget = LinkBudget({"popular": LinkBudget.MAX_INBOUND})
+        self.assertFalse(budget.allows("popular", "anything"))
+        self.assertTrue(budget.allows("fresh", "crypto"))
+
+    def test_the_budget_caps_repeated_anchor_text(self):
+        from modules.internal_links import LinkBudget
+        budget = LinkBudget()
+        for _ in range(LinkBudget.MAX_SAME_ANCHOR):
+            budget.record("page", "cryptocurrency")
+        self.assertFalse(budget.allows("page", "cryptocurrency"))
+        # A different phrase for the same page is still fine.
+        self.assertTrue(budget.allows("page", "digital assets"))
+
+    def test_the_budget_is_optional(self):
+        # The runtime path links one article at a time and needs no budget.
+        html = "<p>Growth in decentralized finance continued.</p>"
+        out, slugs = self.linker.insert(
+            html, [self._art("d", "x", keywords=["decentralized finance"])])
+        self.assertEqual(slugs, ["d"])
+
     def test_the_sentence_is_never_rewritten(self):
         import re
         html = "<p>Growth in decentralized finance continued.</p>"

@@ -66,6 +66,20 @@ _VAGUE = {
     "situation", "approach", "interest", "increase", "decrease", "billion",
     "million", "percent", "national", "international", "government",
     "authorities", "officials", "analysts", "reported", "according",
+
+    # WORDS WITH TWO MEANINGS, which is what makes them dangerous as a
+    # one-word anchor. Each of these shipped a wrong link on the live site:
+    #   "contract"  -> a story about Lebanon's economy CONTRACTING
+    #   "deposits"  -> an XRP bridge drained by a software mistake
+    #   "recovery"  -> a bitcoin bounty AND a Nepal flood, at the same time
+    #   "struggle"  -> a Brazilian general's memoir
+    # The word was genuinely in the target's title; it just meant something
+    # else there. A reader clicking "contract" expects a contract.
+    "contract", "contracts", "deposit", "deposits", "recovery", "struggle",
+    "distress", "analysis", "nations", "transfer", "transfers", "growth",
+    "decline", "surge", "launch", "release", "support", "pressure",
+    "breach", "review", "plans", "measures", "efforts", "talks", "deal",
+    "deals", "returns", "issues", "results", "figures", "changes", "moves",
 }
 
 # Only body prose is linkable. Never a heading -- a link in an <h2> looks
@@ -159,6 +173,44 @@ def anchor_phrases(article: Dict) -> List[str]:
     return unique
 
 
+class LinkBudget:
+    """
+    Caps how often any one article can be linked to, and how often with the
+    same words.
+
+    Linking a whole archive at once concentrates badly if nothing stops it.
+    A dry run over 121 articles produced 24 links reading "cryptocurrency"
+    all pointing at one page, 18 reading "blockchain" at another, and 15
+    reading "inflation" at a third. Identical anchor text repeated at that
+    scale is the classic exact-match over-optimisation pattern, and it is
+    read as manipulation rather than helpfulness.
+
+    Seed `inbound` with what the site already has, so a backfill adds to
+    those counts instead of starting from zero.
+    """
+
+    # Enough to signal that a page matters, far short of a link scheme.
+    MAX_INBOUND = 5
+
+    # The same phrase pointing at the same page, more than twice, is a
+    # pattern rather than a coincidence.
+    MAX_SAME_ANCHOR = 2
+
+    def __init__(self, inbound: Optional[Dict[str, int]] = None):
+        from collections import Counter, defaultdict
+        self.inbound = Counter(inbound or {})
+        self.anchors = defaultdict(Counter)
+
+    def allows(self, slug: str, anchor: str) -> bool:
+        if self.inbound[slug] >= self.MAX_INBOUND:
+            return False
+        return self.anchors[slug][anchor.lower()] < self.MAX_SAME_ANCHOR
+
+    def record(self, slug: str, anchor: str) -> None:
+        self.inbound[slug] += 1
+        self.anchors[slug][anchor.lower()] += 1
+
+
 class InternalLinker:
     """Finds published articles worth linking, and links them."""
 
@@ -221,7 +273,8 @@ class InternalLinker:
         return None
 
     def insert(self, html: str, articles: List[Dict],
-               max_links: int = MAX_LINKS) -> Tuple[str, List[str]]:
+               max_links: int = MAX_LINKS,
+               budget: Optional["LinkBudget"] = None) -> Tuple[str, List[str]]:
         """
         Returns (html, slugs linked).
 
@@ -266,9 +319,17 @@ class InternalLinker:
                     start, end = base + found[0], base + found[1]
                     if any(not (end <= s or start >= e) for _, s, e, _ in edits):
                         continue
+                    # Site-wide caps: no page may collect too many
+                    # inbound links, and the same phrase may not point at
+                    # the same page more than twice.
+                    anchor = body[found[0]:found[1]]
+                    if budget is not None and not budget.allows(slug, anchor):
+                        continue
                     edits.append((bi, start, end, slug))
                     per_block[bi] = per_block.get(bi, 0) + 1
                     used_targets.add(slug)
+                    if budget is not None:
+                        budget.record(slug, anchor)
                     placed = True
                     break
 
