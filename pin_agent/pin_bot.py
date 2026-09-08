@@ -65,6 +65,8 @@ class PinAgent:
         # Titles of recent pins, so the same product from a different
         # seller is not pinned twice days apart.
         self.recent_titles: List[str] = []
+        # Consecutive slots that produced nothing. See _note_failure.
+        self._consecutive_failures = 0
         self.last_run: Optional[datetime] = None
         self.last_error = ""
 
@@ -83,6 +85,7 @@ class PinAgent:
             "awaiting_review": len(self.pending_review),
             "review_required": self.config.require_review,
             "last_run": self.last_run.isoformat() if self.last_run else None,
+            "consecutive_failures": self._consecutive_failures,
             "last_error": self.last_error,
         }
 
@@ -230,6 +233,29 @@ class PinAgent:
         "by", "no", "so", "can", "will", "perfect", "great", "ideal", "best",
         "kitchen", "home", "space", "saving", "saver", "small", "clear",
         "tidy", "organized", "organised", "organizer", "storage",
+
+        # ADDED AFTER A THIRTY-TWO HOUR OUTAGE.
+        #
+        # Every pin in this niche is a compact space-saving shelf or rack,
+        # so none of these words tells one product from another. Left in,
+        # the guard matched "Compact corner shelf with hooks" against
+        # "Compact bathroom shelf saves space" -- two different products
+        # sharing nothing but marketing vocabulary. Six candidates in a row
+        # were rejected, build_one() returned None, and the agent quietly
+        # published nothing for a day and a half while the website carried
+        # on normally.
+        #
+        # The words that actually IDENTIFY a product stay: spice, cutlery,
+        # egg, shoe, towel, toothbrush, sink, fridge, pantry, jar, bottle.
+        "compact", "shelf", "shelves", "rack", "holder", "bin", "bins",
+        "box", "boxes", "tray", "set", "wall", "door", "hanging", "sliding",
+        "tier", "expandable", "stackable", "mount", "mounted", "saves",
+        "save", "maximize", "maximise", "fits", "fit", "easy", "simple",
+        "sleek", "elegant", "versatile", "handy", "neat", "neatly", "more",
+        "less", "within", "reach", "room", "counter", "countertop",
+        "drawer", "drawers", "cabinet", "cupboard", "solution", "helps",
+        "help", "keeps", "tiny", "white", "black", "clutter", "declutter",
+        "minutes", "daily", "gift", "idea", "ideas", "must", "quick",
     }
 
     @classmethod
@@ -342,8 +368,19 @@ class PinAgent:
             # Checked here, after the copy and before the image, because
             # the copy is what describes the product and the image is the
             # expensive step.
-            if self._too_similar_to_recent(
-                    f"{copy['title']} {copy.get('description', '')}"):
+            # TITLE against TITLE. Nothing else.
+            #
+            # This compared the candidate's title PLUS its description and
+            # hashtags -- about twenty-five words -- against history entries
+            # that hold the title alone, about five. Sharing three generic
+            # words is then close to certain, and the guard rejected six
+            # candidates in a row: "kitchens", "spaces", "design",
+            # "homeorganization", "smallkitchen". The agent published
+            # nothing for thirty-two hours while the website carried on.
+            #
+            # Both sides must be the same kind of text or the counts mean
+            # nothing.
+            if self._too_similar_to_recent(copy["title"]):
                 logger.info(f"Skipping '{copy['title'][:44]}' — too close to "
                             f"something pinned recently.")
                 continue
@@ -397,6 +434,49 @@ class PinAgent:
         logger.info(self.last_error)
         return None
 
+    # Three missed slots is most of a day at the current volume, and long
+    # enough to be certain it is not one unlucky batch.
+    FAILURES_BEFORE_ALARM = 3
+
+    async def _note_failure(self) -> None:
+        """
+        Says something when the agent stops producing.
+
+        A returned None looked identical whether the market was quiet or the
+        duplicate guard had jammed, and it was logged at INFO among a
+        thousand other lines. So when the guard did jam, the agent published
+        nothing for thirty-two hours, the website carried on normally, and
+        the first anyone knew was the owner noticing an empty board.
+
+        Silence is the one failure mode a scheduled job must never have.
+        """
+        self._consecutive_failures += 1
+        n = self._consecutive_failures
+        if n < self.FAILURES_BEFORE_ALARM:
+            logger.info(f"Pin slot produced nothing ({n} in a row): "
+                        f"{self.last_error}")
+            return
+
+        logger.error(f"PIN AGENT HAS PRODUCED NOTHING FOR {n} SLOTS IN A ROW. "
+                     f"Last reason: {self.last_error}")
+        if not self.nm or n != self.FAILURES_BEFORE_ALARM:
+            return                      # Alert once, not on every slot after.
+        try:
+            await self.nm.send_notification(
+                subject=f"Pinterest agent has published nothing for {n} slots",
+                message=(f"The pin agent has failed {n} slots in a row.\n\n"
+                         f"Last reason: {self.last_error}\n\n"
+                         f"Published today: {self.published_today}/"
+                         f"{self.daily_cap()}\n"
+                         f"Products already used: {len(self.gate.seen_products)}\n"
+                         f"Recent titles held: {len(self.recent_titles)}\n\n"
+                         f"A run of 'no candidate produced a compliant pin' "
+                         f"usually means a filter has become too strict for "
+                         f"the number of products the niche returns."),
+                is_critical=True)
+        except Exception as e:
+            logger.warning(f"Could not send the pin alarm: {type(e).__name__}")
+
     async def run_once(self) -> Optional[Dict]:
         """
         One cycle: build a pin, then either queue it for review or publish it.
@@ -412,7 +492,9 @@ class PinAgent:
 
         pin = await self.build_one()
         if not pin:
+            await self._note_failure()
             return None
+        self._consecutive_failures = 0
 
         if self.config.require_review:
             pin["status"] = "awaiting_review"

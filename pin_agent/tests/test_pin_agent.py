@@ -454,6 +454,121 @@ class TestPublishedPinsAreRecorded(unittest.TestCase):
                       "the same product")
 
 
+class TestSilentOutage(unittest.TestCase):
+    """
+    The agent published nothing for thirty-two hours and said nothing.
+
+    build_one() returned None, which looks identical whether the market was
+    quiet or a filter had jammed, and it was logged at INFO among a thousand
+    other lines. The website carried on publishing normally the whole time,
+    so nothing else looked wrong; the first anyone knew was the owner
+    noticing an empty board.
+    """
+
+    def setUp(self):
+        from pin_agent.pin_bot import PinAgent
+        from datetime import datetime, timezone
+        agent = PinAgent.__new__(PinAgent)
+        agent._consecutive_failures = 0
+        agent.last_error = "no candidate produced a compliant pin"
+        agent.nm = None
+        agent.published_today = 0
+        agent.recent_titles = []
+        agent.gate = MagicMock()
+        agent.gate.seen_products = set()
+        agent.config = MagicMock()
+        agent.config.pins_per_day = 15
+        agent._first_pin_at = datetime.now(timezone.utc)
+        self.agent = agent
+        self.PinAgent = PinAgent
+
+    def test_a_run_of_failures_is_escalated(self):
+        for _ in range(self.PinAgent.FAILURES_BEFORE_ALARM):
+            asyncio.run(self.agent._note_failure())
+        self.assertGreaterEqual(self.agent._consecutive_failures,
+                                self.PinAgent.FAILURES_BEFORE_ALARM)
+
+    def test_one_quiet_slot_is_not_an_alarm(self):
+        # A single empty slot is ordinary: the market is quiet, or one batch
+        # was all duplicates. Crying wolf trains the owner to ignore it.
+        asyncio.run(self.agent._note_failure())
+        self.assertLess(self.agent._consecutive_failures,
+                        self.PinAgent.FAILURES_BEFORE_ALARM)
+
+    def test_the_owner_is_emailed_once_not_every_slot(self):
+        sent = []
+
+        async def capture(**kwargs):
+            sent.append(kwargs)
+
+        self.agent.nm = MagicMock()
+        self.agent.nm.send_notification = capture
+        for _ in range(self.PinAgent.FAILURES_BEFORE_ALARM + 3):
+            asyncio.run(self.agent._note_failure())
+        self.assertEqual(len(sent), 1, "the alarm repeated on every slot")
+        self.assertIn("published nothing", sent[0]["subject"])
+
+    def test_a_success_clears_the_run(self):
+        import inspect
+        source = inspect.getsource(self.PinAgent.run_once)
+        self.assertIn("_consecutive_failures = 0", source,
+                      "a good slot must reset the counter, or the alarm "
+                      "fires forever after one bad day")
+
+    def test_the_failure_count_is_visible_in_status(self):
+        import inspect
+        self.assertIn("consecutive_failures",
+                      inspect.getsource(self.PinAgent.status.fget))
+
+
+class TestDuplicateGuardCompareLikeForLike(unittest.TestCase):
+    """
+    What jammed the guard: comparing unlike things.
+
+    The candidate was passed as title PLUS description PLUS hashtags, about
+    twenty-five meaningful words, while the history holds titles alone,
+    about five. Sharing three generic words -- "kitchens", "spaces",
+    "design", "homeorganization" -- is then close to certain, and six
+    candidates in a row were rejected as duplicates of unrelated pins.
+    """
+
+    def setUp(self):
+        from pin_agent.pin_bot import PinAgent
+        self.agent = PinAgent.__new__(PinAgent)
+        self.PinAgent = PinAgent
+
+    def test_only_the_title_is_compared(self):
+        import inspect
+        source = inspect.getsource(self.PinAgent.build_one)
+        call = source[source.index("_too_similar_to_recent"):][:120]
+        self.assertNotIn("description", call,
+                         "comparing title+description against title-only "
+                         "makes three shared words near-certain")
+
+    def test_a_long_blob_does_not_match_a_short_title(self):
+        self.agent.recent_titles = ["Compact spice organizer keeps jars tidy"]
+        blob = ("Clear acrylic wall shelf saves counter space. This clear "
+                "acrylic shelf mounts directly and frees precious counter "
+                "area for anyone who loves cooking in small kitchens. "
+                "#kitchenorganization #smallkitchen #homeorganization")
+        self.assertFalse(self.agent._too_similar_to_recent(blob),
+                         "a description-length blob still matches a title")
+
+    def test_the_real_duplicate_is_still_caught(self):
+        self.agent.recent_titles = [
+            "This 4-layer adjustable spice drawer organizer fits snugly"]
+        self.assertTrue(self.agent._too_similar_to_recent(
+            "This 4-layer adjustable spice rack slides into a drawer"))
+
+    def test_marketing_vocabulary_is_not_a_duplicate(self):
+        # Every pin in this niche is a compact space-saving shelf.
+        self.agent.recent_titles = ["Compact bathroom shelf saves space"]
+        for title in ("Compact corner shelf with hooks for tight spaces",
+                      "Compact 2-tier sliding sink organizer",
+                      "Compact white divider board for kitchen drawers"):
+            self.assertFalse(self.agent._too_similar_to_recent(title), title)
+
+
 class TestBufferPostInput(unittest.TestCase):
     """
     The shape Buffer's createPost actually requires.
