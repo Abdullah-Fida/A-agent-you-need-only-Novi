@@ -2,7 +2,10 @@ import { MetadataRoute } from 'next';
 import { getArticles, getCategories } from '@/lib/supabase';
 import { SITE_URL, AUTHOR_SLUG } from '@/lib/site';
 
-export const revalidate = 3600;
+// Ten minutes, not an hour. The site publishes eight articles a day, and
+// a piece that is not in the sitemap is a piece neither engine knows to
+// crawl. Bing asks for daily; this is far inside that.
+export const revalidate = 600;
 
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const routes: MetadataRoute.Sitemap = [

@@ -21,7 +21,25 @@ if (!isConfigured) {
  * checks `isConfigured` first and returns empty results otherwise.
  */
 export const supabase: SupabaseClient | null = isConfigured
-  ? createClient(supabaseUrl, supabaseAnonKey)
+  ? createClient(supabaseUrl, supabaseAnonKey, {
+      /*
+       * OPT OUT OF NEXT'S DATA CACHE.
+       *
+       * Next.js wraps global fetch and caches GET responses in its own Data
+       * Cache, separately from a route's `revalidate`. supabase-js uses that
+       * fetch, so the database response was being reused long after the page
+       * itself had regenerated: the sitemap rebuilt 65 seconds before it was
+       * checked and was still missing a full day of articles -- eight pieces
+       * Google and Bing therefore had no way to discover. Bing reported it as
+       * "Important pages missing in sitemaps".
+       *
+       * Each route keeps its own `revalidate`, which is what actually limits
+       * how often we query. This only stops the DATA being cached twice.
+       */
+      global: {
+        fetch: (input, init) => fetch(input, { ...init, cache: 'no-store' }),
+      },
+    })
   : null;
 
 /** Mirrors the `articles` table in database/schema.sql. */
