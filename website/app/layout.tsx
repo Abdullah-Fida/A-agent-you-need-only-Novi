@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Newsreader, Public_Sans } from "next/font/google";
 import "./globals.css";
+import Script from 'next/script';
 import { SITE_URL, SITE_NAME } from '@/lib/site';
 
 /*
@@ -165,7 +166,34 @@ export default function RootLayout({
           dangerouslySetInnerHTML={{ __html: JSON.stringify(siteSchema) }}
         />
       </head>
-      <body>{children}</body>
+      <body>
+        {children}
+
+        {/*
+          Third-party chat widget.
+
+          strategy="lazyOnload", not defer. Both let the page render first,
+          but defer runs the script the moment HTML parsing ends, which
+          still overlaps with images loading. lazyOnload waits until the
+          browser is fully idle.
+
+          That distinction matters here because the bundle is large: 177 KB
+          over the wire, 606 KB unpacked -- it ships its own copy of React,
+          against a page that is 10 KB. Parsing that much JavaScript ties up
+          the main thread for a few hundred milliseconds on a cheap phone,
+          and a tap landing in that window feels slow. Most of this site's
+          readers are on mobile in Pakistan and India, so it is worth
+          spending the idle time rather than the visible time.
+
+          Content indexing is unaffected either way: Google reads the HTML,
+          which is already complete before this runs.
+        */}
+        <Script
+          src="https://cdn.zanderio.ai/widget/loader.js"
+          data-id="wdg_SErk0aSffI6fm7zqBvubWdCL"
+          strategy="lazyOnload"
+        />
+      </body>
     </html>
   );
 }
