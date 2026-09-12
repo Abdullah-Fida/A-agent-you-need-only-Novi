@@ -19,6 +19,22 @@ BANNED_TERMS = [
     "replica", "copy brand", "fake", "knockoff", "unauthorized",
     "cure", "treat cancer", "medical grade", "fda approved",
     "weight loss", "slimming", "detox",
+
+    # MEDICAL AND CLINICAL ITEMS.
+    #
+    # A peptide case for insulin vials was published to "Pantry and Fridge
+    # Storage" -- a storage box by shape, a medical device by use, and
+    # filed on a board about food. It passed because the list only caught
+    # marketing claims like "medical grade", not the products themselves.
+    #
+    # Health is a category Pinterest treats carefully, and a kitchen
+    # organisation account has no business implying anything about
+    # medication storage.
+    "insulin", "vial", "syringe", "needle", "peptide", "medication",
+    "pill organizer", "pill box", "pill case", "medicine box",
+    "first aid", "blood pressure", "glucose", "diabetic", "thermometer gun",
+    "nebulizer", "catheter", "surgical", "prescription", "supplement",
+    "vitamin", "capsule", "dosage", "injection", "sterile",
     "vape", "e-cigarette", "tobacco", "cbd",
     "knife weapon", "taser", "pepper spray", "handcuff",
     "adult toy", "sex", "lingerie",

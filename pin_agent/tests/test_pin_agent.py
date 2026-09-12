@@ -454,6 +454,47 @@ class TestPublishedPinsAreRecorded(unittest.TestCase):
                       "the same product")
 
 
+class TestMedicalProductsAreRefused(unittest.TestCase):
+    """
+    A peptide case for insulin vials reached the live board.
+
+    It was filed under "Pantry and Fridge Storage" -- a storage box by
+    shape, a medical device by use, on a board about food. It passed
+    because the ban list only held marketing claims like "medical grade",
+    not the products themselves.
+    """
+
+    def setUp(self):
+        self.selector = ProductSelector()
+
+    def _product(self, title):
+        return {"affiliate_url": "https://s.click.aliexpress.com/e/_x",
+                "images": ["https://x/1.jpg"], "title": title,
+                "rating": 98.0, "orders": 1000, "price": 20.0,
+                "original_price": 40.0, "commission_rate": 7.0}
+
+    def test_the_pin_that_shipped_would_now_be_refused(self):
+        self.assertFalse(self.selector.is_eligible(self._product(
+            "Peptide Case Safe Storage Box Insulin Vial Organizer Foam Slots")))
+
+    def test_other_clinical_items_are_refused(self):
+        for title in ("Portable Pill Organizer Weekly Medicine Box 7 Day",
+                      "Diabetic Travel Case for Syringe and Needle Storage",
+                      "Vitamin Supplement Capsule Dispenser Bottle",
+                      "First Aid Kit Wall Mounted Storage Cabinet"):
+            self.assertFalse(self.selector.is_eligible(self._product(title)),
+                             title)
+
+    def test_ordinary_kitchen_products_still_pass(self):
+        # The filter must not swallow the niche it exists to serve.
+        for title in ("4 Layers Kitchen Spice Drawer Organizer Adjustable Rack",
+                      "Stainless Steel Herb Scissors with 5 Blades",
+                      "Under Sink Pull Out Storage Shelf Organizer",
+                      "Airtight Food Storage Container Set for Pantry"):
+            self.assertTrue(self.selector.is_eligible(self._product(title)),
+                            title)
+
+
 class TestSilentOutage(unittest.TestCase):
     """
     The agent published nothing for thirty-two hours and said nothing.
