@@ -1981,125 +1981,6 @@ class TestDailyVolumeMatchesWhatPinterestRewards(unittest.TestCase):
             self.assertLessEqual(quota / cap, 0.25, f"cap {cap}")
 
 
-class TestThePhotographVerifier(unittest.TestCase):
-    """
-    The only check that looks at the picture rather than reading text about
-    it.
-
-    Everything else in the pipeline reads the title, tags, dimensions and
-    licence -- and "Ashfall Fossil Beds" passed every one of those for the
-    query "bed". Correct resolution, public domain, a real photograph, and
-    the word "beds" in the title.
-
-    The distinction that matters most here is between "that photograph is
-    wrong" and "nobody could tell me". Collapsing them would silently reject
-    every photograph the moment a free quota ran out -- or worse, publish
-    every one.
-    """
-
-    def _verifier(self, answers):
-        """`answers` is consumed one per model attempt."""
-        from pin_agent.photo_check import PhotoVerifier
-        v = PhotoVerifier(api_key="test-key",
-                          models=("model-a", "model-b", "model-c"))
-        seq = list(answers)
-        asked = []
-
-        async def fake_ask(model, image, subject, mime, caption=""):
-            asked.append(model)
-            return seq.pop(0) if seq else None
-
-        v._ask = fake_ask
-        v.asked = asked
-        return v
-
-    def test_a_yes_approves(self):
-        v = self._verifier([True])
-        self.assertIs(asyncio.run(v.verify(b"jpeg", "a bathroom")), True)
-        self.assertEqual(v.approved, 1)
-
-    def test_a_no_rejects(self):
-        v = self._verifier([False])
-        self.assertIs(asyncio.run(v.verify(b"jpeg", "a bathroom")), False)
-        self.assertEqual(v.rejected, 1)
-
-    def test_no_verdict_is_not_approval(self):
-        """
-        The single most important line in the module. None means every model
-        was out of quota or unreachable; treating it as True would publish
-        unverified photographs on exactly the days the service is down.
-        """
-        v = self._verifier([None, None, None])
-        result = asyncio.run(v.verify(b"jpeg", "a bathroom"))
-        self.assertIsNone(result)
-        self.assertIsNot(result, True)
-        self.assertEqual(v.checked, 0, "a non-answer is not a check")
-
-    def test_it_moves_to_the_next_model_when_one_runs_out(self):
-        # The free quota is per-model, so a spent model hands the job on
-        # rather than ending the day's work.
-        v = self._verifier([None, True])
-        self.assertIs(asyncio.run(v.verify(b"jpeg", "a kitchen")), True)
-        self.assertEqual(v.asked, ["model-a", "model-b"])
-
-    def test_an_exhausted_model_is_not_asked_again(self):
-        from pin_agent.photo_check import PhotoVerifier
-        v = PhotoVerifier(api_key="k", models=("model-a", "model-b"))
-        v._exhausted.add("model-a")
-        asked = []
-
-        async def fake_ask(model, image, subject, mime, caption=""):
-            asked.append(model)
-            return True
-
-        v._ask = fake_ask
-        asyncio.run(v.verify(b"x", "a pantry"))
-        self.assertEqual(asked, ["model-b"])
-
-    def test_without_a_key_it_returns_no_verdict(self):
-        from pin_agent.photo_check import PhotoVerifier
-        v = PhotoVerifier(api_key="")
-        self.assertIsNone(asyncio.run(v.verify(b"x", "a kitchen")))
-        self.assertFalse(v.is_ready)
-
-    def test_first_approved_stops_at_the_first_yes(self):
-        v = self._verifier([False, True])
-        urls = ["https://a/1.jpg", "https://b/2.jpg", "https://c/3.jpg"]
-
-        async def fake_verify_url(url, subject, caption=""):
-            return await v.verify(b"x", subject)
-
-        v.verify_url = fake_verify_url
-        got = asyncio.run(v.first_approved(urls, "a bathroom"))
-        self.assertEqual(got, "https://b/2.jpg")
-
-    def test_first_approved_is_bounded(self):
-        # One bad query must not spend the whole day's allowance.
-        v = self._verifier([False] * 20)
-        tried = []
-
-        async def fake_verify_url(url, subject, caption=""):
-            tried.append(url)
-            return await v.verify(b"x", subject)
-
-        v.verify_url = fake_verify_url
-        urls = [f"https://x/{i}.jpg" for i in range(20)]
-        self.assertIsNone(asyncio.run(v.first_approved(urls, "x", limit=3)))
-        self.assertEqual(len(tried), 3)
-
-    def test_it_sends_the_image_bytes_not_the_url(self):
-        """
-        StockSnap answers a server-side fetch with 403, so passing the
-        address returns an error instead of a verdict. The photo is
-        downloaded anyway to build the pin, so the bytes cost nothing.
-        """
-        import inspect
-        from pin_agent.photo_check import PhotoVerifier
-        src = inspect.getsource(PhotoVerifier._ask)
-        self.assertIn("inline_data", src)
-        self.assertIn("b64encode", src)
-
-
 class TestTipsAreWrittenNotJustBanked(unittest.TestCase):
     """
     Forty-five hand-written tips is eleven days at four advice pins a day,
@@ -2286,20 +2167,16 @@ class TestASlotIsNotLostToAStrictVerifier(unittest.TestCase):
         from pin_agent.pin_bot import PinAgent
         agent = PinAgent.__new__(PinAgent)
         agent.recent_tips = []
+        agent.writer = object()          # present, so only prefer_bank skips
         called = []
 
-        class Writer:
-            @staticmethod
-            def pick_board(recent):
-                return "Bathroom Storage Ideas"
+        async def fresh(seen):
+            called.append(1)
+            return {"board": "Bathroom Storage Ideas", "title": "x" * 45,
+                    "body": "b", "photo": "p", "image": "https://x/1.jpg",
+                    "credit": ""}
 
-            async def write(self, board, avoid=None):
-                called.append(board)
-                return {"board": board, "title": "x" * 45, "body": "b",
-                        "photo": "p", "image": "", "credit": ""}
-
-        agent.writer = Writer()
-        agent.recent_boards = []
+        agent._write_from_a_photograph = fresh
 
         banked = asyncio.run(agent._next_tip([], prefer_bank=True))
         self.assertEqual(called, [], "the writer must not be asked")
@@ -2310,54 +2187,236 @@ class TestASlotIsNotLostToAStrictVerifier(unittest.TestCase):
         asyncio.run(agent._next_tip([], prefer_bank=False))
         self.assertEqual(len(called), 1, "the first attempt must be fresh")
 
-
-class TestThePhotoIsJudgedAgainstThePin(unittest.TestCase):
+class TestThePhotographVerifier(unittest.TestCase):
     """
-    Judged against the SEARCH TERM alone, a supermarket freezer aisle is a
-    perfectly good photograph of "a fridge" -- and it was approved, for a
-    pin reading "Hang a mesh pocket on the fridge door for packets". Two of
-    three generated pins had a wrong picture before the caption was passed
-    through.
+    The only check that looks at the picture rather than reading text about
+    it. "Ashfall Fossil Beds" passed every text-based check for the query
+    "bed" -- right resolution, public domain, a real photograph, and the
+    word "beds" in the title.
+
+    It DESCRIBES and code DECIDES. Asking the model to judge directly was a
+    losing game: one wording approved a supermarket freezer aisle as "a
+    fridge", the next refused 34 of 35 candidates and more than half the
+    photographs already chosen by hand. A description comes back the same
+    every run, so everything below is testable without spending quota.
     """
 
-    def test_the_prompt_carries_both_the_caption_and_the_search_term(self):
-        from pin_agent.photo_check import PROMPT
-        text = PROMPT.format(caption="Hang a mesh pocket on the fridge door",
-                             subject="fridge")
-        self.assertIn("Hang a mesh pocket on the fridge door", text)
-        self.assertIn("fridge", text)
+    def setUp(self):
+        from pin_agent import photo_check
+        self.pc = photo_check
 
-    def test_commercial_settings_are_named_as_a_rejection(self):
-        from pin_agent.photo_check import PROMPT
-        text = PROMPT.format(caption="c", subject="s").lower()
-        for place in ("shop", "supermarket", "warehouse", "restaurant"):
-            self.assertIn(place, text, place)
+    def test_the_real_failures_are_all_rejected(self):
+        # Every description here came back from the live model, for a
+        # photograph that had passed every other check in the pipeline.
+        cases = [
+            ("Fossilized rhinoceros skeletons at Ashfall Fossil Beds", "a bed"),
+            ("A hospital bed in a room.", "a bed"),
+            ("Illustration of scissors on a transparent background.",
+             "kitchen scissors"),
+            ("Illustration of antique bronze surgical instruments",
+             "kitchen scissors"),
+            ("Museum object: A patterned woven basket on display",
+             "storage basket"),
+            ("A photograph of an ancient stone temple in Hampi, India",
+             "small kitchen"),
+            ("Painting of kitchen utensils and food on a stone ledge",
+             "small kitchen"),
+            ("A supermarket freezer aisle with glass doors", "fridge"),
+            ("Sun loungers and prayer flags at a resort", "rolled towels"),
+            ("Wrapped soap bars on a wooden tray at a market stall",
+             "bar of soap"),
+            ("Wooden drawers and lamps on a counter in a cafe",
+             "small kitchen interior"),
+        ]
+        for description, subject in cases:
+            ok, why = self.pc.judge(description, subject)
+            self.assertFalse(ok, "should be refused: " + description)
+            self.assertTrue(why, "a refusal must say why")
 
-    def test_museum_and_artwork_are_named_as_a_rejection(self):
-        # An Egyptian canopic jar for "jar lid", a Victorian engraving for
-        # "kitchen scissors", a Yale painting for "kitchen shelf".
-        from pin_agent.photo_check import PROMPT
-        text = PROMPT.format(caption="c", subject="s").lower()
-        for kind in ("museum", "painting", "illustration", "clipart"):
-            self.assertIn(kind, text, kind)
+    def test_good_photographs_are_accepted(self):
+        cases = [
+            ("A photograph of a running faucet in a tiled bathroom",
+             "bathroom sink"),
+            ("Toothpaste on a toothbrush against a white background",
+             "toothbrush"),
+            ("A lighted mirror and sink in a bathroom.", "bathroom mirror"),
+            ("Potatoes and red onions cooking in a frying pan.",
+             "onions and potatoes"),
+            ("Muffins in a tin on a kitchen counter by a window",
+             "home kitchen counter"),
+            ("A white towel hangs on a dark tiled bathroom wall",
+             "towel rail bathroom"),
+        ]
+        for description, subject in cases:
+            ok, why = self.pc.judge(description, subject)
+            self.assertTrue(ok, description + " refused for " + why)
 
-    def test_the_caption_reaches_the_model(self):
-        from pin_agent.photo_check import PhotoVerifier
-        v = PhotoVerifier(api_key="k", models=("m",))
-        seen = {}
+    def test_synonyms_do_not_lose_a_good_photograph(self):
+        # Without these, "fridge" never matches a description saying
+        # "refrigerator" and a perfectly good picture is thrown away.
+        self.assertTrue(self.pc.is_relevant(
+            "An open refrigerator full of food", "fridge"))
+        self.assertTrue(self.pc.is_relevant(
+            "A tidy kitchen worktop by a window", "kitchen countertop"))
+        self.assertTrue(self.pc.is_relevant(
+            "Clothes hanging in a closet", "wardrobe"))
 
-        async def fake_ask(model, image, subject, mime, caption=""):
-            seen["caption"] = caption
-            return True
+    def test_plurals_match(self):
+        self.assertTrue(self.pc.is_relevant("Spice jars on a shelf",
+                                            "spice jar"))
+        self.assertTrue(self.pc.is_relevant("A single egg in a carton",
+                                            "eggs in a carton"))
 
-        v._ask = fake_ask
-        asyncio.run(v.verify(b"x", "fridge", caption="Hang a mesh pocket"))
-        self.assertEqual(seen["caption"], "Hang a mesh pocket")
+    def test_an_unrelated_photograph_is_refused(self):
+        self.assertFalse(self.pc.is_relevant("A cat asleep on a sofa",
+                                             "kitchen drawer"))
 
-    def test_the_agent_passes_the_tip_title_as_the_caption(self):
+    def test_common_words_prove_nothing(self):
+        self.assertFalse(self.pc.is_relevant(
+            "A modern white room, clean and tidy", "spice jars"))
+
+    def test_an_empty_description_is_refused_not_approved(self):
+        ok, why = self.pc.judge("", "a bathroom")
+        self.assertFalse(ok)
+        self.assertIn("no description", why)
+
+    def _verifier(self, answers):
+        v = self.pc.PhotoVerifier(api_keys=["k1", "k2"], models=("m1", "m2"))
+        seq = list(answers)
+
+        async def fake_describe(image, mime="image/jpeg"):
+            return seq.pop(0) if seq else None
+
+        v.describe = fake_describe
+        return v
+
+    def test_no_description_is_not_approval(self):
+        """
+        The single most important line. None means every quota was spent or
+        the service was unreachable; treating it as True would publish
+        unverified photographs on exactly the days it is down.
+        """
+        v = self._verifier([None])
+        result = asyncio.run(v.verify(b"jpeg", "a bathroom"))
+        self.assertIsNone(result)
+        self.assertIsNot(result, True)
+        self.assertEqual(v.checked, 0, "a non-answer is not a check")
+
+    def test_a_matching_description_approves(self):
+        v = self._verifier(["A tiled bathroom with a sink"])
+        self.assertIs(asyncio.run(v.verify(b"x", "bathroom sink")), True)
+
+    def test_a_museum_description_rejects(self):
+        v = self._verifier(["Museum object: a woven basket on display"])
+        self.assertIs(asyncio.run(v.verify(b"x", "storage basket")), False)
+        self.assertIn("museum", v.status["reasons"])
+
+    def test_every_key_is_tried_against_every_model(self):
+        # Quota is per project per model, so two keys and three models is
+        # six separate allowances rather than one.
+        v = self.pc.PhotoVerifier(api_keys=["a", "b"], models=("x", "y", "z"))
+        self.assertEqual(len(v._pairs), 6)
+        self.assertEqual(v.status["daily_capacity"], 120)
+
+    def test_without_a_key_it_gives_no_verdict(self):
+        v = self.pc.PhotoVerifier(api_keys=[])
+        self.assertFalse(v.is_ready)
+        self.assertIsNone(asyncio.run(v.verify(b"x", "a kitchen")))
+
+    def test_first_approved_is_bounded(self):
+        v = self._verifier(["A cat on a sofa"] * 20)
+        tried = []
+
+        async def fake_verify_url(url, subject, caption=""):
+            tried.append(url)
+            return await v.verify(b"x", subject)
+
+        v.verify_url = fake_verify_url
+        urls = ["https://x/%d.jpg" % i for i in range(20)]
+        self.assertIsNone(asyncio.run(
+            v.first_approved(urls, "kitchen drawer", limit=3)))
+        self.assertEqual(len(tried), 3)
+
+    def test_it_sends_the_image_bytes_not_the_url(self):
+        # StockSnap answers a server-side fetch with 403.
+        import inspect
+        src = inspect.getsource(self.pc.PhotoVerifier.describe)
+        self.assertIn("inline_data", src)
+        self.assertIn("b64encode", src)
+
+    def test_the_reason_survives_for_debugging(self):
+        ok, why = self.pc.judge("A supermarket freezer aisle", "fridge")
+        self.assertFalse(ok)
+        self.assertIn("supermarket", why)
+
+
+class TestThePhotographComesFirst(unittest.TestCase):
+    """
+    Three wrong pins in a row showed the order was backwards.
+
+    Writing the tip first means hunting for a picture of that exact idea,
+    and no open library holds a photograph of a tension rod holding spray
+    bottles under a sink. So the search broadens, finds something generic,
+    and the match becomes luck -- a tip about magnetic knife strips came
+    out illustrated with a roll of camera film, because the broadened query
+    was "counter" and there was a counter in the shot.
+
+    Finding the photograph first removes the mismatch instead of filtering
+    it: the tip is written to what is actually in the frame.
+    """
+
+    def test_every_board_has_well_stocked_photo_subjects(self):
+        from pin_agent import boards
+        from pin_agent.tip_writer import TipWriter
+        for board in boards.ALL_BOARDS:
+            subjects = TipWriter.PHOTO_SUBJECTS.get(board)
+            self.assertTrue(subjects, board)
+            self.assertGreaterEqual(len(subjects), 4, board)
+
+    def test_the_subjects_are_broad_not_specific(self):
+        # "a tidy kitchen worktop" exists in thousands of photographs;
+        # "a tension rod holding spray bottles" exists in none.
+        from pin_agent.tip_writer import TipWriter
+        for subjects in TipWriter.PHOTO_SUBJECTS.values():
+            for s in subjects:
+                self.assertLessEqual(len(s.split()), 3, s)
+
+    def test_subjects_rotate_so_one_board_is_not_one_picture(self):
+        from pin_agent.tip_writer import TipWriter
+        board = "Bathroom Storage Ideas"
+        used = ["bathroom interior"] * 4 + ["bathroom shelf"] * 3
+        for _ in range(10):
+            picked = TipWriter.photo_subject(board, used)
+            self.assertNotIn(picked, ("bathroom interior", "bathroom shelf"))
+
+    def test_the_writer_is_given_the_description(self):
+        import inspect
+        from pin_agent.tip_writer import TipWriter
+        src = inspect.getsource(TipWriter.write_for_photo)
+        self.assertIn("description", src)
+        self.assertIn("write about what is", src.lower().replace("\n", " ")
+                      .replace("  ", " "))
+
+    def test_the_agent_verifies_before_it_writes(self):
         import inspect
         from pin_agent.pin_bot import PinAgent
-        self.assertIn('tip["title"]',
-                      inspect.getsource(PinAgent.build_value_pin))
-        self.assertIn("caption=caption",
-                      inspect.getsource(PinAgent._find_photo))
+        src = inspect.getsource(PinAgent._write_from_a_photograph)
+        verify_at = src.index("verifier.verify")
+        write_at = src.index("write_for_photo")
+        self.assertLess(verify_at, write_at,
+                        "no point writing a tip for a photograph that is "
+                        "about to be thrown away")
+
+    def test_a_photograph_is_not_used_twice(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        self.assertIn("recent_photos",
+                      inspect.getsource(PinAgent._write_from_a_photograph))
+
+    def test_no_verdict_means_the_photograph_is_skipped(self):
+        # verify() returns None when every quota is spent. That must not
+        # read as approval.
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent._write_from_a_photograph)
+        self.assertIn("if not await self.verifier.verify", src)

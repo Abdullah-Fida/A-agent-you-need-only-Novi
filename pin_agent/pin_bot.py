@@ -87,6 +87,10 @@ class PinAgent:
         # Boards the advice pins went to lately, so the writer feeds the
         # quietest one next rather than the same one repeatedly.
         self.recent_boards: List[str] = []
+        # Photo subjects used lately, so a board's six do not collapse into
+        # one, and photographs already used, so none appears twice.
+        self.recent_subjects: List[str] = []
+        self.recent_photos: List[str] = []
         # Consecutive slots that produced nothing. See _note_failure.
         self._consecutive_failures = 0
         self.last_run: Optional[datetime] = None
@@ -604,8 +608,7 @@ class PinAgent:
         seen = self.recent_tips + tried
 
         if self.writer and not prefer_bank:
-            board = self.writer.pick_board(self.recent_boards)
-            tip = await self.writer.write(board, avoid=seen)
+            tip = await self._write_from_a_photograph(seen)
             if tip and not self._tip_already_used(tip["title"], seen):
                 return tip
             if tip:
@@ -616,6 +619,64 @@ class PinAgent:
         if fallback:
             logger.info("Using a tip from the hand-written bank.")
         return fallback
+
+    # Photo subjects used lately, so a board's six do not become one.
+    RECENT_SUBJECT_COUNT = 18
+
+    async def _write_from_a_photograph(self,
+                                       seen: List[str]) -> Optional[Dict]:
+        """
+        Find a good photograph first, then write a tip that suits it.
+
+        THE OTHER WAY ROUND DOES NOT WORK, and three wrong pins showed why.
+        Writing the tip first means hunting for a picture of that exact
+        idea, and no open library holds a photograph of a tension rod
+        holding spray bottles under a sink. The search broadens to find
+        anything, and the match becomes luck: a tip about magnetic knife
+        strips came out illustrated with a roll of camera film, because the
+        broadened query was "counter" and there was a counter in the shot.
+
+        Starting from the picture removes the mismatch instead of filtering
+        it. Broad household subjects are plentiful, the verifier only has
+        to confirm the photograph is a real domestic interior, and a tip
+        written to what is actually in the frame always suits it.
+        """
+        if not (self.photos and self.verifier and self.verifier.is_ready):
+            return None
+
+        board = self.writer.pick_board(self.recent_boards)
+        subject = self.writer.photo_subject(board, self.recent_subjects)
+
+        candidates = await self.photos.candidates(subject, limit=4)
+        if not candidates:
+            logger.info(f"No photographs for '{subject}'.")
+            return None
+
+        for url in candidates:
+            if url in self.recent_photos:
+                continue
+            data = await self.verifier.fetch(url)
+            if data is None:
+                continue
+            if not await self.verifier.verify(data, subject):
+                continue
+
+            description = self.verifier.last_description
+            tip = await self.writer.write_for_photo(board, description,
+                                                    avoid=seen)
+            if not tip:
+                logger.info(f"No tip written for '{description[:44]}': "
+                            f"{self.writer.last_error}")
+                continue
+
+            tip["image"] = url
+            tip["photo"] = subject
+            self.recent_subjects.insert(0, subject)
+            del self.recent_subjects[self.RECENT_SUBJECT_COUNT:]
+            return tip
+
+        logger.info(f"No usable photograph for '{subject}'.")
+        return None
 
     @staticmethod
     def _tip_already_used(title: str, seen: List[str]) -> bool:
@@ -908,6 +969,10 @@ class PinAgent:
             if board:
                 self.recent_boards.insert(0, board)
                 del self.recent_boards[24:]
+            photo = pin.get("photo_url") or ""
+            if photo:
+                self.recent_photos.insert(0, photo)
+                del self.recent_photos[60:]
             return
 
         self.recent_titles.insert(

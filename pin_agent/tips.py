@@ -59,8 +59,8 @@ logger = logging.getLogger("PinAgent.Tips")
 TIP_BANK: List[Dict[str, str]] = [
     # ── Bathroom Storage Ideas ──────────────────────────────────────
     {"board": "Bathroom Storage Ideas",
-     "photo": "rolled towels",
-     "image": "https://pd.w.org/2026/05/686a197e9074a618.71891488-1536x2048.jpg",
+     "photo": "towel rail bathroom",
+     "image": "https://images.rawpixel.com/editor_1024/cHJpdmF0ZS9sci9pbWFnZXMvd2Vic2l0ZS8yMDIyLTA0L3Vwd2s2MjA3ODk4OS13aWtpbWVkaWEtaW1hZ2Uta293bzUwajkuanBn.jpg",
      "credit": "",
      "title": "Store bathroom towels rolled, not folded",
      "body": "Rolled towels take about a third less shelf depth than folded "
@@ -109,8 +109,8 @@ TIP_BANK: List[Dict[str, str]] = [
              "hold robes, towels and a laundry bag without a single screw, "
              "which matters if you rent."},
     {"board": "Bathroom Storage Ideas",
-     "photo": "bar of soap",
-     "image": "https://images.rawpixel.com/editor_1024/czNmcy1wcml2YXRlL3Jhd3BpeGVsX2ltYWdlcy93ZWJzaXRlX2NvbnRlbnQvbHIvdXB3azYyMDUzNzg5LXdpa2ltZWRpYS1pbWFnZS1rb3dqaTNoZi5qcGc.jpg",
+     "photo": "soap bar bathroom",
+     "image": "https://cdn.stocksnap.io/img-thumbs/960w/BAP2TUBT3D.jpg",
      "credit": "",
      "title": "Let the soap drain and it lasts twice as long",
      "body": "Soap sitting in its own puddle dissolves from underneath. Any "
@@ -311,8 +311,8 @@ TIP_BANK: List[Dict[str, str]] = [
              "on the floor beneath a bed hold bedding and off-season clothes "
              "and keep them clean."},
     {"board": "Tiny Apartment Solutions",
-     "photo": "small kitchen interior",
-     "image": "https://images.rawpixel.com/editor_1024/czNmcy1wcml2YXRlL3Jhd3BpeGVsX2ltYWdlcy93ZWJzaXRlX2NvbnRlbnQvbHIvdXB3azYxNzYxOTAyLXdpa2ltZWRpYS1pbWFnZS1rb3dsY3Z4ay5qcGc.jpg",
+     "photo": "home kitchen counter",
+     "image": "https://cdn.stocksnap.io/img-thumbs/960w/AAASH8OTNW.jpg",
      "credit": "",
      "title": "In a tiny kitchen, clear one worktop completely",
      "body": "One genuinely empty surface makes a small kitchen usable. It "

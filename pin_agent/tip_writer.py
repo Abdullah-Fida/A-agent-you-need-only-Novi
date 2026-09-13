@@ -291,7 +291,106 @@ class TipWriter:
         return {"board": board, "title": tip["title"], "body": tip["body"],
                 "photo": tip["photo"], "credit": "", "image": ""}
 
+    async def write_for_photo(self, board: str, description: str,
+                              avoid: Optional[List[str]] = None
+                              ) -> Optional[Dict]:
+        """
+        A tip written to suit a photograph that has already been found.
+
+        THIS IS THE RIGHT WAY ROUND, and it took three wrong pins to see it.
+        Writing the tip first means hunting for a picture of that exact
+        thing, and the open libraries simply do not hold one for every
+        specific idea -- there is no photograph of a tension rod holding
+        spray bottles under a sink. So the search broadens, finds something
+        generic, and the match becomes luck: a tip about magnetic knife
+        strips was illustrated with a roll of camera film, because the
+        broadened query was "counter" and the photograph had a counter in
+        it.
+
+        Starting from the photograph removes the problem rather than
+        filtering it. Broad household subjects -- a tidy worktop, an open
+        pantry, a bathroom shelf -- are plentiful and well photographed, and
+        a tip written to suit what is actually in the picture always suits
+        it.
+        """
+        rules = (
+            f"Here is a photograph that will be the pin's picture:\n"
+            f"  \"{description}\"\n\n"
+            f"Write a home organisation tip for the board \"{board}\" that "
+            f"this photograph illustrates. The tip must make sense to "
+            f"someone looking at that exact picture -- write about what is "
+            f"IN it, not about something it reminds you of. Do not describe "
+            f"the photograph; give advice."
+        )
+        taken = self._objects_taken(avoid or [])
+        if taken:
+            rules += ("\n\nAlready covered, so choose a different angle on "
+                      "the picture if any of these fit it:\n" + ", ".join(taken))
+
+        raw = await self.ai.generate(
+            task="social_caption", system_prompt=SYSTEM, user_prompt=rules,
+            max_tokens=500, temperature=0.85,
+            validator=self._is_publishable, min_attempts=4)
+        if not raw:
+            self.last_error = "the model returned nothing usable"
+            return None
+
+        tip = self._parse(raw)
+        if not tip:
+            self.last_error = "the answer did not parse as JSON"
+            return None
+        problems = self._problems(tip)
+        if problems:
+            self.rejected += 1
+            self.last_error = "; ".join(problems)
+            return None
+
+        if board not in board_routing.ALL_BOARDS:
+            board = board_routing.DEFAULT_BOARD
+        self.written += 1
+        logger.info(f"Tip written for a photograph on '{board}': "
+                    f"{tip['title']}")
+        # `photo` is unused on this path -- the picture is already chosen --
+        # but it is kept so the two paths return the same shape.
+        return {"board": board, "title": tip["title"], "body": tip["body"],
+                "photo": tip.get("photo", ""), "credit": "", "image": ""}
+
     # ── board rotation ───────────────────────────────────────────
+
+    # Broad household subjects the open libraries are actually well stocked
+    # with, per board. Deliberately general: a photograph of "a tidy kitchen
+    # worktop" exists in thousands, a photograph of "a tension rod holding
+    # spray bottles under a sink" does not exist at all. The tip is written
+    # to whatever comes back, so the search never has to be specific.
+    PHOTO_SUBJECTS = {
+        "Bathroom Storage Ideas": (
+            "bathroom interior", "bathroom shelf", "bathroom sink",
+            "bathroom towels", "shower", "bathroom cabinet"),
+        "Pantry and Fridge Storage": (
+            "pantry shelves", "kitchen pantry", "open refrigerator",
+            "food jars", "kitchen storage jars", "spice jars"),
+        "Under Sink and Cabinet Storage": (
+            "kitchen sink", "kitchen cabinet", "cleaning supplies",
+            "kitchen cupboard", "cleaning bottles", "kitchen sponge"),
+        "Tiny Apartment Solutions": (
+            "small apartment interior", "closet clothes", "wardrobe",
+            "entryway hallway", "bedroom interior", "shoe storage"),
+        "Kitchen Gadgets Worth Buying": (
+            "kitchen utensils", "kitchen knife", "kitchen scale",
+            "cutting board", "measuring spoons", "kitchen timer"),
+        "Small Kitchen Organization": (
+            "kitchen worktop", "kitchen drawer", "kitchen shelf",
+            "home kitchen counter", "kitchen interior", "pots and pans"),
+    }
+
+    @classmethod
+    def photo_subject(cls, board: str, avoid: Optional[List[str]] = None):
+        """A well-stocked search subject for this board, least used first."""
+        subjects = cls.PHOTO_SUBJECTS.get(board) or ("home interior",)
+        recent = list(avoid or [])
+        counts = {s: recent.count(s) for s in subjects}
+        fewest = min(counts.values())
+        return random.choice([s for s, n in counts.items() if n == fewest])
 
     @staticmethod
     def pick_board(recent_boards: Optional[List[str]] = None) -> str:
