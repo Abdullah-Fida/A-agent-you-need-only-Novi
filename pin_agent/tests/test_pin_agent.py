@@ -2165,8 +2165,9 @@ class TestTipsAreWrittenNotJustBanked(unittest.TestCase):
     def test_it_parses_json_out_of_a_chatty_answer(self):
         raw = ('Sure! Here is your tip:\n```json\n'
                '{"title": "t", "body": "b", "photo": "p"}\n```\nHope that helps')
+        # Title and body come back capitalised -- see _tidy.
         self.assertEqual(self.TipWriter._parse(raw),
-                         {"title": "t", "body": "b", "photo": "p"})
+                         {"title": "T", "body": "B", "photo": "p"})
         self.assertIsNone(self.TipWriter._parse("no json at all here"))
 
     def test_board_rotation_feeds_the_quietest_board(self):
@@ -2203,3 +2204,64 @@ class TestTipsAreWrittenNotJustBanked(unittest.TestCase):
         self.assertIn("tip_bank.next_tip", src,
                       "with no writer and no vision check, the verified "
                       "hand-written bank is what keeps the account posting")
+
+
+class TestTheWriterDoesNotFixate(unittest.TestCase):
+    """
+    Told to avoid forty-five titles, the model wrote FIVE separate tips
+    about magnetic knife strips -- each worded differently, every one a
+    duplicate. It avoids the sentences it is shown and fixates on the idea
+    behind them. Naming the objects already covered is what moves it on;
+    measured over twenty writes it took near-duplicates from five to one.
+    """
+
+    def setUp(self):
+        from pin_agent.tip_writer import TipWriter
+        self.W = TipWriter
+
+    def test_the_prompt_names_the_objects_already_covered(self):
+        prompt = self.W._user_prompt("Small Kitchen Organization", [
+            "Place a magnetic strip on the wall to hold knives upright",
+            "Keep eggs in their carton, pointed end down",
+        ])
+        self.assertIn("ALREADY COVERED", prompt)
+        for word in ("magnetic", "strip", "knives", "eggs", "carton"):
+            self.assertIn(word, prompt, word)
+
+    def test_filler_words_are_not_offered_as_objects(self):
+        # "keep", "store", "space" appear in every tip in the niche and
+        # would tell the model nothing while crowding out the real nouns.
+        taken = self.W._objects_taken([
+            "Keep the storage space in your home tidy and clear"])
+        for empty in ("keep", "storage", "space", "home", "tidy", "clear"):
+            self.assertNotIn(empty, taken)
+
+    def test_an_empty_history_still_produces_a_prompt(self):
+        prompt = self.W._user_prompt("Bathroom Storage Ideas", [])
+        self.assertIn("Bathroom Storage Ideas", prompt)
+        self.assertNotIn("ALREADY COVERED", prompt)
+
+    def test_the_validator_enforces_everything_not_just_the_shape(self):
+        """
+        Validating only the JSON shape and checking the rest afterwards
+        threw away one answer in four -- almost always a title a few
+        characters over or under -- and each was a wasted call that fell
+        back to the bank. Inside the loop the engine simply asks again.
+        """
+        short = '{"title": "Too short", "body": "%s", "photo": "sink"}' % ("x" * 120)
+        self.assertFalse(self.W._is_publishable(short))
+        good = ('{"title": "Keep the kettle where you fill it, near the tap",'
+                ' "body": "%s", "photo": "kitchen tap"}' % ("x" * 120))
+        self.assertTrue(self.W._is_publishable(good))
+        self.assertFalse(self.W._is_publishable("not json"))
+
+    def test_a_lowercase_opening_is_fixed(self):
+        # The model returns one in seven like this, and at 56px bold on the
+        # pin it reads as a mistake.
+        parsed = self.W._parse('{"title": "use a pull-out knife tray today",'
+                               ' "body": "b", "photo": "p"}')
+        self.assertTrue(parsed["title"].startswith("Use a"))
+
+    def test_proper_nouns_survive_the_tidy(self):
+        self.assertEqual(self.W._tidy("put a lazy Susan in the pantry"),
+                         "Put a lazy Susan in the pantry")

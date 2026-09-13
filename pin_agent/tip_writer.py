@@ -112,22 +112,74 @@ class TipWriter:
 
     # ── prompt ───────────────────────────────────────────────────
 
-    @staticmethod
-    def _user_prompt(board: str, avoid: List[str]) -> str:
-        recent = "\n".join(f"- {t}" for t in (avoid or [])[:25])
-        avoid_block = (
-            f"\n\nThese tips have been published recently. Write about "
-            f"something DIFFERENT -- a different object, a different part of "
-            f"the room, a different problem. Do not rephrase any of them:\n"
-            f"{recent}" if recent else "")
+    # Words that appear in every tip in this niche and so identify nothing.
+    _EMPTY = {
+        "the", "a", "an", "and", "or", "with", "for", "your", "you", "keep",
+        "put", "use", "place", "hang", "store", "small", "little", "one",
+        "two", "into", "onto", "from", "that", "this", "them", "they", "it",
+        "its", "in", "on", "of", "to", "is", "are", "up", "out", "off", "at",
+        "by", "so", "can", "will", "not", "top", "back", "front", "side",
+        "away", "more", "less", "than", "then", "when", "where", "what",
+        "space", "tidy", "neat", "clean", "clear", "organise", "organize",
+        "storage", "home", "house", "room", "keeps", "hold", "holds",
+    }
+
+    @classmethod
+    def _objects_taken(cls, avoid: List[str], limit: int = 20) -> List[str]:
+        """
+        The physical things recent tips were ABOUT.
+
+        Handing the model a list of sentences is not enough. Told to avoid
+        forty-five titles it produced FIVE separate tips about magnetic knife
+        strips -- "Place a magnetic strip on the wall to hold knives
+        upright", "Hang knives on a magnetic strip beside the cutting board",
+        "Mount a magnetic strip for knives on the kitchen wall" -- each
+        worded differently, every one a duplicate. It avoids the sentences
+        and fixates on the idea. Naming the OBJECTS is what moves it on.
+        """
+        seen, out = set(), []
+        for title in (avoid or [])[-40:]:
+            for w in re.findall(r"[a-z]{3,}", (title or "").lower()):
+                if w in cls._EMPTY or w in seen:
+                    continue
+                seen.add(w)
+                out.append(w)
+        return out[-limit:]
+
+    @classmethod
+    def _user_prompt(cls, board: str, avoid: List[str]) -> str:
+        recent = "\n".join(f"- {t}" for t in (avoid or [])[-10:])
+        taken = cls._objects_taken(avoid)
+        blocks = []
+        if taken:
+            blocks.append(
+                "ALREADY COVERED. Do not write about any of these, or "
+                "anything close to them. Pick a different object in a "
+                "different part of the room:\n" + ", ".join(taken))
+        if recent:
+            blocks.append("Recent tips, whose wording you must not reuse:\n"
+                          + recent)
+        body = ("\n\n" + "\n\n".join(blocks)) if blocks else ""
         return (f"Write one tip for a Pinterest board called "
-                f"\"{board}\".{avoid_block}")
+                f"\"{board}\".{body}")
 
     # ── validation ───────────────────────────────────────────────
 
-    @staticmethod
-    def _looks_like_json(text: str) -> bool:
-        return bool(text) and "{" in text and "}" in text and '"title"' in text
+    @classmethod
+    def _is_publishable(cls, text: str) -> bool:
+        """
+        The FULL check, run as the engine's validator rather than after it.
+
+        Checking only the shape and validating afterwards threw away one
+        answer in four -- almost always for a title a few characters over or
+        under -- and every one of those was a wasted call that fell back to
+        the bank. Validating inside the loop lets the engine simply ask
+        again, which is what it is for.
+        """
+        if not (text and "{" in text and "}" in text and '"title"' in text):
+            return False
+        tip = cls._parse(text)
+        return bool(tip) and not cls._problems(tip)
 
     @classmethod
     def _problems(cls, tip: Dict[str, str]) -> List[str]:
@@ -158,6 +210,20 @@ class TipWriter:
             out.append("hashtag in the copy")
         return out
 
+    @staticmethod
+    def _tidy(text: str) -> str:
+        """
+        Capitalise the opening letter and nothing else.
+
+        The model returns a lowercase first word perhaps one time in seven
+        -- "use a pull-out knife tray", "hang loofahs on wall hooks" -- and
+        on a pin, where the title is set in 56px bold, that reads as a
+        mistake. Only the first character is touched: "lazy Susan" and any
+        other proper noun the model got right must survive.
+        """
+        text = (text or "").strip()
+        return text[:1].upper() + text[1:] if text else text
+
     @classmethod
     def _parse(cls, raw: str) -> Optional[Dict[str, str]]:
         match = re.search(r"\{.*\}", raw or "", re.S)
@@ -169,8 +235,11 @@ class TipWriter:
             return None
         if not isinstance(data, dict):
             return None
-        return {k: str(data.get(k, "")).strip()
-                for k in ("title", "body", "photo")}
+        out = {k: str(data.get(k, "")).strip()
+               for k in ("title", "body", "photo")}
+        out["title"] = cls._tidy(out["title"])
+        out["body"] = cls._tidy(out["body"])
+        return out
 
     # ── writing ──────────────────────────────────────────────────
 
@@ -191,8 +260,8 @@ class TipWriter:
             # High, deliberately. These pins run for months and the fastest
             # way to look automated is forty variations of one sentence.
             temperature=0.9,
-            validator=self._looks_like_json,
-            min_attempts=3,
+            validator=self._is_publishable,
+            min_attempts=4,
         )
         if not raw:
             self.last_error = "the model returned nothing usable"
