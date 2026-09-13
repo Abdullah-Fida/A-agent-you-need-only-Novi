@@ -383,6 +383,11 @@ async def main():
             notification_manager=notification_manager,
             image_dir=os.path.join(os.path.dirname(__file__), "assets", "pins"),
             upload_image=_upload_pin_image,
+            # Advice pins are written fresh and illustrated from the open
+            # photo libraries. Shared with the article side deliberately:
+            # one finder means one rate limit and one place that knows
+            # Openverse is resting.
+            photos=stock_photos,
         )
         if pin_config.buffer_token:
             await pin_agent.connect()

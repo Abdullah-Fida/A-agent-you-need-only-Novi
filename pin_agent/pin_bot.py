@@ -17,7 +17,9 @@ from typing import Dict, List, Optional
 from pin_agent import boards as board_routing
 from pin_agent import product_types
 from pin_agent import tips as tip_bank
+from pin_agent.tip_writer import TipWriter
 from pin_agent.compliance import ComplianceGate
+from pin_agent.photo_check import PhotoVerifier
 from pin_agent.content import PinCopywriter
 from pin_agent.imaging import PinImageBuilder
 from pin_agent.publisher import PinterestPublisher
@@ -33,7 +35,7 @@ class PinAgent:
 
     def __init__(self, config, ai_engine, supabase_client=None,
                  notification_manager=None, image_dir: str = "assets/pins",
-                 upload_image=None):
+                 upload_image=None, photos=None):
         self.config = config
         self.nm = notification_manager
         # Uploads a local file and returns a public URL. Buffer fetches the
@@ -50,6 +52,15 @@ class PinAgent:
                                         niche=config.niche)
         self.imaging = PinImageBuilder(image_dir, brand=config.pin_brand)
         self.gate = ComplianceGate()
+        # Writes the advice pins. Text only -- it never picks the picture
+        # and it never decides whether a pin may publish.
+        self.writer = TipWriter(ai_engine) if ai_engine else None
+        # Finds candidate photographs for a freshly written tip.
+        self.photos = photos
+        # Looks at the photograph and says whether it shows the thing. The
+        # one check in the pipeline that reads the image rather than text
+        # about it.
+        self.verifier = PhotoVerifier()
         self.publisher = PinterestPublisher(
             access_token=config.buffer_token,
             organization_id=config.buffer_organization_id,
@@ -73,6 +84,9 @@ class PinAgent:
         # Product types pinned inside the cooldown window. Nine of the first
         # fifty-five pins were spice racks; this is what stops that.
         self.recent_types: List[str] = []
+        # Boards the advice pins went to lately, so the writer feeds the
+        # quietest one next rather than the same one repeatedly.
+        self.recent_boards: List[str] = []
         # Consecutive slots that produced nothing. See _note_failure.
         self._consecutive_failures = 0
         self.last_run: Optional[datetime] = None
@@ -92,6 +106,8 @@ class PinAgent:
             # How many of today's pins may carry an affiliate link. The rest
             # are advice pins with no destination at all.
             "affiliate_pins_per_day": self.product_quota(),
+            "tips_written": (self.writer.status if self.writer else {}),
+            "photo_checks": self.verifier.status,
             "tips_in_bank": len(tip_bank.TIP_BANK),
             "subject_cooldown_days": product_types.COOLDOWN_DAYS,
             "subjects_on_cooldown": len(set(self.recent_types)),
@@ -564,6 +580,107 @@ class PinAgent:
         slug = re.sub(r"[^a-z0-9]+", "-", (title or "").lower()).strip("-")
         return f"tip:{slug[:56]}"
 
+    async def _next_tip(self, tried: List[str]) -> Optional[Dict]:
+        """
+        A tip to publish: freshly written if possible, from the bank if not.
+
+        WRITTEN FIRST, BANKED SECOND. Forty-five hand-made tips is eleven
+        days at four advice pins a day, and a repeated pin earns nothing --
+        Pinterest gives a fresh pin a distribution test for a day or two and
+        gives a re-upload none at all. So the writer is the supply and the
+        bank is the safety net for when Groq or the vision check cannot
+        answer, which is exactly when publishing something unverified would
+        be worst.
+        """
+        seen = self.recent_tips + tried
+
+        if self.writer:
+            board = self.writer.pick_board(self.recent_boards)
+            tip = await self.writer.write(board, avoid=seen)
+            if tip and not self._tip_already_used(tip["title"], seen):
+                return tip
+            if tip:
+                logger.info(f"Written tip too close to a recent one: "
+                            f"{tip['title'][:46]}")
+
+        fallback = tip_bank.next_tip(seen)
+        if fallback:
+            logger.info("Using a tip from the hand-written bank.")
+        return fallback
+
+    @staticmethod
+    def _tip_already_used(title: str, seen: List[str]) -> bool:
+        """
+        Whether a written tip repeats one published lately.
+
+        Compared on meaningful words rather than exact text, because a model
+        told to avoid a list will happily return the same advice under a
+        different sentence.
+        """
+        words = PinAgent._title_words(title)
+        if len(words) < 2:
+            return True
+        for previous in seen:
+            other = PinAgent._title_words(previous)
+            if len(other) < 2:
+                continue
+            common = words & other
+            if len(common) >= 3 or (
+                    len(common) >= 2
+                    and len(common) / min(len(words), len(other)) >= 0.6):
+                return True
+        return False
+
+    async def _find_photo(self, query: str) -> str:
+        """
+        A photograph for a freshly written tip, confirmed by looking at it.
+
+        Returns "" rather than an unverified picture. A wrong photograph is
+        worse than a missed slot: the fossil-beds result for "bed" passed
+        every check that reads text about an image, and would have published.
+        """
+        if not (self.photos and self.verifier and self.verifier.is_ready):
+            return ""
+
+        # Exact first, then broader. "toilet shelf" returned nothing at all
+        # and "medicine cabinet" returned four photographs the model refused,
+        # while "bathroom" would have found plenty -- a tip about a shelf
+        # above the toilet is perfectly well illustrated by a tidy bathroom.
+        # Each attempt is verified against the words it searched for, so a
+        # broader picture is still confirmed to show what it claims.
+        tried = set()
+        for attempt in (query, self._broaden(query)):
+            if not attempt or attempt in tried:
+                continue
+            tried.add(attempt)
+            candidates = await self.photos.candidates(attempt, limit=4)
+            if not candidates:
+                continue
+            found = await self.verifier.first_approved(candidates, attempt)
+            if found:
+                return found
+        return ""
+
+    # Rooms, in the order a two-word query is most likely to name one.
+    _ROOMS = ("bathroom", "kitchen", "pantry", "bedroom", "closet",
+              "hallway", "laundry", "shower", "fridge", "cabinet", "drawer")
+
+    @classmethod
+    def _broaden(cls, query: str) -> str:
+        """
+        A wider version of a photo query.
+
+        Falls back to the room the tip is about, because that is what the
+        open libraries reliably hold. A specific fitting -- "toilet shelf",
+        "spice drawer insert" -- often has no openly licensed photograph at
+        all, while the room it lives in has thousands.
+        """
+        words = (query or "").lower().split()
+        for room in cls._ROOMS:
+            if room in words:
+                return room
+        return words[-1] if len(words) > 1 else ""
+
     async def build_value_pin(self) -> Optional[Dict]:
         """
         Produces one advice pin, or None.
@@ -576,20 +693,24 @@ class PinAgent:
         """
         tried: List[str] = []
         for _ in range(self.VALUE_PIN_ATTEMPTS):
-            tip = tip_bank.next_tip(self.recent_tips + tried)
+            tip = await self._next_tip(tried)
             if not tip:
-                self.last_error = "the tip bank is empty"
+                self.last_error = "no tip could be produced"
                 logger.error(self.last_error)
                 return None
             tried.append(tip["title"])
 
-            # The photograph is the one that was chosen for this tip and
-            # looked at, not whatever a search returns today. Searching live
-            # was tried and rejected: it answered "under the bed" with
-            # Nebraska fossil beds and "jar lid" with an Egyptian canopic
-            # jar, and about half of sixty queries came back with something
-            # that would have looked broken on the board.
             photo_url, credit = tip["image"], tip.get("credit", "")
+            if not photo_url:
+                # A freshly written tip arrives with no picture. Search for
+                # one and have the vision check confirm it shows the thing
+                # before it is used -- the whole reason the hand-picked bank
+                # existed in the first place.
+                photo_url = await self._find_photo(tip["photo"])
+                if not photo_url:
+                    logger.info(f"No verified photograph for "
+                                f"'{tip['photo']}'; trying another tip.")
+                    continue
 
             # The tip names its own board. Running advice through the
             # product keyword router put a tea-towel tip on the bathroom
@@ -768,6 +889,10 @@ class PinAgent:
         if self.gate.kind_of(pin) == "value":
             self.recent_tips.insert(0, pin.get("title", ""))
             del self.recent_tips[self.TIP_ROTATION:]
+            board = pin.get("board_name") or ""
+            if board:
+                self.recent_boards.insert(0, board)
+                del self.recent_boards[24:]
             return
 
         self.recent_titles.insert(

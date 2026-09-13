@@ -208,6 +208,66 @@ class StockPhotoFinder:
                     f"source; the generator will draw one instead.")
         return None, ""
 
+    # Stock libraries whose pool is LIFESTYLE PHOTOGRAPHY rather than an
+    # encyclopaedia's file store. Openverse also indexes Wikimedia, the
+    # Smithsonian, the Met and a dozen other museums, and for household
+    # subjects those dominate the results with the wrong thing entirely:
+    # "storage basket" returns a Pomo people artefact from the Honolulu
+    # Museum, "jar lid" an Egyptian canopic jar, "bed" Nebraska fossil beds.
+    # Restricting the source is what turns a 50% hit rate into a 90% one.
+    PIN_SOURCES = "stocksnap,rawpixel,wordpress,nappy"
+
+    async def candidates(self, query: str, limit: int = 4,
+                         exclude=()) -> List[str]:
+        """
+        Several usable photo URLs for a query, best first.
+
+        Separate from find() on purpose. find() returns ONE picture for an
+        article and settles for it; a pin is judged by a vision model
+        afterwards, so it wants a shortlist to work down. Nothing here
+        decides quality -- it only gathers.
+        """
+        import httpx
+
+        if not self.enabled or not query.strip():
+            return []
+
+        out: List[str] = []
+        seen = set(exclude)
+        for licences in LICENCE_TIERS:
+            if len(out) >= limit:
+                break
+            try:
+                async with httpx.AsyncClient(timeout=self.TIMEOUT,
+                                             follow_redirects=True) as client:
+                    r = await client.get(ENDPOINT, headers=UA, params={
+                        "q": query, "license": licences,
+                        "source": self.PIN_SOURCES,
+                        "page_size": 20, "mature": "false", "size": "large",
+                    })
+                if r.status_code != 200:
+                    self.last_error = f"HTTP {r.status_code}"
+                    continue
+                results = (r.json() or {}).get("results") or []
+            except Exception as e:
+                self.last_error = f"{type(e).__name__}: {e}"
+                logger.info(f"Photo shortlist failed: {self.last_error}")
+                continue
+
+            for item in results:
+                url = item.get("url") or ""
+                if url in seen or not self._usable(item):
+                    continue
+                if not self._relevant(item, query):
+                    continue
+                seen.add(url)
+                out.append(url)
+                if len(out) >= limit:
+                    break
+
+        logger.info(f"{len(out)} photo candidate(s) for '{query[:36]}'.")
+        return out
+
     @staticmethod
     def _query_ladder(query: str) -> List[str]:
         """

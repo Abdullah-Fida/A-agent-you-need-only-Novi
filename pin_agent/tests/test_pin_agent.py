@@ -1664,10 +1664,16 @@ class TestBuildingAnAdvicePin(unittest.TestCase):
         agent.gate = ComplianceGate()
         agent.recent_tips = []
         agent.recent_titles = []
+        agent.recent_boards = []
         agent.last_error = ""
         agent.upload_image = None
         agent.imaging = MagicMock()
         agent.asked = []
+        # No writer and no vision check, so this exercises the fallback
+        # path: the hand-written bank with its already-verified photographs.
+        agent.writer = None
+        agent.photos = None
+        agent.verifier = None
         test = self
 
         async def build(product, title, eyebrow="", require_photo=False):
@@ -2092,3 +2098,108 @@ class TestThePhotographVerifier(unittest.TestCase):
         src = inspect.getsource(PhotoVerifier._ask)
         self.assertIn("inline_data", src)
         self.assertIn("b64encode", src)
+
+
+class TestTipsAreWrittenNotJustBanked(unittest.TestCase):
+    """
+    Forty-five hand-written tips is eleven days at four advice pins a day,
+    and a re-uploaded pin earns nothing: Pinterest gives a fresh pin a
+    distribution test for a day or two and gives a repeat none at all. So
+    the writer is the supply and the bank is the safety net.
+    """
+
+    def setUp(self):
+        from pin_agent.tip_writer import TipWriter
+        self.TipWriter = TipWriter
+        self.w = TipWriter(ai_engine=None)
+
+    def _tip(self, **over):
+        tip = {"title": "Keep the kettle where you fill it, near the tap",
+               "body": "Carrying a full kettle across a kitchen spills it. "
+                       "Standing it beside the tap removes the trip entirely "
+                       "and keeps the worktop dry.",
+               "photo": "kitchen tap"}
+        tip.update(over)
+        return tip
+
+    def test_a_good_tip_passes(self):
+        self.assertEqual(self.w._problems(self._tip()), [])
+
+    def test_a_short_title_is_refused(self):
+        # Under 40 characters loses the search words Pinterest matches on.
+        p = self.w._problems(self._tip(title="Tidy the kettle"))
+        self.assertTrue(any("title is" in x for x in p))
+
+    def test_a_long_title_is_refused(self):
+        p = self.w._problems(self._tip(title="x" * 120))
+        self.assertTrue(any("title is" in x for x in p))
+
+    def test_ai_filler_is_refused(self):
+        for phrase in ("This is a game-changer for your kitchen storage",
+                       "Transform your pantry with this one simple trick",
+                       "Say goodbye to clutter in your kitchen cupboards"):
+            p = self.w._problems(self._tip(title=phrase))
+            self.assertTrue(any("banned phrase" in x for x in p), phrase)
+
+    def test_anything_that_dates_the_pin_is_refused(self):
+        # A pin is seen for months; a price or a year stops being true long
+        # before it stops being shown.
+        for body in ("Costs about $12 and saves a whole shelf of space here.",
+                     "The best kitchen storage idea of 2026 by a mile, truly.",
+                     "It is 50% cheaper than the alternative in every shop."):
+            p = self.w._problems(self._tip(body=body + " " * 40))
+            self.assertTrue(any("dates the pin" in x for x in p), body)
+
+    def test_exclamation_marks_and_hashtags_are_refused(self):
+        self.assertTrue(self.w._problems(self._tip(title="Keep the kettle "
+                                                         "near the tap always!")))
+        self.assertTrue(self.w._problems(self._tip(body="Useful. #kitchen "
+                                                       + "x" * 90)))
+
+    def test_the_photo_term_must_name_something_physical(self):
+        p = self.w._problems(self._tip(photo=""))
+        self.assertTrue(any("photo term" in x for x in p))
+        p = self.w._problems(self._tip(photo="a b c d e f"))
+        self.assertTrue(any("photo term" in x for x in p))
+
+    def test_it_parses_json_out_of_a_chatty_answer(self):
+        raw = ('Sure! Here is your tip:\n```json\n'
+               '{"title": "t", "body": "b", "photo": "p"}\n```\nHope that helps')
+        self.assertEqual(self.TipWriter._parse(raw),
+                         {"title": "t", "body": "b", "photo": "p"})
+        self.assertIsNone(self.TipWriter._parse("no json at all here"))
+
+    def test_board_rotation_feeds_the_quietest_board(self):
+        from pin_agent import boards
+        recent = ["Bathroom Storage Ideas"] * 5 + ["Small Kitchen Organization"] * 3
+        for _ in range(12):
+            chosen = self.TipWriter.pick_board(recent)
+            self.assertNotIn(chosen, ("Bathroom Storage Ideas",
+                                      "Small Kitchen Organization"))
+            self.assertIn(chosen, boards.ALL_BOARDS)
+
+    def test_the_written_tip_must_not_repeat_a_recent_one(self):
+        from pin_agent.pin_bot import PinAgent
+        seen = ["Store bathroom towels rolled, not folded"]
+        self.assertTrue(PinAgent._tip_already_used(
+            "Store your bathroom towels rolled rather than folded", seen))
+        self.assertFalse(PinAgent._tip_already_used(
+            "Keep eggs in their carton, pointed end down", seen))
+
+    def test_a_specific_photo_query_broadens_to_its_room(self):
+        # "toilet shelf" found nothing at all in the open libraries while
+        # "bathroom" has thousands, and a tidy bathroom illustrates a tip
+        # about a shelf above the toilet perfectly well.
+        from pin_agent.pin_bot import PinAgent
+        self.assertEqual(PinAgent._broaden("toilet shelf in bathroom"),
+                         "bathroom")
+        self.assertEqual(PinAgent._broaden("spice drawer insert"), "drawer")
+        self.assertEqual(PinAgent._broaden("sink"), "")
+
+    def test_the_bank_is_still_the_fallback(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent._next_tip)
+        self.assertIn("tip_bank.next_tip", src,
+                      "with no writer and no vision check, the verified "
+                      "hand-written bank is what keeps the account posting")
