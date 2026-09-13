@@ -1973,3 +1973,122 @@ class TestDailyVolumeMatchesWhatPinterestRewards(unittest.TestCase):
             quota = agent.product_quota()
             self.assertGreaterEqual(quota, 1)
             self.assertLessEqual(quota / cap, 0.25, f"cap {cap}")
+
+
+class TestThePhotographVerifier(unittest.TestCase):
+    """
+    The only check that looks at the picture rather than reading text about
+    it.
+
+    Everything else in the pipeline reads the title, tags, dimensions and
+    licence -- and "Ashfall Fossil Beds" passed every one of those for the
+    query "bed". Correct resolution, public domain, a real photograph, and
+    the word "beds" in the title.
+
+    The distinction that matters most here is between "that photograph is
+    wrong" and "nobody could tell me". Collapsing them would silently reject
+    every photograph the moment a free quota ran out -- or worse, publish
+    every one.
+    """
+
+    def _verifier(self, answers):
+        """`answers` is consumed one per model attempt."""
+        from pin_agent.photo_check import PhotoVerifier
+        v = PhotoVerifier(api_key="test-key",
+                          models=("model-a", "model-b", "model-c"))
+        seq = list(answers)
+        asked = []
+
+        async def fake_ask(model, image, subject, mime):
+            asked.append(model)
+            return seq.pop(0) if seq else None
+
+        v._ask = fake_ask
+        v.asked = asked
+        return v
+
+    def test_a_yes_approves(self):
+        v = self._verifier([True])
+        self.assertIs(asyncio.run(v.verify(b"jpeg", "a bathroom")), True)
+        self.assertEqual(v.approved, 1)
+
+    def test_a_no_rejects(self):
+        v = self._verifier([False])
+        self.assertIs(asyncio.run(v.verify(b"jpeg", "a bathroom")), False)
+        self.assertEqual(v.rejected, 1)
+
+    def test_no_verdict_is_not_approval(self):
+        """
+        The single most important line in the module. None means every model
+        was out of quota or unreachable; treating it as True would publish
+        unverified photographs on exactly the days the service is down.
+        """
+        v = self._verifier([None, None, None])
+        result = asyncio.run(v.verify(b"jpeg", "a bathroom"))
+        self.assertIsNone(result)
+        self.assertIsNot(result, True)
+        self.assertEqual(v.checked, 0, "a non-answer is not a check")
+
+    def test_it_moves_to_the_next_model_when_one_runs_out(self):
+        # The free quota is per-model, so a spent model hands the job on
+        # rather than ending the day's work.
+        v = self._verifier([None, True])
+        self.assertIs(asyncio.run(v.verify(b"jpeg", "a kitchen")), True)
+        self.assertEqual(v.asked, ["model-a", "model-b"])
+
+    def test_an_exhausted_model_is_not_asked_again(self):
+        from pin_agent.photo_check import PhotoVerifier
+        v = PhotoVerifier(api_key="k", models=("model-a", "model-b"))
+        v._exhausted.add("model-a")
+        asked = []
+
+        async def fake_ask(model, image, subject, mime):
+            asked.append(model)
+            return True
+
+        v._ask = fake_ask
+        asyncio.run(v.verify(b"x", "a pantry"))
+        self.assertEqual(asked, ["model-b"])
+
+    def test_without_a_key_it_returns_no_verdict(self):
+        from pin_agent.photo_check import PhotoVerifier
+        v = PhotoVerifier(api_key="")
+        self.assertIsNone(asyncio.run(v.verify(b"x", "a kitchen")))
+        self.assertFalse(v.is_ready)
+
+    def test_first_approved_stops_at_the_first_yes(self):
+        v = self._verifier([False, True])
+        urls = ["https://a/1.jpg", "https://b/2.jpg", "https://c/3.jpg"]
+
+        async def fake_verify_url(url, subject):
+            return await v.verify(b"x", subject)
+
+        v.verify_url = fake_verify_url
+        got = asyncio.run(v.first_approved(urls, "a bathroom"))
+        self.assertEqual(got, "https://b/2.jpg")
+
+    def test_first_approved_is_bounded(self):
+        # One bad query must not spend the whole day's allowance.
+        v = self._verifier([False] * 20)
+        tried = []
+
+        async def fake_verify_url(url, subject):
+            tried.append(url)
+            return await v.verify(b"x", subject)
+
+        v.verify_url = fake_verify_url
+        urls = [f"https://x/{i}.jpg" for i in range(20)]
+        self.assertIsNone(asyncio.run(v.first_approved(urls, "x", limit=3)))
+        self.assertEqual(len(tried), 3)
+
+    def test_it_sends_the_image_bytes_not_the_url(self):
+        """
+        StockSnap answers a server-side fetch with 403, so passing the
+        address returns an error instead of a verdict. The photo is
+        downloaded anyway to build the pin, so the bytes cost nothing.
+        """
+        import inspect
+        from pin_agent.photo_check import PhotoVerifier
+        src = inspect.getsource(PhotoVerifier._ask)
+        self.assertIn("inline_data", src)
+        self.assertIn("b64encode", src)

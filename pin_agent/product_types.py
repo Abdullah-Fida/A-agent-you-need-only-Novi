@@ -84,6 +84,16 @@ TYPE_RULES: List[Tuple[str, Tuple[str, ...]]] = [
                           "drawer tray", "drawer insert", "drawer")),
     ("cabinet_organizer", ("cabinet", "cupboard", "pantry shelf")),
     ("desk_organizer", ("desk", "stationery", "pen holder", "office")),
+    # Added after seven live pins fell into the catch-all and partly blocked
+    # each other. Two of them were herb scissors under different wording.
+    ("kitchen_tool", ("scissors", "shears", "peeler", "grater", "slicer",
+                      "chopper", "cutter", "masher", "whisk", "tongs",
+                      "opener", "corer", "zester", "mandoline", "chopping",
+                      "veggies", "vegetable prep")),
+    ("divider_board", ("divider", "partition", "separator", "board",
+                       "insert panel")),
+    ("coat_storage", ("coat", "coats", "blanket", "blankets", "scarf",
+                      "jacket", "outerwear")),
     ("dish_rack", ("dish rack", "drying rack", "draining", "dish drainer")),
     ("cleaning_caddy", ("cleaning", "sponge", "mop", "broom", "bucket",
                         "spray bottle", "duster")),

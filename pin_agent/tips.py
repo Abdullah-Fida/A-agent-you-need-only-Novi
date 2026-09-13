@@ -60,7 +60,7 @@ TIP_BANK: List[Dict[str, str]] = [
     # ── Bathroom Storage Ideas ──────────────────────────────────────
     {"board": "Bathroom Storage Ideas",
      "photo": "bathroom shelf",
-     "image": "https://cdn.stocksnap.io/img-thumbs/960w/7MEPFLTQWM.jpg",
+     "image": "https://pd.w.org/2026/05/686a197e9074a618.71891488-1536x2048.jpg",
      "credit": "",
      "title": "Store bathroom towels rolled, not folded",
      "body": "Rolled towels take about a third less shelf depth than folded "
@@ -88,7 +88,7 @@ TIP_BANK: List[Dict[str, str]] = [
      "photo": "toothbrush",
      "image": "https://cdn.stocksnap.io/img-thumbs/960w/UD9953XS1H.jpg",
      "credit": "",
-     "title": "Give the toothbrush somewhere with air",
+     "title": "Give your toothbrush somewhere with air to dry",
      "body": "A closed toothbrush holder traps water and stays damp. An open "
              "holder, or a wall clip that lets the head dry, keeps bristles "
              "in better condition for longer."},
@@ -104,7 +104,7 @@ TIP_BANK: List[Dict[str, str]] = [
      "photo": "bathroom mirror",
      "image": "https://pd.w.org/2022/01/27661f80f3a805477.53307166-1536x2048.jpeg",
      "credit": "",
-     "title": "Use the back of the bathroom door",
+     "title": "Use the back of the bathroom door for storage",
      "body": "A door is a whole vertical wall nobody uses. Over-door hooks "
              "hold robes, towels and a laundry bag without a single screw, "
              "which matters if you rent."},
@@ -159,9 +159,9 @@ TIP_BANK: List[Dict[str, str]] = [
              "storage you will actually use."},
     {"board": "Pantry and Fridge Storage",
      "photo": "vegetables",
-     "image": "https://cdn.stocksnap.io/img-thumbs/960w/F8B73CPSBK.jpg",
+     "image": "https://cdn.stocksnap.io/img-thumbs/960w/RYSFFCA1QV.jpg",
      "credit": "",
-     "title": "Keep onions and potatoes apart",
+     "title": "Keep onions and potatoes apart in the pantry",
      "body": "Onions give off moisture and gas that makes potatoes sprout "
              "faster. Two separate ventilated containers, somewhere dark, "
              "keeps both for weeks longer."},
@@ -177,7 +177,7 @@ TIP_BANK: List[Dict[str, str]] = [
      "photo": "bread",
      "image": "https://cdn.stocksnap.io/img-thumbs/960w/9J9OUZYDZ3.jpg",
      "credit": "",
-     "title": "Bread goes stale faster in the fridge",
+     "title": "Bread goes stale faster in the fridge, not slower",
      "body": "Refrigeration speeds up the staling process rather than "
              "slowing it. A cool cupboard for a few days, or the freezer for "
              "anything longer, keeps the loaf far better."},
@@ -185,7 +185,7 @@ TIP_BANK: List[Dict[str, str]] = [
      "photo": "cereal",
      "image": "https://cdn.stocksnap.io/img-thumbs/960w/BC5DD62102.jpg",
      "credit": "",
-     "title": "Group food by meal, not by packet size",
+     "title": "Group pantry food by meal, not by packet size",
      "body": "Breakfast things together, baking things together. Organising "
              "a pantry by what you are about to cook cuts the searching more "
              "than any container system does."},
@@ -193,7 +193,7 @@ TIP_BANK: List[Dict[str, str]] = [
      "photo": "kitchen jars",
      "image": "https://cdn.stocksnap.io/img-thumbs/960w/9G5X445AP9.jpg",
      "credit": "",
-     "title": "Leave one empty shelf in the pantry",
+     "title": "Leave one shelf empty and the pantry stays tidy",
      "body": "A pantry filled to capacity has nowhere to put a shop, so "
              "things end up on the worktop. One deliberately empty shelf is "
              "what keeps the rest of it tidy."},
@@ -218,7 +218,7 @@ TIP_BANK: List[Dict[str, str]] = [
      "photo": "spray bottle cleaning",
      "image": "https://images.rawpixel.com/editor_1024/czNmcy1wcml2YXRlL3Jhd3BpeGVsX2ltYWdlcy93ZWJzaXRlX2NvbnRlbnQvbHIvcHg5MjMzNDItaW1hZ2Uta3d2dXRhMncuanBn.jpg",
      "credit": "",
-     "title": "Hang spray bottles by the trigger",
+     "title": "Hang spray bottles by the trigger under the sink",
      "body": "A tension rod across the cupboard lets bottles hang by their "
              "trigger heads, which frees the whole floor of the cabinet for "
              "something else."},
@@ -242,7 +242,7 @@ TIP_BANK: List[Dict[str, str]] = [
      "photo": "kitchen sponge",
      "image": "https://images.rawpixel.com/editor_1024/czNmcy1wcml2YXRlL3Jhd3BpeGVsX2ltYWdlcy93ZWJzaXRlX2NvbnRlbnQvbHIvcHg5ODc4OTctaW1hZ2Uta3d2eGF2NGMuanBn.jpg",
      "credit": "",
-     "title": "Give the sponge somewhere to drain",
+     "title": "Give the kitchen sponge somewhere to drain",
      "body": "A sponge left flat in the sink stays wet and starts to smell "
              "within a day. Anything that lets air underneath it -- a caddy, "
              "a clip, a suction holder -- solves it."},
@@ -259,7 +259,7 @@ TIP_BANK: List[Dict[str, str]] = [
      "photo": "closet",
      "image": "https://cdn.stocksnap.io/img-thumbs/960w/D1B0FAEB46.jpg",
      "credit": "",
-     "title": "Hang what creases, fold what does not",
+     "title": "Hang what creases and fold the rest to save space",
      "body": "Closet space runs out because everything gets hung. Knitwear "
              "and jeans are happier folded, and hanging only what needs it "
              "roughly halves the rail you need."},
@@ -267,15 +267,15 @@ TIP_BANK: List[Dict[str, str]] = [
      "photo": "studio apartment interior",
      "image": "https://cdn.stocksnap.io/img-thumbs/960w/YED8JWCWVB.jpg",
      "credit": "",
-     "title": "In a small flat, storage goes up",
+     "title": "In a small flat, storage goes up the wall",
      "body": "Floor space is the thing you are short of; wall height is the "
              "thing you have. Shelves above door height hold everything used "
              "seasonally."},
     {"board": "Tiny Apartment Solutions",
      "photo": "shoes by the door",
-     "image": "https://pd.w.org/2023/02/96263ef372d17fcb0.24847333-1127x2048.jpg",
+     "image": "https://images.rawpixel.com/editor_1024/cHJpdmF0ZS9sci9pbWFnZXMvd2Vic2l0ZS8yMDIyLTA0L3Vwd2s2MTg0NzM1Ni13aWtpbWVkaWEtaW1hZ2Uta293cGsyYTEuanBn.jpg",
      "credit": "",
-     "title": "Keep only this week's shoes by the door",
+     "title": "Keep only this week's shoes by the front door",
      "body": "An entryway holds four pairs before it looks chaotic. "
              "Everything else belongs in a wardrobe, and the hallway stays "
              "walkable."},
@@ -283,7 +283,7 @@ TIP_BANK: List[Dict[str, str]] = [
      "photo": "wardrobe",
      "image": "https://cdn.stocksnap.io/img-thumbs/960w/YISUDLOYC3.jpg",
      "credit": "",
-     "title": "Store out-of-season clothes at the top",
+     "title": "Store out-of-season clothes at the top of the closet",
      "body": "Rotating winter and summer twice a year keeps the reachable "
              "half of a wardrobe holding only things you might wear this "
              "week."},
@@ -291,7 +291,7 @@ TIP_BANK: List[Dict[str, str]] = [
      "photo": "coat hooks wall",
      "image": "https://images.rawpixel.com/editor_1024/czNmcy1wcml2YXRlL3Jhd3BpeGVsX2ltYWdlcy93ZWJzaXRlX2NvbnRlbnQvbHIvbG9jMjAxNzc4NTg2OS1pbWFnZS5qcGc.jpg",
      "credit": "",
-     "title": "Hooks beat hangers in a narrow hallway",
+     "title": "Coat hooks beat hangers in a narrow hallway",
      "body": "A coat on a hook takes seconds and the depth of the coat. A "
              "hanger needs a rail, a cupboard and the swing of a door."},
     {"board": "Tiny Apartment Solutions",
@@ -304,7 +304,7 @@ TIP_BANK: List[Dict[str, str]] = [
              "used."},
     {"board": "Tiny Apartment Solutions",
      "photo": "bed",
-     "image": "https://cdn.stocksnap.io/img-thumbs/960w/843D85B223.jpg",
+     "image": "https://pd.w.org/2026/05/1276a00258120ad17.48098578-2048x1536.jpeg",
      "credit": "",
      "title": "Under the bed is the largest cupboard you own",
      "body": "It is also the one that collects dust. Flat, closed containers "
@@ -347,15 +347,15 @@ TIP_BANK: List[Dict[str, str]] = [
      "photo": "kitchen knife",
      "image": "https://images.rawpixel.com/editor_1024/cHJpdmF0ZS9zdGF0aWMvaW1hZ2Uvd2Vic2l0ZS8yMDIyLTA0L2xyL3B4MTMyNTMzNC1pbWFnZS1rd3Z3NDEzdy5qcGc.jpg",
      "credit": "",
-     "title": "A sharp knife is safer than a blunt one",
+     "title": "A sharp kitchen knife is safer than a blunt one",
      "body": "Blunt blades slip because you push harder. A honing steel used "
              "for ten seconds before cooking does more for safety than any "
              "cut-resistant glove."},
     {"board": "Kitchen Gadgets Worth Buying",
      "photo": "peeling a potato",
-     "image": "https://images.rawpixel.com/editor_1024/czNmcy1wcml2YXRlL3Jhd3BpeGVsX2ltYWdlcy93ZWJzaXRlX2NvbnRlbnQvbHIvcHUyMzMxMTQ0LWltYWdlLWt3eXJ0bHJrLmpwZw.jpg",
+     "image": "https://images.rawpixel.com/editor_1024/cHJpdmF0ZS9zdGF0aWMvaW1hZ2Uvd2Vic2l0ZS8yMDIyLTA0L2xyL3B1MjMzMzM2NS1pbWFnZS1rd3Z3bTF2dS5qcGc.jpg",
      "credit": "",
-     "title": "Peel towards a bowl, not a board",
+     "title": "Peel vegetables towards a bowl, not the board",
      "body": "Peelings go straight where they belong and the worktop stays "
              "clean. It is a habit rather than a purchase, and it saves a "
              "wipe-down every time."},
@@ -377,7 +377,7 @@ TIP_BANK: List[Dict[str, str]] = [
      "photo": "jar lid",
      "image": "https://images.rawpixel.com/editor_1024/cHJpdmF0ZS9sci9pbWFnZXMvd2Vic2l0ZS8yMDIzLTAzL2NsZTE5OTctLTIwLS1iLWltYWdlLmpwZw.jpg",
      "credit": "",
-     "title": "Hot water opens a stuck jar",
+     "title": "Hot water opens a stuck jar lid in seconds",
      "body": "Thirty seconds of hot tap water on the lid expands the metal "
              "just enough. Gadgets help, but this costs nothing and works "
              "most of the time."},
@@ -394,7 +394,7 @@ TIP_BANK: List[Dict[str, str]] = [
      "photo": "kitchen utensils",
      "image": "https://cdn.stocksnap.io/img-thumbs/960w/F908L9RJSI.jpg",
      "credit": "",
-     "title": "Keep utensils where you stand to cook",
+     "title": "Keep kitchen utensils where you stand to cook",
      "body": "A pot by the hob holds the five things you reach for while "
              "cooking. Everything else can live in a drawer somewhere less "
              "convenient."},
