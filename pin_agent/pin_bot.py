@@ -580,7 +580,8 @@ class PinAgent:
         slug = re.sub(r"[^a-z0-9]+", "-", (title or "").lower()).strip("-")
         return f"tip:{slug[:56]}"
 
-    async def _next_tip(self, tried: List[str]) -> Optional[Dict]:
+    async def _next_tip(self, tried: List[str],
+                        prefer_bank: bool = False) -> Optional[Dict]:
         """
         A tip to publish: freshly written if possible, from the bank if not.
 
@@ -591,10 +592,18 @@ class PinAgent:
         bank is the safety net for when Groq or the vision check cannot
         answer, which is exactly when publishing something unverified would
         be worst.
+
+        `prefer_bank` is what stops a slot being lost. Every written tip
+        needs a photograph found and approved, and the verifier is
+        deliberately hard to satisfy; asking the writer again after a photo
+        failure just spends another minute failing the same way. So the
+        first attempt is always fresh and every attempt after it comes from
+        the bank, whose photographs were chosen by eye and need no approval
+        at all.
         """
         seen = self.recent_tips + tried
 
-        if self.writer:
+        if self.writer and not prefer_bank:
             board = self.writer.pick_board(self.recent_boards)
             tip = await self.writer.write(board, avoid=seen)
             if tip and not self._tip_already_used(tip["title"], seen):
@@ -631,7 +640,7 @@ class PinAgent:
                 return True
         return False
 
-    async def _find_photo(self, query: str) -> str:
+    async def _find_photo(self, query: str, caption: str = "") -> str:
         """
         A photograph for a freshly written tip, confirmed by looking at it.
 
@@ -646,8 +655,11 @@ class PinAgent:
         # and "medicine cabinet" returned four photographs the model refused,
         # while "bathroom" would have found plenty -- a tip about a shelf
         # above the toilet is perfectly well illustrated by a tidy bathroom.
-        # Each attempt is verified against the words it searched for, so a
-        # broader picture is still confirmed to show what it claims.
+        # Both attempts are judged against the PIN'S OWN TITLE as well as
+        # the words searched for. Against the search term alone a
+        # supermarket freezer aisle is a fine photograph of "a fridge", and
+        # it was approved for a pin reading "Hang a mesh pocket on the
+        # fridge door for packets".
         tried = set()
         for attempt in (query, self._broaden(query)):
             if not attempt or attempt in tried:
@@ -656,7 +668,8 @@ class PinAgent:
             candidates = await self.photos.candidates(attempt, limit=4)
             if not candidates:
                 continue
-            found = await self.verifier.first_approved(candidates, attempt)
+            found = await self.verifier.first_approved(
+                candidates, attempt, caption=caption)
             if found:
                 return found
         return ""
@@ -692,8 +705,9 @@ class PinAgent:
         photo providers are down, which is the one thing this must not do.
         """
         tried: List[str] = []
-        for _ in range(self.VALUE_PIN_ATTEMPTS):
-            tip = await self._next_tip(tried)
+        for attempt in range(self.VALUE_PIN_ATTEMPTS):
+            # Fresh on the first try, banked after. See _next_tip.
+            tip = await self._next_tip(tried, prefer_bank=attempt > 0)
             if not tip:
                 self.last_error = "no tip could be produced"
                 logger.error(self.last_error)
@@ -706,7 +720,8 @@ class PinAgent:
                 # one and have the vision check confirm it shows the thing
                 # before it is used -- the whole reason the hand-picked bank
                 # existed in the first place.
-                photo_url = await self._find_photo(tip["photo"])
+                photo_url = await self._find_photo(tip["photo"],
+                                                   tip["title"])
                 if not photo_url:
                     logger.info(f"No verified photograph for "
                                 f"'{tip['photo']}'; trying another tip.")

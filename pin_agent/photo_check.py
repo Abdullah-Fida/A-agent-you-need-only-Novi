@@ -54,14 +54,23 @@ TIMEOUT = 90.0
 # writes a paragraph, spends the token budget on reasoning, and returns
 # nothing usable -- which is what happened on the first attempt.
 PROMPT = (
-    'A Pinterest pin will caption this photograph with: "{subject}".\n\n'
-    'Answer YES only if ALL of these are true:\n'
-    '  - the photograph clearly shows that subject\n'
-    '  - it is a real photograph, not clipart, an illustration, a drawing, '
-    'an artwork, a diagram or a museum object\n'
-    '  - it is in focus, well lit, and would look good on Pinterest\n\n'
-    'Otherwise answer NO.\n'
-    'Reply with one word only: YES or NO.'
+    "A Pinterest pin for a home organisation account will use this "
+    "photograph.\n\n"
+    "Pin caption: \"{caption}\"\n"
+    "The photograph was found by searching for: {subject}\n\n"
+    "Answer NO if ANY of these is true:\n"
+    "  - it has nothing to do with {subject}\n"
+    "  - it is clearly a shop, supermarket, warehouse or restaurant "
+    "kitchen rather than a domestic setting\n"
+    "  - it is clipart, an illustration, a drawing, a painting, a diagram, "
+    "a museum object or a historical artefact\n"
+    "  - it is blurred, very dark, or too cluttered to read at a glance\n\n"
+    "Otherwise answer YES.\n\n"
+    "Be generous. The photograph does NOT have to illustrate the caption "
+    "literally -- a tidy bathroom suits a tip about a bathroom door, and "
+    "a styled or staged interior is fine. You are only filtering out "
+    "pictures that are wrong, not choosing the best one.\n"
+    "Reply with one word only: YES or NO."
 )
 
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -126,7 +135,7 @@ class PhotoVerifier:
     # ── the verdict ──────────────────────────────────────────────
 
     async def _ask(self, model: str, image: bytes, subject: str,
-                   mime: str) -> Optional[bool]:
+                   mime: str, caption: str = "") -> Optional[bool]:
         """
         True/False for a verdict, None when this model could not answer.
 
@@ -139,7 +148,8 @@ class PhotoVerifier:
 
         body = {
             "contents": [{"parts": [
-                {"text": PROMPT.format(subject=subject)},
+                {"text": PROMPT.format(subject=subject,
+                                       caption=caption or subject)},
                 {"inline_data": {"mime_type": mime,
                                  "data": base64.b64encode(image).decode()}},
             ]}],
@@ -179,9 +189,17 @@ class PhotoVerifier:
         return None
 
     async def verify(self, image: bytes, subject: str,
-                     mime: str = "image/jpeg") -> Optional[bool]:
+                     mime: str = "image/jpeg",
+                     caption: str = "") -> Optional[bool]:
         """
         Whether this photograph may illustrate this subject.
+
+        `caption` is the pin's actual title, and passing it is what makes
+        the check mean anything. Judged against the SEARCH TERM alone, a
+        supermarket freezer aisle is a perfectly good photograph of "a
+        fridge" and was approved for a pin reading "Hang a mesh pocket on
+        the fridge door for packets". The search term says what to look
+        for; the caption says what the picture has to suit.
 
         Returns None when no model could answer -- every quota spent, or the
         service unreachable. The caller must NOT treat that as approval.
@@ -192,7 +210,7 @@ class PhotoVerifier:
         for model in self.models:
             if model in self._exhausted:
                 continue
-            verdict = await self._ask(model, image, subject, mime)
+            verdict = await self._ask(model, image, subject, mime, caption)
             if verdict is None:
                 continue
             self.checked += 1
@@ -206,16 +224,18 @@ class PhotoVerifier:
         logger.warning(f"No verdict for '{subject[:40]}': {self.last_error}")
         return None
 
-    async def verify_url(self, url: str, subject: str) -> Optional[bool]:
+    async def verify_url(self, url: str, subject: str,
+                         caption: str = "") -> Optional[bool]:
         """Downloads and verifies in one step."""
         data = await self.fetch(url)
         if data is None:
             return None
         mime = "image/png" if url.lower().endswith(".png") else "image/jpeg"
-        return await self.verify(data, subject, mime)
+        return await self.verify(data, subject, mime, caption)
 
     async def first_approved(self, urls: List[str], subject: str,
-                             limit: int = 4) -> Optional[str]:
+                             limit: int = 4,
+                             caption: str = "") -> Optional[str]:
         """
         The first photograph in the list that the model accepts.
 
@@ -224,6 +244,6 @@ class PhotoVerifier:
         query burning the day's whole allowance on one tip.
         """
         for url in list(urls)[:limit]:
-            if await self.verify_url(url, subject):
+            if await self.verify_url(url, subject, caption):
                 return url
         return None

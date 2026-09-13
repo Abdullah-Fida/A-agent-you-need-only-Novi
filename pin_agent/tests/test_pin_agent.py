@@ -2005,7 +2005,7 @@ class TestThePhotographVerifier(unittest.TestCase):
         seq = list(answers)
         asked = []
 
-        async def fake_ask(model, image, subject, mime):
+        async def fake_ask(model, image, subject, mime, caption=""):
             asked.append(model)
             return seq.pop(0) if seq else None
 
@@ -2048,7 +2048,7 @@ class TestThePhotographVerifier(unittest.TestCase):
         v._exhausted.add("model-a")
         asked = []
 
-        async def fake_ask(model, image, subject, mime):
+        async def fake_ask(model, image, subject, mime, caption=""):
             asked.append(model)
             return True
 
@@ -2066,7 +2066,7 @@ class TestThePhotographVerifier(unittest.TestCase):
         v = self._verifier([False, True])
         urls = ["https://a/1.jpg", "https://b/2.jpg", "https://c/3.jpg"]
 
-        async def fake_verify_url(url, subject):
+        async def fake_verify_url(url, subject, caption=""):
             return await v.verify(b"x", subject)
 
         v.verify_url = fake_verify_url
@@ -2078,7 +2078,7 @@ class TestThePhotographVerifier(unittest.TestCase):
         v = self._verifier([False] * 20)
         tried = []
 
-        async def fake_verify_url(url, subject):
+        async def fake_verify_url(url, subject, caption=""):
             tried.append(url)
             return await v.verify(b"x", subject)
 
@@ -2265,3 +2265,99 @@ class TestTheWriterDoesNotFixate(unittest.TestCase):
     def test_proper_nouns_survive_the_tidy(self):
         self.assertEqual(self.W._tidy("put a lazy Susan in the pantry"),
                          "Put a lazy Susan in the pantry")
+
+
+class TestASlotIsNotLostToAStrictVerifier(unittest.TestCase):
+    """
+    Every written tip needs a photograph found and approved, and the
+    verifier is deliberately hard to satisfy. Asking the writer again after
+    a photo failure spends another call failing the same way -- four
+    attempts, four written tips, four photo searches, no pin, and the bank
+    never reached even though its photographs need no approval at all.
+    """
+
+    def test_the_first_attempt_is_fresh_and_the_rest_are_banked(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent.build_value_pin)
+        self.assertIn("prefer_bank=attempt > 0", src)
+
+    def test_prefer_bank_skips_the_writer_entirely(self):
+        from pin_agent.pin_bot import PinAgent
+        agent = PinAgent.__new__(PinAgent)
+        agent.recent_tips = []
+        called = []
+
+        class Writer:
+            @staticmethod
+            def pick_board(recent):
+                return "Bathroom Storage Ideas"
+
+            async def write(self, board, avoid=None):
+                called.append(board)
+                return {"board": board, "title": "x" * 45, "body": "b",
+                        "photo": "p", "image": "", "credit": ""}
+
+        agent.writer = Writer()
+        agent.recent_boards = []
+
+        banked = asyncio.run(agent._next_tip([], prefer_bank=True))
+        self.assertEqual(called, [], "the writer must not be asked")
+        self.assertTrue(banked["image"].startswith("https://"),
+                        "a banked tip arrives with its photograph already "
+                        "chosen, so nothing needs approving")
+
+        asyncio.run(agent._next_tip([], prefer_bank=False))
+        self.assertEqual(len(called), 1, "the first attempt must be fresh")
+
+
+class TestThePhotoIsJudgedAgainstThePin(unittest.TestCase):
+    """
+    Judged against the SEARCH TERM alone, a supermarket freezer aisle is a
+    perfectly good photograph of "a fridge" -- and it was approved, for a
+    pin reading "Hang a mesh pocket on the fridge door for packets". Two of
+    three generated pins had a wrong picture before the caption was passed
+    through.
+    """
+
+    def test_the_prompt_carries_both_the_caption_and_the_search_term(self):
+        from pin_agent.photo_check import PROMPT
+        text = PROMPT.format(caption="Hang a mesh pocket on the fridge door",
+                             subject="fridge")
+        self.assertIn("Hang a mesh pocket on the fridge door", text)
+        self.assertIn("fridge", text)
+
+    def test_commercial_settings_are_named_as_a_rejection(self):
+        from pin_agent.photo_check import PROMPT
+        text = PROMPT.format(caption="c", subject="s").lower()
+        for place in ("shop", "supermarket", "warehouse", "restaurant"):
+            self.assertIn(place, text, place)
+
+    def test_museum_and_artwork_are_named_as_a_rejection(self):
+        # An Egyptian canopic jar for "jar lid", a Victorian engraving for
+        # "kitchen scissors", a Yale painting for "kitchen shelf".
+        from pin_agent.photo_check import PROMPT
+        text = PROMPT.format(caption="c", subject="s").lower()
+        for kind in ("museum", "painting", "illustration", "clipart"):
+            self.assertIn(kind, text, kind)
+
+    def test_the_caption_reaches_the_model(self):
+        from pin_agent.photo_check import PhotoVerifier
+        v = PhotoVerifier(api_key="k", models=("m",))
+        seen = {}
+
+        async def fake_ask(model, image, subject, mime, caption=""):
+            seen["caption"] = caption
+            return True
+
+        v._ask = fake_ask
+        asyncio.run(v.verify(b"x", "fridge", caption="Hang a mesh pocket"))
+        self.assertEqual(seen["caption"], "Hang a mesh pocket")
+
+    def test_the_agent_passes_the_tip_title_as_the_caption(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        self.assertIn('tip["title"]',
+                      inspect.getsource(PinAgent.build_value_pin))
+        self.assertIn("caption=caption",
+                      inspect.getsource(PinAgent._find_photo))

@@ -59,7 +59,7 @@ logger = logging.getLogger("PinAgent.Tips")
 TIP_BANK: List[Dict[str, str]] = [
     # ── Bathroom Storage Ideas ──────────────────────────────────────
     {"board": "Bathroom Storage Ideas",
-     "photo": "bathroom shelf",
+     "photo": "rolled towels",
      "image": "https://pd.w.org/2026/05/686a197e9074a618.71891488-1536x2048.jpg",
      "credit": "",
      "title": "Store bathroom towels rolled, not folded",
@@ -158,7 +158,7 @@ TIP_BANK: List[Dict[str, str]] = [
              "container you can pull forward turns the back half into "
              "storage you will actually use."},
     {"board": "Pantry and Fridge Storage",
-     "photo": "vegetables",
+     "photo": "onions and potatoes",
      "image": "https://cdn.stocksnap.io/img-thumbs/960w/RYSFFCA1QV.jpg",
      "credit": "",
      "title": "Keep onions and potatoes apart in the pantry",
@@ -272,7 +272,7 @@ TIP_BANK: List[Dict[str, str]] = [
              "thing you have. Shelves above door height hold everything used "
              "seasonally."},
     {"board": "Tiny Apartment Solutions",
-     "photo": "shoes by the door",
+     "photo": "shoes in a hallway",
      "image": "https://images.rawpixel.com/editor_1024/cHJpdmF0ZS9sci9pbWFnZXMvd2Vic2l0ZS8yMDIyLTA0L3Vwd2s2MTg0NzM1Ni13aWtpbWVkaWEtaW1hZ2Uta293cGsyYTEuanBn.jpg",
      "credit": "",
      "title": "Keep only this week's shoes by the front door",
@@ -303,7 +303,7 @@ TIP_BANK: List[Dict[str, str]] = [
              "away. Save lids for what is genuinely being stored rather than "
              "used."},
     {"board": "Tiny Apartment Solutions",
-     "photo": "bed",
+     "photo": "made bed bedroom",
      "image": "https://pd.w.org/2026/05/1276a00258120ad17.48098578-2048x1536.jpeg",
      "credit": "",
      "title": "Under the bed is the largest cupboard you own",
@@ -352,7 +352,7 @@ TIP_BANK: List[Dict[str, str]] = [
              "for ten seconds before cooking does more for safety than any "
              "cut-resistant glove."},
     {"board": "Kitchen Gadgets Worth Buying",
-     "photo": "peeling a potato",
+     "photo": "vegetable prep kitchen",
      "image": "https://images.rawpixel.com/editor_1024/cHJpdmF0ZS9zdGF0aWMvaW1hZ2Uvd2Vic2l0ZS8yMDIyLTA0L2xyL3B1MjMzMzM2NS1pbWFnZS1rd3Z3bTF2dS5qcGc.jpg",
      "credit": "",
      "title": "Peel vegetables towards a bowl, not the board",
