@@ -253,6 +253,9 @@ class TestReviewQueueSurvivesRestart(unittest.TestCase):
         async def recent_tip_titles(limit=50):
             return []
 
+        async def recent_types(days=7):
+            return []
+
         agent.store.posted_history = history
         agent.store.posted_today = posted_today
         agent.store.pending_pins = pending
@@ -260,6 +263,7 @@ class TestReviewQueueSurvivesRestart(unittest.TestCase):
         agent.store.first_pin_at = first_pin_at
         agent.store.recent_titles = recent_titles
         agent.store.recent_tip_titles = recent_tip_titles
+        agent.store.recent_types = recent_types
 
         asyncio.run(agent.connect())
         self.assertEqual(len(agent.pending_review), 1)
@@ -701,21 +705,24 @@ class TestVolumeRamp(unittest.TestCase):
         self.assertEqual(self._cap_on_day(None), 4)
 
     def test_the_ramp_climbs_on_schedule(self):
-        for day, expected in ((10, 4), (11, 6), (20, 6), (21, 8),
-                              (30, 8), (31, 11), (45, 11), (46, 15)):
+        # Lowered from 4/6/8/11/15 after reading what Pinterest rewards: the
+        # safe range for a young account is 1-5 fresh pins a day, and pace
+        # beats volume.
+        for day, expected in ((10, 4), (11, 5), (20, 5), (21, 5),
+                              (30, 5), (31, 6), (45, 6), (46, 8)):
             self.assertEqual(self._cap_on_day(day), expected, f"day {day}")
 
     def test_it_never_climbs_past_the_ceiling(self):
         for day in (60, 120, 400):
-            self.assertEqual(self._cap_on_day(day), 15, f"day {day}")
+            self.assertEqual(self._cap_on_day(day), 8, f"day {day}")
 
     def test_the_configured_maximum_still_wins(self):
         # The ramp raises the floor over time; it must never post more than
         # the owner asked for.
         from types import SimpleNamespace
-        self.agent.config = SimpleNamespace(pins_per_day=6)
-        self.assertEqual(self._cap_on_day(400), 6)
-        self.assertEqual(self._cap_on_day(0), 4)
+        self.agent.config = SimpleNamespace(pins_per_day=3)
+        self.assertEqual(self._cap_on_day(400), 3)   # ramp says 8, owner says 3
+        self.assertEqual(self._cap_on_day(0), 3)     # ramp says 4, owner wins
 
     def test_the_age_comes_from_the_pins_not_a_setting(self):
         """
@@ -1846,3 +1853,123 @@ class TestAnUnlinkedPinOmitsTheUrl(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestTheSameSubjectDoesNotRepeat(unittest.TestCase):
+    """
+    Nine of the first fifty-five pins were spice racks.
+
+    Seven of those inside twelve days. Every one was a different listing
+    with a different id, a different link and a different photograph, so the
+    duplicate checks all passed -- and the title guard could not see it
+    either, because "drawer", "organizer" and "clear" are on the noise list,
+    leaving two spice pins sharing one meaningful word against a bar of
+    three. To the owner scrolling the live board it read as one pin posted
+    six times, which is what he reported twice.
+    """
+
+    def setUp(self):
+        from pin_agent import product_types
+        self.pt = product_types
+
+    def test_the_live_spice_pins_all_classify_the_same(self):
+        # Verbatim titles from the board.
+        for title in (
+            "Clear Your Counter with a Pull-Out Spice Drawer",
+            "Space-saving stretchable spice rack for tiny kitchens",
+            "Compact spice organizer keeps jars tidy in small kitchens",
+            "Keep your kitchen clear with a spice drawer organizer",
+            "Stop Jumbled Spices with Easy Drawer Organizer",
+        ):
+            self.assertEqual(self.pt.classify(title), "spice_rack", title)
+
+    def test_genuinely_different_subjects_stay_apart(self):
+        cases = {
+            "Keep eggs fresh without cracks or spills": "egg_holder",
+            "Compact pull-out organizer for tiny kitchen sinks": "under_sink",
+            "Keep your drawer tidy with foldable underwear organizer":
+                "closet_organizer",
+            "Elegant clear acrylic wall shelf": "wall_shelf",
+            "Keep shoes out of the kitchen for guests": "shoe_storage",
+        }
+        for title, expected in cases.items():
+            self.assertEqual(self.pt.classify(title), expected, title)
+
+    def test_the_specific_rule_wins_over_the_general_one(self):
+        # A spice drawer organiser is a spice rack first. Ordering in
+        # TYPE_RULES is what decides this, so it is worth pinning down.
+        self.assertEqual(
+            self.pt.classify("4-layer adjustable spice drawer organizer"),
+            "spice_rack")
+
+    def test_keywords_are_bounded_at_both_ends(self):
+        # Unbounded, "jar" fires on "jarring" and "pot" on "spotted".
+        self.assertNotEqual(self.pt.classify("A jarring design choice"),
+                            "jar_set")
+        self.assertNotEqual(self.pt.classify("Spotted pattern basket"),
+                            "pot_rack")
+
+    def test_an_unrecognised_product_still_gets_a_type(self):
+        # And it must be a real one, so the cooldown still applies to it --
+        # three unnameable pins in a week are as repetitive as three spice
+        # racks.
+        t = self.pt.classify("Zorblax quantum widget 3000")
+        self.assertEqual(t, self.pt.FALLBACK)
+        self.assertTrue(self.pt.blocked_by_cooldown(t, [t]))
+
+    def test_the_cooldown_blocks_a_repeat_and_allows_a_new_subject(self):
+        self.assertTrue(self.pt.blocked_by_cooldown(
+            "spice_rack", ["egg_holder", "spice_rack"]))
+        self.assertFalse(self.pt.blocked_by_cooldown(
+            "towel_rack", ["egg_holder", "spice_rack"]))
+        self.assertFalse(self.pt.blocked_by_cooldown("spice_rack", []))
+
+    def test_build_one_checks_the_cooldown(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent.build_one)
+        self.assertIn("blocked_by_cooldown", src,
+                      "the cooldown must be enforced where pins are built")
+        self.assertIn('classify(copy["title"])', src,
+                      "classify on the TITLE - descriptions mention other "
+                      "products in passing and put a rolling cart in the "
+                      "spice bucket")
+
+    def test_the_type_is_what_gets_stored(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent.build_one)
+        self.assertIn('"category": product_type', src,
+                      "the category column held 'Home & Garden' on all 47 "
+                      "pins - one value for everything, so it carried no "
+                      "information and the cooldown had nothing to read")
+
+
+class TestDailyVolumeMatchesWhatPinterestRewards(unittest.TestCase):
+    """
+    Every current source puts a young account's safe range at 1-5 fresh pins
+    a day, and says pace beats volume: "1-5 fresh pins per day, every day,
+    outperforms 30 pins in one burst followed by silence". The ramp used to
+    climb to 15.
+    """
+
+    def test_the_ramp_never_exceeds_the_safe_range(self):
+        from pin_agent.pin_bot import PinAgent
+        for _, allowed in PinAgent.RAMP:
+            self.assertLessEqual(allowed, 10, "above the researched ceiling")
+        self.assertLessEqual(PinAgent.RAMP_CEILING, 10)
+
+    def test_it_still_starts_low_and_grows(self):
+        from pin_agent.pin_bot import PinAgent
+        allowed = [a for _, a in PinAgent.RAMP]
+        self.assertEqual(allowed, sorted(allowed), "the ramp must not go down")
+        self.assertLessEqual(allowed[0], 4, "day one must stay small")
+
+    def test_one_pin_in_five_sells_at_every_step(self):
+        from pin_agent.pin_bot import PinAgent
+        agent = PinAgent.__new__(PinAgent)
+        for _, cap in list(PinAgent.RAMP) + [(99, PinAgent.RAMP_CEILING)]:
+            agent.daily_cap = lambda c=cap: c
+            quota = agent.product_quota()
+            self.assertGreaterEqual(quota, 1)
+            self.assertLessEqual(quota / cap, 0.25, f"cap {cap}")

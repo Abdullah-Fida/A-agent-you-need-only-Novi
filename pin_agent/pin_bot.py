@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from pin_agent import boards as board_routing
+from pin_agent import product_types
 from pin_agent import tips as tip_bank
 from pin_agent.compliance import ComplianceGate
 from pin_agent.content import PinCopywriter
@@ -69,6 +70,9 @@ class PinAgent:
         # Titles of recent ADVICE pins, kept apart so the tip bank rotates
         # without the product duplicate guard ever seeing them.
         self.recent_tips: List[str] = []
+        # Product types pinned inside the cooldown window. Nine of the first
+        # fifty-five pins were spice racks; this is what stops that.
+        self.recent_types: List[str] = []
         # Consecutive slots that produced nothing. See _note_failure.
         self._consecutive_failures = 0
         self.last_run: Optional[datetime] = None
@@ -89,6 +93,8 @@ class PinAgent:
             # are advice pins with no destination at all.
             "affiliate_pins_per_day": self.product_quota(),
             "tips_in_bank": len(tip_bank.TIP_BANK),
+            "subject_cooldown_days": product_types.COOLDOWN_DAYS,
+            "subjects_on_cooldown": len(set(self.recent_types)),
             "days_live": self.days_live,
             "awaiting_review": len(self.pending_review),
             "review_required": self.config.require_review,
@@ -182,8 +188,19 @@ class PinAgent:
     # account behave consistently at that level.
     #
     #   (day the step ends, pins allowed up to that day)
-    RAMP = ((10, 4), (20, 6), (30, 8), (45, 11))
-    RAMP_CEILING = 15
+    #
+    # LOWERED AFTER READING WHAT PINTEREST ACTUALLY REWARDS. The ramp used to
+    # climb to eight by day thirty and fifteen after that. Every current
+    # source puts the safe range for a young account at one to five fresh
+    # pins a day, ten at the outside, and says the same thing about pace:
+    # "1-5 fresh pins per day, every day, outperforms 30 pins in one burst
+    # followed by silence". This account is two weeks old with three
+    # followers and no saves; the constraint is not how much it posts.
+    #
+    # Five also divides cleanly into the affiliate ratio: one pin that sells,
+    # four that do not.
+    RAMP = ((10, 4), (20, 5), (30, 5), (45, 6))
+    RAMP_CEILING = 8
 
     def daily_cap(self) -> int:
         """
@@ -228,9 +245,14 @@ class PinAgent:
     # ratio. Two genuinely different listings on this board shared NONE.
     SHARED_WORDS = 3
 
-    # Titles are compared against roughly a fortnight of pins. Beyond that
-    # the board has moved on and a repeat is fair.
-    RECENT_TITLE_COUNT = 40
+    # Titles are compared against roughly three weeks of pins.
+    #
+    # FORTY WAS TOO FEW once volume rose. At six pins a day it held 6.7 days,
+    # so "Clear Your Counter with a Pull-Out Spice Drawer" (2 Sep) had
+    # dropped out of memory before "Keep your kitchen clear with a spice
+    # drawer organizer" was written on the 12th, and again on the 13th. The
+    # guard was working; it simply could not see back far enough.
+    RECENT_TITLE_COUNT = 120
 
     _TITLE_NOISE = {
         "this", "that", "the", "a", "an", "and", "or", "with", "for", "your",
@@ -324,6 +346,8 @@ class PinAgent:
             self.RECENT_TITLE_COUNT, kind="product")
         self.recent_tips = await self.store.recent_tip_titles(
             self.TIP_ROTATION)
+        self.recent_types = await self.store.recent_types(
+            product_types.COOLDOWN_DAYS)
 
         # Pins that were waiting for a decision when the process last
         # stopped. Without this the queue is empty after every deploy and
@@ -395,6 +419,28 @@ class PinAgent:
                             f"something pinned recently.")
                 continue
 
+            # THE SAME KIND OF THING, WEEK AFTER WEEK.
+            #
+            # Nine of the first fifty-five pins were spice racks, seven of
+            # them inside twelve days. Every one was a different listing with
+            # a different link and a different photograph, so the id, url and
+            # image checks all passed, and the title guard could not see it
+            # either -- "drawer", "organizer" and "clear" are on the noise
+            # list, so two spice pins shared one meaningful word against a
+            # bar of three.
+            #
+            # Asked on the TITLE alone. Descriptions mention other things in
+            # passing, and classifying on them put a rolling cart and a pair
+            # of scissors in the spice bucket.
+            product_type = product_types.classify(copy["title"])
+            if product_types.blocked_by_cooldown(product_type,
+                                                 self.recent_types):
+                logger.info(
+                    f"Skipping '{copy['title'][:40]}' — another "
+                    f"{product_types.describe(product_type)} was pinned in "
+                    f"the last {product_types.COOLDOWN_DAYS} days.")
+                continue
+
             image_path, image_bytes = await self.imaging.build(
                 product, copy["title"],
                 eyebrow=copy["angle"].replace("_", " "))
@@ -419,7 +465,12 @@ class PinAgent:
                 "image_url": image_url,
                 "image_hash": image_hash,
                 "angle": copy["angle"],
-                "category": product.get("category_name", ""),
+                # The PRODUCT TYPE, not the AliExpress category. That column
+                # held the string "Home & Garden" on all 47 pins -- one value
+                # for everything, so it carried no information and nothing
+                # read it. The type is what the cooldown counts, and it also
+                # gives category_performance() something real to learn from.
+                "category": product_type,
                 "score": product.get("score", 0),
                 # Routed by name, resolved to a Pinterest id at publish time.
                 # An explicit PIN_BOARD_ID still overrides, for pinning the
@@ -722,6 +773,13 @@ class PinAgent:
         self.recent_titles.insert(
             0, f"{pin.get('title', '')} {pin.get('description', '')}")
         del self.recent_titles[self.RECENT_TITLE_COUNT:]
+
+        # And the subject, so two spice racks cannot go out in one session
+        # before the next connect() reloads the window from the database.
+        kind = pin.get("category") or ""
+        if kind:
+            self.recent_types.insert(0, kind)
+            del self.recent_types[400:]
 
     async def publish(self, pin: Dict) -> Optional[Dict]:
         """Publishes an already-approved pin and records the outcome."""

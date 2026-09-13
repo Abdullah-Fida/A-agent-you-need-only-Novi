@@ -191,6 +191,32 @@ class PinStore:
         result = await self._run(query)
         return [whole(r) for r in (getattr(result, "data", None) or [])]
 
+    async def recent_types(self, days: int = 7) -> List[str]:
+        """
+        Product types pinned inside the cooldown window.
+
+        Read from the `category` column, which used to hold the AliExpress
+        category and was therefore the word "Home & Garden" on all 47 pins --
+        no signal at all, and nothing read it. It now holds the product type,
+        which makes this query possible without a migration against a live
+        table and makes category_performance() finally mean something.
+        """
+        since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+        if not self.enabled:
+            return [p.get("category") or "" for p in self._memory
+                    if str(p.get("created_at", "")) >= since
+                    and self._is_kind(p, "product")]
+
+        def query():
+            return (self.client.table("pin_posts").select("category")
+                    .neq("angle", TIP_ANGLE)
+                    .gte("created_at", since).limit(400).execute())
+
+        result = await self._run(query)
+        return [r.get("category") or ""
+                for r in (getattr(result, "data", None) or []) if r.get("category")]
+
     async def recent_tip_titles(self, limit: int = 50) -> List[str]:
         """
         Titles of the advice pins published lately, so the bank rotates.
