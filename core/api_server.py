@@ -702,15 +702,22 @@ async def pins_run_now(request: Request):
         raise HTTPException(status_code=400,
                             detail="Pinterest agent is switched off.")
 
+    # No slot to place it in, so run_once falls back to the day's counts:
+    # it sells only while today is still short of its affiliate quota, and
+    # publishes advice with no link otherwise.
     pin = await agent.run_once()
     if not pin:
         raise HTTPException(status_code=400,
                             detail=agent.last_error or "No pin could be produced.")
+    kind = agent.gate.kind_of(pin)
     return {"success": True, "status": pin.get("status"),
-            "title": pin["title"], "image_url": pin.get("image_url", ""),
+            "kind": kind, "title": pin["title"],
+            "link": pin.get("link", ""),
+            "image_url": pin.get("image_url", ""),
             "message": ("Pin is awaiting your review."
                         if pin.get("status") == "awaiting_review"
-                        else "Pin published.")}
+                        else f"{'Advice' if kind == 'value' else 'Product'} "
+                             f"pin published.")}
 
 
 @app.post("/api/signal_copier/toggle")

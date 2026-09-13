@@ -20,6 +20,13 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger("PinAgent.Store")
 
+# The `angle` column doubles as the pin's kind. Product pins carry one of the
+# copywriter's angles; advice pins carry this. A separate column would need a
+# migration against a live table for a distinction one existing column already
+# makes, and every row in pin_posts was written by save_pin() below, which
+# coerces angle to a string -- so it is never NULL and .eq/.neq are safe.
+TIP_ANGLE = "tip"
+
 
 class PinStore:
     """Reads and writes the pin agent's own tables."""
@@ -85,19 +92,39 @@ class PinStore:
         result = await self._run(query)
         return [r.get("angle", "") for r in (getattr(result, "data", None) or [])]
 
-    async def posted_today(self) -> int:
-        """How many pins have gone out today, for the daily cap."""
+    @staticmethod
+    def _is_kind(row: Dict, kind: str) -> bool:
+        """Whether a stored pin is a product pin, an advice pin, or either."""
+        if kind == "all":
+            return True
+        is_tip = (row.get("angle") or "") == TIP_ANGLE
+        return is_tip if kind == "tip" else not is_tip
+
+    async def posted_today(self, kind: str = "all") -> int:
+        """
+        How many pins have gone out today, for the daily cap.
+
+        `kind` is what keeps the affiliate ratio honest: the cap counts every
+        pin, while the product quota counts only the ones carrying a link.
+        """
         if not self.enabled:
             today = datetime.now(timezone.utc).date().isoformat()
             return sum(1 for p in self._memory
-                       if str(p.get("created_at", "")).startswith(today))
+                       if str(p.get("created_at", "")).startswith(today)
+                       and p.get("status") == "published"
+                       and self._is_kind(p, kind))
 
         start = datetime.now(timezone.utc).replace(
             hour=0, minute=0, second=0, microsecond=0).isoformat()
 
         def query():
-            return (self.client.table("pin_posts").select("id", count="exact")
-                    .eq("status", "published").gte("created_at", start).execute())
+            q = (self.client.table("pin_posts").select("id", count="exact")
+                 .eq("status", "published").gte("created_at", start))
+            if kind == "tip":
+                q = q.eq("angle", TIP_ANGLE)
+            elif kind == "product":
+                q = q.neq("angle", TIP_ANGLE)
+            return q.execute()
 
         result = await self._run(query)
         return getattr(result, "count", None) or 0
@@ -125,13 +152,22 @@ class PinStore:
         result = await self._run(query)
         return getattr(result, "count", None) or 0
 
-    async def recent_titles(self, limit: int = 40) -> List[str]:
+    async def recent_titles(self, limit: int = 40,
+                            kind: str = "product") -> List[str]:
         """
         Titles of the most recent pins, whatever their status.
 
         Status is deliberately ignored: a pin waiting for review or already
         published both mean the product has been covered, and a near
         duplicate of either is what makes a board look automated.
+
+        PRODUCT PINS ONLY, unless asked otherwise. Four pins in five are now
+        advice pins from the tip bank, and their titles are hand-written
+        sentences about tidying that share the whole generic vocabulary of
+        the niche. Left in, they would fill this window with text no product
+        can meaningfully be compared against -- the duplicate guard would be
+        measuring against eight real products instead of forty, and the
+        duplicates it exists to stop would come straight back.
         """
         def whole(row) -> str:
             # Title AND description. A pin title is five or six words, and
@@ -140,14 +176,39 @@ class PinStore:
             return f"{row.get('title') or ''} {row.get('description') or ''}".strip()
 
         if not self.enabled:
-            return [whole(p) for p in self._memory[-limit:]]
+            rows = [p for p in self._memory if self._is_kind(p, kind)]
+            return [whole(p) for p in rows[-limit:]]
 
         def query():
-            return (self.client.table("pin_posts").select("title,description")
-                    .order("created_at", desc=True).limit(limit).execute())
+            q = (self.client.table("pin_posts").select("title,description,angle")
+                 .order("created_at", desc=True).limit(limit))
+            if kind == "tip":
+                q = q.eq("angle", TIP_ANGLE)
+            elif kind == "product":
+                q = q.neq("angle", TIP_ANGLE)
+            return q.execute()
 
         result = await self._run(query)
         return [whole(r) for r in (getattr(result, "data", None) or [])]
+
+    async def recent_tip_titles(self, limit: int = 50) -> List[str]:
+        """
+        Titles of the advice pins published lately, so the bank rotates.
+
+        Only the TITLE, because that is what the tip bank is keyed on -- the
+        body text would never match.
+        """
+        if not self.enabled:
+            return [p.get("title") or "" for p in self._memory
+                    if self._is_kind(p, "tip")][-limit:]
+
+        def query():
+            return (self.client.table("pin_posts").select("title")
+                    .eq("angle", TIP_ANGLE)
+                    .order("created_at", desc=True).limit(limit).execute())
+
+        result = await self._run(query)
+        return [r.get("title") or "" for r in (getattr(result, "data", None) or [])]
 
     async def first_pin_at(self) -> Optional[datetime]:
         """
@@ -272,8 +333,16 @@ class PinStore:
         since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
         def query():
+            # Advice pins excluded. They carry a BOARD name in `category`
+            # rather than an AliExpress category, so they match nothing the
+            # selector looks up -- but they would still land in the average
+            # every category is measured against, and they are expected to
+            # out-engage product pins by a wide margin. That would drag every
+            # real category below 1.0 and quietly bias the ranking towards
+            # categories with no history at all.
             return (self.client.table("pin_posts")
                     .select("category,saves,clicks")
+                    .neq("angle", TIP_ANGLE)
                     .gte("created_at", since)
                     .eq("status", "published").limit(2000).execute())
 

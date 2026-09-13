@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from pin_agent import boards as board_routing
+from pin_agent import tips as tip_bank
 from pin_agent.compliance import ComplianceGate
 from pin_agent.content import PinCopywriter
 from pin_agent.imaging import PinImageBuilder
@@ -62,9 +63,12 @@ class PinAgent:
         # When the very first pin went out. Read from the pins themselves
         # on connect, so a redeploy cannot reset the ramp.
         self._first_pin_at: Optional[datetime] = None
-        # Titles of recent pins, so the same product from a different
+        # Titles of recent PRODUCT pins, so the same product from a different
         # seller is not pinned twice days apart.
         self.recent_titles: List[str] = []
+        # Titles of recent ADVICE pins, kept apart so the tip bank rotates
+        # without the product duplicate guard ever seeing them.
+        self.recent_tips: List[str] = []
         # Consecutive slots that produced nothing. See _note_failure.
         self._consecutive_failures = 0
         self.last_run: Optional[datetime] = None
@@ -81,6 +85,10 @@ class PinAgent:
             "published_today": self.published_today,
             "max_per_day": self.daily_cap(),
             "max_per_day_configured": self.config.pins_per_day,
+            # How many of today's pins may carry an affiliate link. The rest
+            # are advice pins with no destination at all.
+            "affiliate_pins_per_day": self.product_quota(),
+            "tips_in_bank": len(tip_bank.TIP_BANK),
             "days_live": self.days_live,
             "awaiting_review": len(self.pending_review),
             "review_required": self.config.require_review,
@@ -313,7 +321,9 @@ class PinAgent:
         self.published_today = await self.store.posted_today()
         self._first_pin_at = await self.store.first_pin_at()
         self.recent_titles = await self.store.recent_titles(
-            self.RECENT_TITLE_COUNT)
+            self.RECENT_TITLE_COUNT, kind="product")
+        self.recent_tips = await self.store.recent_tip_titles(
+            self.TIP_ROTATION)
 
         # Pins that were waiting for a decision when the process last
         # stopped. Without this the queue is empty after every deploy and
@@ -434,6 +444,157 @@ class PinAgent:
         logger.info(self.last_error)
         return None
 
+    # ── advice pins ──────────────────────────────────────────────
+    #
+    # WHY FOUR PINS IN FIVE NOW SELL NOTHING.
+    #
+    # Every one of the first forty-one pins carried an affiliate link. That
+    # is the shape of account Pinterest suppresses rather than removes: the
+    # ratio everybody converges on is roughly 80% content that stands on its
+    # own and 20% that promotes, and an account at 100% has its distribution
+    # cut quietly. It fits exactly what this account saw -- forty-one pins,
+    # an audience of three, and not a single save.
+    #
+    # So the other four pins carry a real tidying tip, a real photograph and
+    # NO destination link at all. The ratio is enforced by slot rank rather
+    # than by a random draw, because a draw can hand you five affiliate pins
+    # in a row and the account only gets one first impression.
+
+    # One in five carries a link.
+    PRODUCT_SHARE = 5
+
+    # How many tips are held back before one may repeat. The bank holds
+    # forty-five, so seventeen are always fresh to reach for. At three advice
+    # pins a day a tip comes round again after about a fortnight.
+    TIP_ROTATION = 28
+
+    # Tips to try before giving the slot up. Each attempt is one image
+    # download now that the photographs are chosen rather than searched, so
+    # this can be generous.
+    VALUE_PIN_ATTEMPTS = 4
+
+    def product_quota(self) -> int:
+        """
+        How many of today's pins may carry an affiliate link.
+
+        Never zero. At the current cap of four this is one, which is 25%
+        rather than 20% -- you cannot land on a fifth of four -- and one
+        earning pin a day is the floor worth keeping.
+        """
+        return max(1, round(self.daily_cap() / self.PRODUCT_SHARE))
+
+    async def wants_product_pin(self, slot: Optional[Dict] = None) -> bool:
+        """
+        Whether this slot should sell something.
+
+        Decided by SLOT RANK, not by chance. The slots are ordered
+        best-first, so the affiliate pin takes the strongest hour of the day
+        -- 05:00 PKT, which is 8pm on the American east coast -- and the
+        advice pins fill the rest. A random draw at one-in-five would put
+        two affiliate pins back to back often enough to matter on an account
+        this young.
+        """
+        quota = self.product_quota()
+        rank = (slot or {}).get("rank")
+        if rank:
+            return rank <= quota
+
+        # Run by hand from the dashboard, so there is no slot to place it in.
+        # Ask the day instead: sell only while the day is still short of its
+        # quota. Counted in the DATABASE rather than in memory, so a restart
+        # cannot reset it -- the same defect that let eight pins publish
+        # while pin_posts held nothing.
+        published = await self.store.posted_today("product")
+        return published < quota
+
+    @staticmethod
+    def _tip_id(title: str) -> str:
+        """A stable id for a tip, recognisable in the table at a glance."""
+        slug = re.sub(r"[^a-z0-9]+", "-", (title or "").lower()).strip("-")
+        return f"tip:{slug[:56]}"
+
+    async def build_value_pin(self) -> Optional[Dict]:
+        """
+        Produces one advice pin, or None.
+
+        NO LINK, no #ad, and a real photograph rather than a supplier's
+        product shot. If no photograph can be found the slot is given up
+        rather than filled with a product pin: falling back the other way
+        would quietly restore the all-affiliate feed on exactly the days the
+        photo providers are down, which is the one thing this must not do.
+        """
+        tried: List[str] = []
+        for _ in range(self.VALUE_PIN_ATTEMPTS):
+            tip = tip_bank.next_tip(self.recent_tips + tried)
+            if not tip:
+                self.last_error = "the tip bank is empty"
+                logger.error(self.last_error)
+                return None
+            tried.append(tip["title"])
+
+            # The photograph is the one that was chosen for this tip and
+            # looked at, not whatever a search returns today. Searching live
+            # was tried and rejected: it answered "under the bed" with
+            # Nebraska fossil beds and "jar lid" with an Egyptian canopic
+            # jar, and about half of sixty queries came back with something
+            # that would have looked broken on the board.
+            photo_url, credit = tip["image"], tip.get("credit", "")
+
+            # The tip names its own board. Running advice through the
+            # product keyword router put a tea-towel tip on the bathroom
+            # board and a hallway tip on a kitchen cabinet one.
+            board = tip["board"]
+
+            image_path, image_bytes = await self.imaging.build(
+                # A pseudo-product, so the imaging module needs no change:
+                # it reads `images` and nothing else about the source.
+                {"images": [photo_url], "title": tip["title"]},
+                tip["title"], eyebrow=tip_bank.eyebrow_for(board),
+                # No accent-wash fallback. An advice pin is a photograph and
+                # a sentence; without the photograph there is no pin, and
+                # there are forty-four other tips to try.
+                require_photo=True)
+            if not image_path:
+                logger.info(f"The photograph for '{tip['title'][:40]}' could "
+                            f"not be fetched; trying another tip.")
+                continue
+
+            image_url = ""
+            if self.upload_image:
+                image_url = await self.upload_image(image_path) or ""
+
+            pin = {
+                "kind": "value",
+                "product_id": self._tip_id(tip["title"]),
+                "title": tip["title"],
+                "description": tip_bank.describe(tip, board, credit),
+                # Deliberately empty, and checked as such by the gate.
+                "link": "",
+                "image_path": image_path,
+                "image_url": image_url,
+                "image_hash": self.gate.image_fingerprint(image_bytes),
+                "angle": tip_bank.VALUE_ANGLE,
+                "category": board,
+                "score": 0,
+                "board_name": board,
+                "board_id": self.config.buffer_board_id,
+                "photo_url": photo_url,
+            }
+
+            ok, reasons = self.gate.approve(pin)
+            if not ok:
+                logger.warning(f"Compliance rejected advice pin "
+                               f"'{tip['title'][:40]}': " + "; ".join(reasons))
+                continue
+
+            return pin
+
+        self.last_error = (f"no advice pin could be built from "
+                           f"{self.VALUE_PIN_ATTEMPTS} tips "
+                           f"(their photographs could not be fetched)")
+        logger.warning(self.last_error)
+        return None
+
     # Three missed slots is most of a day at the current volume, and long
     # enough to be certain it is not one unlucky batch.
     FAILURES_BEFORE_ALARM = 3
@@ -477,9 +638,13 @@ class PinAgent:
         except Exception as e:
             logger.warning(f"Could not send the pin alarm: {type(e).__name__}")
 
-    async def run_once(self) -> Optional[Dict]:
+    async def run_once(self, slot: Optional[Dict] = None) -> Optional[Dict]:
         """
         One cycle: build a pin, then either queue it for review or publish it.
+
+        `slot` is the schedule slot this run belongs to, and it decides which
+        SORT of pin gets built -- see wants_product_pin. Called without one
+        (the dashboard's Run now), the day's counts decide instead.
 
         Returns the pin, or None if nothing was produced.
         """
@@ -490,7 +655,23 @@ class PinAgent:
                         f"({self.published_today}/{self.config.pins_per_day}).")
             return None
 
-        pin = await self.build_one()
+        if await self.wants_product_pin(slot):
+            pin = await self.build_one()
+            # THE FALLBACK ONLY RUNS THIS WAY ROUND.
+            #
+            # A dry sourcing call or a batch where nothing passes the filters
+            # used to cost the slot entirely. An advice pin needs neither
+            # AliExpress nor a product, so the slot is still worth filling --
+            # and erring towards the pin that sells nothing can only improve
+            # the ratio, never breach it. The reverse fallback does not
+            # exist, deliberately.
+            if not pin:
+                logger.info(f"No product pin this slot ({self.last_error}); "
+                            f"publishing advice instead.")
+                pin = await self.build_value_pin()
+        else:
+            pin = await self.build_value_pin()
+
         if not pin:
             await self._note_failure()
             return None
@@ -512,13 +693,35 @@ class PinAgent:
             # only showed inside a single running session.
             self.gate.remember(pin["product_id"], pin["link"],
                                pin.get("image_hash", ""))
-            self.recent_titles.insert(
-                0, f"{pin.get('title', '')} {pin.get('description', '')}")
+            self._remember(pin)
             logger.info(f"Pin awaiting review: '{pin['title'][:50]}'")
             await self._notify_review(pin)
             return pin
 
         return await self.publish(pin)
+
+    def _remember(self, pin: Dict) -> None:
+        """
+        Holds a just-handled pin in memory until the next connect() reload.
+
+        THE TWO HISTORIES ARE SEPARATE. An advice pin's title is a
+        hand-written sentence about tidying and shares the whole generic
+        vocabulary of the niche; dropping it into the product duplicate
+        guard would spend a slot of real product history on text no product
+        can be compared against, and four pins in five are now advice pins.
+
+        Both lists are bounded here as well. They were not, and on a long
+        run the product guard compared every candidate against every title
+        of the session rather than the recent forty.
+        """
+        if self.gate.kind_of(pin) == "value":
+            self.recent_tips.insert(0, pin.get("title", ""))
+            del self.recent_tips[self.TIP_ROTATION:]
+            return
+
+        self.recent_titles.insert(
+            0, f"{pin.get('title', '')} {pin.get('description', '')}")
+        del self.recent_titles[self.RECENT_TITLE_COUNT:]
 
     async def publish(self, pin: Dict) -> Optional[Dict]:
         """Publishes an already-approved pin and records the outcome."""
@@ -555,10 +758,10 @@ class PinAgent:
             self.gate.remember(pin["product_id"], pin["link"], pin["image_hash"])
             # Kept in memory too, so two pins in the same session cannot
             # describe the same product before the next connect() reload.
-            self.recent_titles.insert(
-                0, f"{pin.get('title', '')} {pin.get('description', '')}")
+            self._remember(pin)
             logger.info(f"Pin published ({self.published_today}/"
-                        f"{self.daily_cap()} today).")
+                        f"{self.daily_cap()} today, "
+                        f"{self.gate.kind_of(pin)}).")
         else:
             self.last_error = self.publisher.last_error
 

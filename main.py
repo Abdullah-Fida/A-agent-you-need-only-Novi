@@ -717,7 +717,11 @@ async def main():
                                 f"Pin slot {pin_slot['hour']:02d}:"
                                 f"{pin_slot['minute']:02d} already filled.")
                         else:
-                            pin = await pin_agent.run_once()
+                            # The slot decides whether this pin sells
+                            # anything. Slots are ordered best-first, so the
+                            # day's one affiliate pin takes the strongest
+                            # hour and the rest carry advice with no link.
+                            pin = await pin_agent.run_once(pin_slot)
                             if pin:
                                 logger.info(
                                     f"Pin {pin.get('status')} "

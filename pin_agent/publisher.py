@@ -325,8 +325,20 @@ class PinterestPublisher:
 
         metadata: Dict[str, Any] = {
             "title": (pin.get("title") or "")[:100],
-            "url": pin.get("link") or "",
         }
+
+        # THE KEY IS OMITTED, not sent empty.
+        #
+        # Advice pins are published with no destination at all -- that is the
+        # whole point of them, since an account where every pin sells
+        # something is the pattern Pinterest suppresses. `url` is optional on
+        # PinterestPostMetadataInput (confirmed against the live schema), so
+        # leaving it out is legal; sending "" is a different thing entirely
+        # and invites Pinterest to treat it as a malformed destination.
+        link = (pin.get("link") or "").strip()
+        if link:
+            metadata["url"] = link
+
         board_id = pin.get("board_id") or ""
         if not board_id and pin.get("board_name"):
             board_id = await self.board_for(pin["board_name"])

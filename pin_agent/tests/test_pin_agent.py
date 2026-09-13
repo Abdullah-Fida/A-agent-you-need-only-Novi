@@ -247,7 +247,10 @@ class TestReviewQueueSurvivesRestart(unittest.TestCase):
         async def first_pin_at():
             return None
 
-        async def recent_titles(limit=40):
+        async def recent_titles(limit=40, kind="product"):
+            return []
+
+        async def recent_tip_titles(limit=50):
             return []
 
         agent.store.posted_history = history
@@ -256,6 +259,7 @@ class TestReviewQueueSurvivesRestart(unittest.TestCase):
         agent.store.category_performance = performance
         agent.store.first_pin_at = first_pin_at
         agent.store.recent_titles = recent_titles
+        agent.store.recent_tip_titles = recent_tip_titles
 
         asyncio.run(agent.connect())
         self.assertEqual(len(agent.pending_review), 1)
@@ -449,9 +453,25 @@ class TestPublishedPinsAreRecorded(unittest.TestCase):
         self.assertIn("mark_status", self.publish_src)
 
     def test_a_published_pin_joins_the_duplicate_history(self):
-        self.assertIn("recent_titles", self.publish_src,
-                      "without this, two pins in one session can describe "
-                      "the same product")
+        """
+        Behavioural now rather than a grep for "recent_titles": the two
+        histories were split when advice pins arrived, so the recording
+        moved into _remember() and a source check would pass on the name
+        alone while testing nothing.
+        """
+        from pin_agent.pin_bot import PinAgent
+        agent = PinAgent.__new__(PinAgent)
+        agent.recent_titles, agent.recent_tips = [], []
+        agent.gate = ComplianceGate()
+
+        agent._remember({"title": "Stackable egg tray keeps a fridge tidy",
+                         "description": "Two layers. #ad", "angle": "gift_idea"})
+
+        self.assertEqual(len(agent.recent_titles), 1)
+        self.assertTrue(agent._too_similar_to_recent(
+            "Stackable egg tray for a tidy fridge"),
+            "without this, two pins in one session can describe the same "
+            "product")
 
 
 class TestMedicalProductsAreRefused(unittest.TestCase):
@@ -1293,6 +1313,535 @@ class TestBoardRouting(unittest.TestCase):
         # Better to fall back deliberately than publish to whatever sorts first.
         self.assertIsNone(board_routing.resolve("Deleted Board", {"A": "1"}))
         self.assertIsNone(board_routing.resolve("Anything", {}))
+
+
+class TestTheTipBank(unittest.TestCase):
+    """
+    The advice pins are the four fifths of the feed that sells nothing.
+
+    Every one of the first forty-one pins carried an affiliate link, which
+    is the shape of account Pinterest suppresses rather than removes. The
+    bank is plain data, so it is worth checking as data: a tip that fails
+    the gate is a slot the agent cannot fill, and a tip naming a board that
+    does not exist publishes silently to the wrong one.
+    """
+
+    def setUp(self):
+        from pin_agent import tips
+        self.tips = tips
+        self.gate = ComplianceGate()
+
+    def test_every_tip_is_complete(self):
+        for tip in self.tips.TIP_BANK:
+            for field in ("board", "photo", "image", "title", "body"):
+                self.assertTrue(tip.get(field), f"{field} missing: {tip}")
+
+    def test_every_photograph_was_chosen_not_searched_for(self):
+        """
+        Searching live was tried and rejected. It answered "under the bed"
+        with Nebraska fossil beds, "jar lid" with an Egyptian canopic jar
+        and "kitchen scissors" with a Victorian engraving of surgical
+        instruments -- about half of sixty queries came back with
+        something that would have looked broken on the board.
+        """
+        for tip in self.tips.TIP_BANK:
+            self.assertTrue(tip["image"].startswith("https://"), tip["title"])
+
+    def test_no_two_tips_share_a_photograph(self):
+        # Three separate queries returned the same cream fitted kitchen,
+        # and the same picture twice is what reads as automation.
+        images = [t["image"] for t in self.tips.TIP_BANK]
+        self.assertEqual(len(images), len(set(images)))
+
+    def test_a_photograph_needing_credit_carries_one(self):
+        # All forty-five are public domain or CC0 today, so none needs an
+        # attribution line. If one ever does, it must not publish without.
+        for tip in self.tips.TIP_BANK:
+            self.assertIn("credit", tip)
+
+    def test_every_tip_names_a_real_board(self):
+        # A typo here would route the pin to the default board silently.
+        for tip in self.tips.TIP_BANK:
+            self.assertIn(tip["board"], board_routing.ALL_BOARDS, tip["title"])
+
+    def test_all_six_boards_are_fed(self):
+        """
+        "Kitchen Gadgets Worth Buying" has never received a single product
+        pin -- the gadgets that match it sit below the price floor. Advice
+        costs nothing, so the board can be fed that way instead.
+        """
+        used = {t["board"] for t in self.tips.TIP_BANK}
+        self.assertEqual(used, set(board_routing.ALL_BOARDS))
+
+    def test_no_two_tips_share_a_title(self):
+        titles = [t["title"] for t in self.tips.TIP_BANK]
+        self.assertEqual(len(titles), len(set(titles)))
+
+    def test_the_bank_outlasts_the_rotation_window(self):
+        """
+        next_tip() holds back everything published recently. If the bank
+        were no larger than that window it would empty, and the agent would
+        start republishing a tip the same week -- or publish nothing.
+        """
+        from pin_agent.pin_bot import PinAgent
+        self.assertGreater(len(self.tips.TIP_BANK), PinAgent.TIP_ROTATION)
+
+    def test_every_tip_passes_the_compliance_gate(self):
+        for tip in self.tips.TIP_BANK:
+            pin = {
+                "kind": "value", "product_id": "tip:x", "link": "",
+                "title": tip["title"],
+                "description": self.tips.describe(tip, tip["board"]),
+                "image_path": "/tmp/pin.jpg", "image_hash": "h",
+            }
+            ok, reasons = self.gate.approve(pin)
+            self.assertTrue(ok, f"{tip['title']}: {reasons}")
+
+    def test_no_tip_claims_anything_that_goes_stale(self):
+        # Caught two live: "the cheapest way to..." trips the same rule that
+        # stops a product pin naming a price.
+        for tip in self.tips.TIP_BANK:
+            text = f"{tip['title']} {tip['body']}"
+            self.assertIsNone(self.gate.check_text(tip["title"], tip["body"]),
+                              text[:70])
+
+    def test_no_hashtag_can_look_like_a_disclosure(self):
+        """
+        #ad on a pin that sells nothing is a false statement about what the
+        pin is, and it would tell Pinterest this one is promotional too --
+        the exact signal the advice pins exist to avoid sending.
+        """
+        from pin_agent.compliance import DISCLOSURE_MARKERS
+        tags = [t for group in self.tips.BOARD_TAGS.values() for t in group]
+        tags += list(self.tips.GENERAL_TAGS)
+        for tag in tags:
+            for marker in DISCLOSURE_MARKERS:
+                self.assertNotIn(marker, tag.lower(), tag)
+
+    def test_the_eyebrow_drops_the_selling_word(self):
+        # "Worth Buying" printed on a pin that sells nothing would be the
+        # one dishonest word on it.
+        self.assertEqual(
+            self.tips.eyebrow_for("Kitchen Gadgets Worth Buying"),
+            "Kitchen Gadgets")
+
+    def test_rotation_avoids_what_was_published_recently(self):
+        from pin_agent.pin_bot import PinAgent
+        recent = [t["title"]
+                  for t in self.tips.TIP_BANK[:PinAgent.TIP_ROTATION]]
+        for _ in range(20):
+            picked = self.tips.next_tip(recent)
+            self.assertNotIn(picked["title"], recent)
+
+    def test_an_exhausted_bank_repeats_rather_than_publishing_nothing(self):
+        every = [t["title"] for t in self.tips.TIP_BANK]
+        self.assertIsNotNone(self.tips.next_tip(every))
+
+
+class TestAdvicePinsCarryNoLink(unittest.TestCase):
+    """
+    The gate has two sets of rules now, and the advice one is the inverse.
+
+    An advice pin with a link and no #ad would be an UNDISCLOSED affiliate
+    pin, which is worse than anything the gate was originally written to
+    stop -- so "no link" is enforced, not merely assumed.
+    """
+
+    def setUp(self):
+        self.gate = ComplianceGate()
+
+    def _advice(self, **overrides):
+        pin = {
+            "kind": "value",
+            "product_id": "tip:store-bathroom-towels-rolled-not-folded",
+            "title": "Store bathroom towels rolled, not folded",
+            "description": ("Rolled towels take about a third less shelf "
+                            "depth than folded ones.\n\n#bathroomstorage"),
+            "link": "",
+            "image_path": "/tmp/pin.jpg",
+            "image_hash": "hash-advice",
+        }
+        pin.update(overrides)
+        return pin
+
+    def test_an_advice_pin_with_no_link_is_approved(self):
+        ok, reasons = self.gate.approve(self._advice())
+        self.assertTrue(ok, reasons)
+
+    def test_an_advice_pin_carrying_a_link_is_refused(self):
+        ok, reasons = self.gate.approve(
+            self._advice(link="https://s.click.aliexpress.com/e/_x"))
+        self.assertFalse(ok)
+        self.assertIn("no destination link", " ".join(reasons))
+
+    def test_an_advice_pin_carrying_a_disclosure_is_refused(self):
+        # #ad here means product copy has leaked onto an advice pin, so the
+        # pin is not what the pipeline believes it is.
+        ok, reasons = self.gate.approve(
+            self._advice(description="Rolled towels save shelf depth. #ad"))
+        self.assertFalse(ok)
+
+    def test_a_product_pin_still_needs_a_link_and_a_disclosure(self):
+        # The regression that matters most: the new branch must not have
+        # loosened the old rules.
+        ok, _ = self.gate.approve(valid_pin(link=""))
+        self.assertFalse(ok)
+        ok, _ = self.gate.approve(valid_pin(description="No disclosure here "
+                                                        "at all, just copy."))
+        self.assertFalse(ok)
+
+    def test_a_pin_reloaded_from_the_database_is_still_recognised(self):
+        """
+        pin_posts has no `kind` column, so a pin restored from the review
+        queue arrives without one. Judged as a product pin it would fail for
+        having no link -- and a real advice pin would be rejected at the
+        moment a human approved it. The angle survives the round trip.
+        """
+        restored = self._advice()
+        restored.pop("kind")
+        restored["angle"] = "tip"
+        self.assertEqual(self.gate.kind_of(restored), "value")
+        ok, reasons = self.gate.approve(restored)
+        self.assertTrue(ok, reasons)
+
+    def test_a_pin_with_no_kind_and_no_angle_is_judged_as_a_product(self):
+        # Fail towards the stricter rules, never away from them.
+        self.assertEqual(self.gate.kind_of({}), "product")
+
+    def test_a_tip_may_come_round_again_but_an_image_may_not(self):
+        """
+        A product id is burned for 120 days because AliExpress relists the
+        same item constantly. A tip id is not an identity in that sense --
+        sixty tips burned that way would empty the bank in a fortnight. The
+        IMAGE is still checked, because a byte-identical pin twice is the
+        failure anyone would actually see.
+        """
+        pin = self._advice()
+        self.gate.remember(pin["product_id"], pin["link"], pin["image_hash"])
+
+        ok, _ = self.gate.approve(self._advice(image_hash="a-different-photo"))
+        self.assertTrue(ok, "the same tip must be allowed to return")
+
+        ok, reasons = self.gate.approve(self._advice())
+        self.assertFalse(ok, "the identical image must not be pinned twice")
+        self.assertIn("image", " ".join(reasons))
+
+
+class TestTheAffiliateRatio(unittest.TestCase):
+    """
+    One pin in five sells; the other four do not.
+
+    Forty-one pins, forty-one affiliate links, an audience of three and no
+    saves. The ratio is enforced by SLOT RANK rather than by a random draw,
+    because a draw can hand you five affiliate pins in a row and an account
+    only gets one first impression.
+    """
+
+    def setUp(self):
+        from pin_agent.pin_bot import PinAgent
+        self.agent = PinAgent.__new__(PinAgent)
+        self.agent.config = MagicMock(pins_per_day=15)
+        self.agent._first_pin_at = None
+
+    def _at_cap(self, cap):
+        self.agent.daily_cap = lambda: cap
+
+    def test_the_quota_is_about_a_fifth_at_every_ramp_step(self):
+        for cap, expected in ((4, 1), (6, 1), (8, 2), (11, 2), (15, 3)):
+            self._at_cap(cap)
+            self.assertEqual(self.agent.product_quota(), expected, f"cap {cap}")
+
+    def test_at_least_one_pin_a_day_still_earns(self):
+        for cap in range(1, 16):
+            self._at_cap(cap)
+            self.assertGreaterEqual(self.agent.product_quota(), 1)
+
+    def test_most_pins_sell_nothing(self):
+        for cap in (4, 6, 8, 11, 15):
+            self._at_cap(cap)
+            share = self.agent.product_quota() / cap
+            self.assertLessEqual(share, 0.25, f"cap {cap} is {share:.0%} affiliate")
+
+    def test_the_best_slot_of_the_day_is_the_one_that_sells(self):
+        """
+        Slots are ordered best-first, so rank 1 is 05:00 PKT -- 8pm on the
+        American east coast, the hour Pinterest browsing peaks.
+        """
+        self._at_cap(4)
+        self.assertTrue(asyncio.run(self.agent.wants_product_pin({"rank": 1})))
+        for rank in (2, 3, 4):
+            self.assertFalse(
+                asyncio.run(self.agent.wants_product_pin({"rank": rank})),
+                f"rank {rank} must not carry a link")
+
+    def test_a_manual_run_asks_the_database_not_its_memory(self):
+        """
+        Run now from the dashboard has no slot to place the pin in, so the
+        day's counts decide. Counted in the DATABASE because a restart wipes
+        memory -- the same defect that let eight pins publish while
+        pin_posts held nothing.
+        """
+        self._at_cap(4)
+        self.agent.store = MagicMock()
+        seen = {}
+
+        async def posted_today(kind="all"):
+            seen["kind"] = kind
+            return seen["count"]
+
+        self.agent.store.posted_today = posted_today
+
+        seen["count"] = 0
+        self.assertTrue(asyncio.run(self.agent.wants_product_pin()))
+        self.assertEqual(seen["kind"], "product")
+
+        seen["count"] = 1          # today's one affiliate pin already went
+        self.assertFalse(asyncio.run(self.agent.wants_product_pin()))
+
+
+class TestTheFallbackOnlyRunsOneWay(unittest.TestCase):
+    """
+    A slot that cannot sell may publish advice. A slot that cannot find a
+    photograph may NOT publish a product.
+
+    Erring towards the pin that sells nothing can only improve the ratio.
+    The reverse would quietly restore the all-affiliate feed on exactly the
+    days the photo providers are down -- and Openverse went down for a day
+    and a half only last month.
+    """
+
+    def _agent(self):
+        from pin_agent.pin_bot import PinAgent
+        agent = PinAgent.__new__(PinAgent)
+        agent.config = MagicMock(pins_per_day=15, require_review=False)
+        agent.published_today = 0
+        agent.daily_cap = lambda: 4
+        agent._consecutive_failures = 0
+        agent.last_error = ""
+        agent.last_run = None
+        agent.nm = None
+        agent.built = []
+
+        async def build_one():
+            agent.built.append("product")
+            return None
+
+        async def build_value_pin():
+            agent.built.append("value")
+            return None
+
+        agent.build_one = build_one
+        agent.build_value_pin = build_value_pin
+        return agent
+
+    def test_a_dry_product_slot_falls_back_to_advice(self):
+        agent = self._agent()
+        asyncio.run(agent.run_once({"rank": 1}))
+        self.assertEqual(agent.built, ["product", "value"])
+
+    def test_an_advice_slot_never_falls_back_to_a_product(self):
+        agent = self._agent()
+        asyncio.run(agent.run_once({"rank": 3}))
+        self.assertEqual(agent.built, ["value"],
+                         "a failed advice pin must cost the slot, not restore "
+                         "the all-affiliate feed")
+
+
+class TestBuildingAnAdvicePin(unittest.TestCase):
+    """The whole advice path, end to end, with nothing real behind it."""
+
+    def _agent(self, photo_works=True):
+        from pin_agent.pin_bot import PinAgent
+        agent = PinAgent.__new__(PinAgent)
+        agent.config = MagicMock(buffer_board_id="")
+        agent.gate = ComplianceGate()
+        agent.recent_tips = []
+        agent.recent_titles = []
+        agent.last_error = ""
+        agent.upload_image = None
+        agent.imaging = MagicMock()
+        agent.asked = []
+        test = self
+
+        async def build(product, title, eyebrow="", require_photo=False):
+            agent.asked.append(product["images"][0])
+            if not photo_works:
+                # What the real builder does when the download fails and
+                # the caller refuses the accent-wash fallback.
+                test.assertTrue(require_photo,
+                                "advice must never fall back to a wash")
+                return None, b""
+            return "/tmp/pin.jpg", b"image-bytes"
+
+        agent.imaging.build = build
+        return agent
+
+    def test_the_pin_carries_no_link_and_no_disclosure(self):
+        agent = self._agent()
+        pin = asyncio.run(agent.build_value_pin())
+
+        self.assertIsNotNone(pin, agent.last_error)
+        self.assertEqual(pin["link"], "")
+        self.assertEqual(pin["kind"], "value")
+        self.assertEqual(pin["angle"], "tip")
+        self.assertNotIn("#ad", pin["description"].lower())
+        self.assertIn(pin["board_name"], board_routing.ALL_BOARDS)
+        self.assertTrue(pin["product_id"].startswith("tip:"))
+
+    def test_the_pin_is_recorded_under_the_tip_angle(self):
+        # `angle` is what tells the two sorts of pin apart everywhere else,
+        # including after a round trip through a database with no `kind`.
+        from pin_agent import tips
+        agent = self._agent()
+        pin = asyncio.run(agent.build_value_pin())
+        self.assertEqual(pin["angle"], tips.VALUE_ANGLE)
+        self.assertEqual(agent.gate.kind_of({"angle": pin["angle"]}), "value")
+
+    def test_it_uses_the_photograph_chosen_for_that_tip(self):
+        from pin_agent import tips
+        agent = self._agent()
+        pin = asyncio.run(agent.build_value_pin())
+        chosen = {t["title"]: t["image"] for t in tips.TIP_BANK}
+        self.assertEqual(agent.asked[0], chosen[pin["title"]])
+
+    def test_a_credited_photograph_is_attributed_in_the_description(self):
+        from pin_agent import tips
+        credit = "Photo: A. Smith / Wikimedia Commons (CC BY-SA 2.0)"
+        tip = tips.TIP_BANK[0]
+        self.assertIn(credit, tips.describe(tip, tip["board"], credit))
+
+    def test_an_unfetchable_photograph_costs_the_slot_not_the_standard(self):
+        # Rather than publishing the accent wash, which would be the most
+        # obviously automated thing on the board.
+        agent = self._agent(photo_works=False)
+        self.assertIsNone(asyncio.run(agent.build_value_pin()))
+        self.assertIn("photograph", agent.last_error)
+
+    def test_it_gives_up_after_a_bounded_number_of_tips(self):
+        from pin_agent.pin_bot import PinAgent
+        agent = self._agent(photo_works=False)
+        asyncio.run(agent.build_value_pin())
+        self.assertEqual(len(agent.asked), PinAgent.VALUE_PIN_ATTEMPTS)
+
+    def test_a_tip_published_recently_is_not_picked_again(self):
+        from pin_agent.pin_bot import PinAgent
+        from pin_agent import tips
+        agent = self._agent()
+        agent.recent_tips = [t["title"]
+                             for t in tips.TIP_BANK[:PinAgent.TIP_ROTATION]]
+        pin = asyncio.run(agent.build_value_pin())
+        self.assertNotIn(pin["title"], agent.recent_tips)
+
+
+class TestTheTwoHistoriesStayApart(unittest.TestCase):
+    """
+    Advice pin titles must never reach the product duplicate guard.
+
+    Four pins in five are advice now, and their titles are hand-written
+    sentences about tidying that share the whole generic vocabulary of the
+    niche. Left in, the guard would be comparing products against eight real
+    products instead of forty -- and the duplicates it exists to stop, which
+    the owner has already found on the live board twice, would come back.
+    """
+
+    def _agent(self):
+        from pin_agent.pin_bot import PinAgent
+        agent = PinAgent.__new__(PinAgent)
+        agent.gate = ComplianceGate()
+        agent.recent_titles, agent.recent_tips = [], []
+        return agent
+
+    def test_an_advice_pin_goes_to_the_tip_history_only(self):
+        agent = self._agent()
+        agent._remember({"kind": "value", "title": "Keep onions and potatoes "
+                                                   "apart", "description": "x"})
+        self.assertEqual(agent.recent_tips,
+                         ["Keep onions and potatoes apart"])
+        self.assertEqual(agent.recent_titles, [])
+
+    def test_a_product_pin_goes_to_the_product_history_only(self):
+        agent = self._agent()
+        agent._remember({"title": "Stackable egg tray", "description": "#ad",
+                         "angle": "gift_idea"})
+        self.assertEqual(agent.recent_tips, [])
+        self.assertEqual(len(agent.recent_titles), 1)
+
+    def test_both_histories_are_bounded(self):
+        from pin_agent.pin_bot import PinAgent
+        agent = self._agent()
+        for n in range(PinAgent.RECENT_TITLE_COUNT + 25):
+            agent._remember({"title": f"Product number {n}",
+                             "description": "#ad", "angle": "hosting"})
+        for n in range(PinAgent.TIP_ROTATION + 25):
+            agent._remember({"kind": "value", "title": f"Tip number {n}",
+                             "description": "x"})
+        self.assertEqual(len(agent.recent_titles), PinAgent.RECENT_TITLE_COUNT)
+        self.assertEqual(len(agent.recent_tips), PinAgent.TIP_ROTATION)
+
+    def test_the_store_keeps_them_apart_too(self):
+        from datetime import datetime, timezone
+        from pin_agent.store import PinStore
+        store = PinStore(None)
+        # save_pin() stamps created_at on every in-memory row, and
+        # posted_today() counts on it.
+        today = datetime.now(timezone.utc).isoformat()
+        store._memory = [
+            {"title": "Spice rack", "description": "#ad", "angle": "hosting",
+             "status": "published", "created_at": today},
+            {"title": "Keep eggs pointed end down", "description": "",
+             "angle": "tip", "status": "published", "created_at": today},
+        ]
+        self.assertEqual(asyncio.run(store.recent_titles(kind="product")),
+                         ["Spice rack #ad"])
+        self.assertEqual(asyncio.run(store.recent_tip_titles()),
+                         ["Keep eggs pointed end down"])
+        self.assertEqual(asyncio.run(store.posted_today("product")), 1)
+        self.assertEqual(asyncio.run(store.posted_today("tip")), 1)
+        self.assertEqual(asyncio.run(store.posted_today()), 2)
+
+
+class TestAnUnlinkedPinOmitsTheUrl(unittest.TestCase):
+    """
+    Sending `url: ""` is not the same as sending no url.
+
+    PinterestPostMetadataInput.url is optional -- confirmed by introspecting
+    the live Buffer schema -- so leaving it out is legal. An empty string is
+    a different thing entirely and invites Pinterest to treat it as a
+    malformed destination on the pins the account most needs to land well.
+    """
+
+    def _sent(self, pin):
+        publisher = PinterestPublisher(access_token="t", organization_id="o",
+                                       board_id="b", channel_id="c")
+        publisher._connected = True
+        publisher.channels = [{"id": "c", "name": "Tidy Nook",
+                               "service": "pinterest", "isDisconnected": False}]
+        captured = {}
+
+        async def gql(query, variables=None, timeout=30):
+            captured["input"] = variables["i"]
+            return {"createPost": {"__typename": "PostActionSuccess",
+                                   "post": {"id": "1", "status": "sent"}}}
+
+        publisher._gql = gql
+        self.assertTrue(asyncio.run(publisher.publish(pin)))
+        return captured["input"]["metadata"]["pinterest"]
+
+    def test_an_advice_pin_sends_no_url_key_at_all(self):
+        metadata = self._sent({
+            "title": "Keep eggs in their carton, pointed end down",
+            "description": "The carton protects against odours and knocks.",
+            "link": "", "image_url": "https://img.example/pin.jpg",
+            "board_id": "b"})
+        self.assertNotIn("url", metadata)
+
+    def test_a_product_pin_still_sends_its_affiliate_link(self):
+        metadata = self._sent({
+            "title": "Stackable egg tray", "description": "Two layers. #ad",
+            "link": "https://s.click.aliexpress.com/e/_x",
+            "image_url": "https://img.example/pin.jpg", "board_id": "b"})
+        self.assertEqual(metadata["url"],
+                         "https://s.click.aliexpress.com/e/_x")
 
 
 if __name__ == "__main__":

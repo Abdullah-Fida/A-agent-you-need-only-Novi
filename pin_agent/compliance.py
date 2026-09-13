@@ -44,6 +44,11 @@ SHORTENER_HOSTS = {
 # The disclosure Pinterest and the FTC both expect. Any one is enough.
 DISCLOSURE_MARKERS = ("#ad", "#affiliate", "#affiliatelink", "#sponsored")
 
+# The `angle` recorded for an advice pin. Kept here as well as in the store
+# because the gate has to recognise one that came back out of the database,
+# where `kind` does not survive but `angle` does.
+VALUE_ANGLE = "tip"
+
 # Hosts an AliExpress affiliate link legitimately uses.
 ALLOWED_LINK_HOSTS = {
     "s.click.aliexpress.com", "aliexpress.com", "www.aliexpress.com",
@@ -102,6 +107,30 @@ class ComplianceGate:
         return None
 
     @staticmethod
+    def check_no_link(pin: Dict) -> Optional[str]:
+        """
+        An advice pin must carry nothing to sell. Returns a failure reason.
+
+        The inverse of check_link, and the more important of the two. An
+        advice pin is published with no destination URL and no #ad, because
+        there is nothing to disclose -- so if a link ever leaked into one,
+        the result would be an UNDISCLOSED affiliate pin, which is worse
+        than anything this gate was originally written to stop.
+        """
+        if (pin.get("link") or "").strip():
+            return "an advice pin must carry no destination link"
+
+        text = (pin.get("description") or "").lower()
+        leaked = [m for m in DISCLOSURE_MARKERS if m in text]
+        if leaked:
+            # Not a disclosure problem but an identity one: #ad on a pin
+            # that sells nothing means product copy has ended up on an
+            # advice pin, so the pin is not what the pipeline thinks it is.
+            return (f"an advice pin carries a disclosure marker "
+                    f"({leaked[0]}), so it is not advice")
+        return None
+
+    @staticmethod
     def check_text(title: str, description: str) -> Optional[str]:
         title = (title or "").strip()
         description = (description or "").strip()
@@ -135,12 +164,21 @@ class ComplianceGate:
         return hashlib.sha256(image_bytes or b"").hexdigest()[:32]
 
     def check_duplicate(self, product_id: str, url: str,
-                        image_hash: str = "") -> Optional[str]:
+                        image_hash: str = "",
+                        check_product: bool = True) -> Optional[str]:
         """
         AliExpress relists the same item under new ids constantly, so identity
         is checked three ways rather than trusting the product id alone.
+
+        `check_product` is off for advice pins. Their id is a tip slug, and
+        the bank holds sixty tips against a rotation window of fifty -- so
+        every tip is meant to return in time. Burning the id for 120 days
+        the way a relisted product is burned would empty the bank inside a
+        fortnight and leave the agent with nothing to publish. The IMAGE
+        hash still applies to them, because a byte-identical pin twice is
+        the failure anyone would actually see.
         """
-        if product_id and str(product_id) in self.seen_products:
+        if check_product and product_id and str(product_id) in self.seen_products:
             return "this product has already been pinned"
         if url and url in self.seen_urls:
             return "this destination link has already been pinned"
@@ -167,19 +205,52 @@ class ComplianceGate:
 
     # ── the gate ─────────────────────────────────────────────────
 
+    @staticmethod
+    def kind_of(pin: Dict) -> str:
+        """
+        "value" for an advice pin, "product" for an affiliate one.
+
+        INFERRED FROM THE ANGLE when the key is absent, and that matters. A
+        pin that has sat in the review queue is reloaded from pin_posts,
+        which has columns but no `kind` -- so a restored advice pin would
+        arrive looking like a product pin, be judged against the product
+        rules, and fail for having no link. The angle survives the round
+        trip because it is a real column.
+        """
+        if pin.get("kind"):
+            return str(pin["kind"])
+        return "value" if (pin.get("angle") or "") == VALUE_ANGLE else "product"
+
     def approve(self, pin: Dict) -> Tuple[bool, List[str]]:
         """
         Runs every rule. Returns (ok, reasons) with all failures, not just the
         first, so a rejected pin can be fixed in one pass.
+
+        TWO SETS OF RULES, because there are now two sorts of pin. Advice
+        pins exist because an account where every single pin sells something
+        is the pattern Pinterest suppresses; they carry no link, so the link
+        and disclosure rules are replaced by their opposite rather than
+        skipped. Everything else -- length, stale claims, duplicates, an
+        image -- applies to both.
         """
+        value = self.kind_of(pin) == "value"
+
         reasons = [
             reason for reason in (
-                self.check_link(pin.get("link", "")),
-                self.check_disclosure(pin.get("description", "")),
+                self.check_no_link(pin) if value
+                else self.check_link(pin.get("link", "")),
+                None if value
+                else self.check_disclosure(pin.get("description", "")),
                 self.check_text(pin.get("title", ""), pin.get("description", "")),
                 self.check_duplicate(pin.get("product_id", ""),
                                      pin.get("link", ""),
-                                     pin.get("image_hash", "")),
+                                     pin.get("image_hash", ""),
+                                     # The tip bank rotates by title, and a
+                                     # tip is meant to come round again
+                                     # eventually. Its id is not an identity
+                                     # to burn for 120 days the way a
+                                     # relisted AliExpress product is.
+                                     check_product=not value),
             ) if reason
         ]
         if not pin.get("image_path") and not pin.get("image_url"):

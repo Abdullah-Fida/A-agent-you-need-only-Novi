@@ -207,13 +207,20 @@ class PinImageBuilder:
 
         return canvas
 
-    async def build(self, product: dict, title: str,
-                    eyebrow: str = "") -> Tuple[Optional[str], bytes]:
+    async def build(self, product: dict, title: str, eyebrow: str = "",
+                    require_photo: bool = False) -> Tuple[Optional[str], bytes]:
         """
         Produces the finished pin file.
 
         Returns (path, png_bytes). The bytes are returned too so the caller can
         fingerprint the image for deduplication without reading it back.
+
+        `require_photo` refuses to build rather than falling back to the
+        accent wash. A product pin without its photograph is still a pin --
+        the copy carries it. An ADVICE pin is nothing but a photograph and a
+        sentence, so a coloured rectangle with text on it would be the most
+        obviously automated thing on the board, and the tip bank has other
+        tips to try instead.
         """
         photo = None
         for url in (product.get("images") or [])[:3]:
@@ -223,6 +230,8 @@ class PinImageBuilder:
 
         if photo is None:
             logger.warning(f"No usable photo for '{product.get('title', '')[:40]}'.")
+            if require_photo:
+                return None, b""
 
         canvas = await asyncio.to_thread(self.compose, photo, title, eyebrow)
 
