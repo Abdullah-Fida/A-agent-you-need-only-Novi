@@ -9,6 +9,7 @@ Off by default. Novi's dashboard owns the switch, so this only runs when
 `brain.pin_module_active` is true.
 """
 import asyncio
+import difflib
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -265,6 +266,11 @@ class PinAgent:
     # ratio. Two genuinely different listings on this board shared NONE.
     SHARED_WORDS = 3
 
+    # Raw character similarity that means "the same sentence, rewritten".
+    # High on purpose: at this bar it catches a reworded repeat without
+    # touching two pins that merely share a topic.
+    TITLE_SIMILARITY = 0.78
+
     # Titles are compared against roughly three weeks of pins.
     #
     # FORTY WAS TOO FEW once volume rose. At six pins a day it held 6.7 days,
@@ -323,6 +329,31 @@ class PinAgent:
         stripped before comparing.
         """
         words = self._title_words(title)
+
+        # NEARLY THE SAME SENTENCE, sharing no meaningful words.
+        #
+        # "Keep your drawer tidy with foldable underwear organizer" and
+        # "Keep your drawers tidy with a simple organizer" are 79% identical
+        # character for character, and to anyone scrolling they are one pin
+        # posted twice. Neither guard saw it: "keep", "drawer", "tidy" and
+        # "organizer" are all on the noise list, so the meaningful words
+        # reduce to {foldable, underwear} against {simple} -- nothing in
+        # common -- and the subject classifier split them between closet and
+        # drawer storage.
+        #
+        # So wording is compared raw as well. The bar is deliberately high:
+        # 78% of the literal characters means the same sentence rewritten,
+        # not two pins that happen to share a topic. Replayed over every pin
+        # ever published it stops three, all of them real repeats.
+        lowered = (title or "").lower()
+        for previous in self.recent_titles:
+            other = (previous or "").split("  ")[0].lower()
+            if not other:
+                continue
+            if difflib.SequenceMatcher(None, lowered, other[:len(lowered) + 20]
+                                       ).ratio() >= self.TITLE_SIMILARITY:
+                return True
+
         if len(words) < 2:
             return False
 

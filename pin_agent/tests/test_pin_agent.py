@@ -2556,3 +2556,58 @@ class TestClearanceIsNotAlwaysASale(unittest.TestCase):
                      "Half-price right now at most of the big retailers ok."):
             self.assertIsNotNone(self.gate.check_text("A perfectly fine title",
                                                       body), body)
+
+
+class TestARewordedRepeatIsCaught(unittest.TestCase):
+    """
+    The last gap, found by replaying every pin ever published.
+
+    "Keep your drawer tidy with foldable underwear organizer" and "Keep
+    your drawers tidy with a simple organizer" are 79% identical character
+    for character, and to anyone scrolling the board they are one pin
+    posted twice. Neither existing guard saw it: "keep", "drawer", "tidy"
+    and "organizer" are all on the noise list, so the meaningful words
+    reduce to {foldable, underwear} against {simple} -- nothing in common
+    -- and the subject classifier split them between closet and drawer
+    storage.
+    """
+
+    def _agent(self, *recent):
+        from pin_agent.pin_bot import PinAgent
+        a = PinAgent.__new__(PinAgent)
+        a.recent_titles = list(recent)
+        return a
+
+    def test_the_pair_that_slipped_through_is_caught(self):
+        a = self._agent("Keep your drawer tidy with foldable underwear organizer")
+        self.assertTrue(a._too_similar_to_recent(
+            "Keep your drawers tidy with a simple organizer"))
+
+    def test_the_other_live_repeats_are_caught(self):
+        a = self._agent("keep your fridge tidy with clear organizer bins")
+        self.assertTrue(a._too_similar_to_recent(
+            "Keep your fridge tidy with clear storage bins"))
+
+    def test_genuinely_different_pins_still_publish(self):
+        # The bar is high on purpose. Blocking these is how the agent went
+        # silent for thirty-two hours once before.
+        a = self._agent("Keep eggs fresh without cracks or spills",
+                        "Keep your drawers tidy with a simple organizer")
+        for title in ("Compact pull-out organizer for tiny kitchen sinks",
+                      "Elegant clear acrylic wall shelf for a hallway",
+                      "Say goodbye to stale sugar and flour",
+                      "Store spices away from the cooker, not above it"):
+            self.assertFalse(a._too_similar_to_recent(title), title)
+
+    def test_the_bar_is_high_enough_not_to_starve_the_agent(self):
+        from pin_agent.pin_bot import PinAgent
+        self.assertGreaterEqual(PinAgent.TITLE_SIMILARITY, 0.75,
+                                "below this it starts blocking pins that "
+                                "merely share a topic")
+
+    def test_an_empty_history_blocks_nothing(self):
+        self.assertFalse(self._agent()._too_similar_to_recent("Anything here"))
+
+    def test_a_short_title_does_not_crash_the_comparison(self):
+        a = self._agent("Keep eggs fresh without cracks or spills")
+        self.assertFalse(a._too_similar_to_recent("Hi"))
