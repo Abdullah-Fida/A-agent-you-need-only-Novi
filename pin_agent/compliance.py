@@ -28,7 +28,14 @@ _PRICE_CLAIM = re.compile(
     r"|\b\d[\d,.]*\s?(?:dollars?|euros?|pounds?|bucks?|rupees?)\b"
     r"|\b\d{1,3}\s?(?:%|percent)\s?(?:off|discount|cheaper|less)\b"
     r"|\bhalf[\s-]price\b"
-    r"|\b(?:on sale|sale price|flash sale|clearance|markdown"
+    # "clearance" needs the sale context. On its own it is an ordinary word
+    # in this niche and it was refusing good advice: "Place a shallow bin
+    # under the sink for cleaning supplies" was blocked because its body
+    # said there was enough clearance above the pipes. Same for "markdown",
+    # which is a text format as often as a discount.
+    r"|\bclearance\s+(?:sale|price|event|deal|rack|section)\b"
+    r"|\b(?:on|for)\s+clearance\b"
+    r"|\b(?:on sale|sale price|flash sale"
     r"|lowest price|best price|cheapest)\b",
     re.I,
 )

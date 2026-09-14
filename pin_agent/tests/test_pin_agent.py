@@ -2420,3 +2420,139 @@ class TestThePhotographComesFirst(unittest.TestCase):
         from pin_agent.pin_bot import PinAgent
         src = inspect.getsource(PinAgent._write_from_a_photograph)
         self.assertIn("if not await self.verifier.verify", src)
+
+
+class TestThePhotographMustAlsoLookGood(unittest.TestCase):
+    """
+    The first two advice pins to publish were both CORRECT and both dowdy.
+
+    A purple plastic spray trigger and a cluttered kitchen with someone's
+    back in the frame: the right subject, a real home, every rule satisfied.
+    Pinterest's home-organisation audience saves bright, airy, uncluttered
+    rooms, and neither of those is one anybody saves.
+
+    So the describer grades the picture as well as naming it, and a bright
+    one is taken over a merely-acceptable one.
+    """
+
+    def setUp(self):
+        from pin_agent import photo_check
+        self.pc = photo_check
+
+    def test_the_grade_is_read_out_of_the_description(self):
+        self.assertEqual(self.pc.look_of("A tidy white bathroom. BRIGHT"),
+                         self.pc.LOOK_BRIGHT)
+        self.assertEqual(self.pc.look_of("A dim cluttered counter. DARK"),
+                         self.pc.LOOK_DARK)
+        self.assertEqual(self.pc.look_of("A kitchen drawer. PLAIN"),
+                         self.pc.LOOK_PLAIN)
+
+    def test_the_grade_is_matched_in_capitals_only(self):
+        """
+        The same words appear in ordinary prose describing the frame. "A
+        white towel hangs on a dark tiled bathroom wall" is a perfectly
+        bright photograph OF dark tiles, and a lowercase search threw it
+        away.
+        """
+        self.assertEqual(
+            self.pc.look_of("A white towel on a dark tiled bathroom wall"),
+            self.pc.LOOK_PLAIN)
+        self.assertEqual(
+            self.pc.look_of("A bright airy kitchen with dark wood shelves"),
+            self.pc.LOOK_PLAIN)
+        self.assertEqual(
+            self.pc.look_of("A white towel on a dark tiled wall. BRIGHT"),
+            self.pc.LOOK_BRIGHT)
+
+    def test_a_missing_grade_is_usable_not_refused(self):
+        # An ungraded photograph is plain, never a rejection -- a model that
+        # forgets the word must not cost a slot.
+        self.assertEqual(self.pc.look_of("A kitchen drawer with cutlery"),
+                         self.pc.LOOK_PLAIN)
+        ok, _ = self.pc.judge("A kitchen drawer with cutlery", "kitchen drawer")
+        self.assertTrue(ok)
+
+    def test_a_drab_photograph_is_refused(self):
+        ok, why = self.pc.judge("A dim cluttered kitchen counter. DARK",
+                                "kitchen counter")
+        self.assertFalse(ok)
+        self.assertIn("drab", why)
+
+    def test_the_grade_cannot_be_mistaken_for_relevance(self):
+        # Without this, a subject containing "dark" matches any photograph
+        # graded DARK and counts as relevant.
+        self.assertFalse(self.pc.is_relevant("A sofa in a lounge. DARK",
+                                             "dark wood cabinet"))
+        self.assertFalse(self.pc.is_relevant("A garden bench. BRIGHT",
+                                             "bright kitchen"))
+
+    def test_a_bright_photograph_is_preferred_over_a_plain_one(self):
+        v = self.pc.PhotoVerifier(api_keys=["k"], models=("m",))
+        seq = ["A kitchen drawer with cutlery. PLAIN",
+               "A bright tidy kitchen drawer. BRIGHT"]
+
+        async def fake_describe(image, mime="image/jpeg"):
+            return seq.pop(0) if seq else None
+
+        v.describe = fake_describe
+
+        async def fake_fetch(url):
+            return b"x"
+
+        v.fetch = fake_fetch
+        got = asyncio.run(v.first_approved(
+            ["https://a/plain.jpg", "https://b/bright.jpg"], "kitchen drawer"))
+        self.assertEqual(got, "https://b/bright.jpg")
+
+    def test_a_plain_photograph_is_still_used_when_nothing_is_brighter(self):
+        # Better a plain pin than no pin.
+        v = self.pc.PhotoVerifier(api_keys=["k"], models=("m",))
+        seq = ["A kitchen drawer with cutlery. PLAIN"] * 3
+
+        async def fake_describe(image, mime="image/jpeg"):
+            return seq.pop(0) if seq else None
+
+        async def fake_fetch(url):
+            return b"x"
+
+        v.describe, v.fetch = fake_describe, fake_fetch
+        got = asyncio.run(v.first_approved(
+            ["https://a/1.jpg", "https://a/2.jpg"], "kitchen drawer"))
+        self.assertEqual(got, "https://a/1.jpg")
+
+
+class TestClearanceIsNotAlwaysASale(unittest.TestCase):
+    """
+    "Place a shallow bin under the sink for cleaning supplies" was refused
+    because its body mentioned the clearance above the pipes. In this niche
+    clearance means headroom far more often than it means a sale, and the
+    rule was throwing away good advice.
+    """
+
+    def setUp(self):
+        self.gate = ComplianceGate()
+
+    def test_physical_clearance_is_allowed(self):
+        for body in (
+            "Leave enough clearance above the pipes so the bin slides out.",
+            "Measure the clearance under the shelf before buying anything.",
+            "There is more clearance at the back than most people realise.",
+        ):
+            self.assertIsNone(self.gate.check_text("A perfectly fine title here",
+                                                   body + " " * 30), body)
+
+    def test_a_clearance_sale_is_still_refused(self):
+        for body in (
+            "Grab it from the clearance sale before it ends today for good.",
+            "These are on clearance at the moment so stock up while you can.",
+            "Found in the clearance section of most big shops right now ok.",
+        ):
+            self.assertIsNotNone(self.gate.check_text("A perfectly fine title",
+                                                      body), body)
+
+    def test_the_other_stale_claims_still_bite(self):
+        for body in ("Only 20 USD today for this one, a bargain buy indeed.",
+                     "It is 50% off this week only, so be quick about it.",
+                     "Half-price right now at most of the big retailers ok."):
+            self.assertIsNotNone(self.gate.check_text("A perfectly fine title",
+                                                      body), body)

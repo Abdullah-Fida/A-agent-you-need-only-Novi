@@ -506,6 +506,73 @@ async def main():
 
     asyncio.create_task(self_ping_loop())
     logger.info("Keep-alive self-ping loop started (every 4 minutes, pings immediately).")
+
+    # 12b. Liveness record — so downtime stops being guesswork.
+    async def liveness_loop():
+        """
+        Writes the time to the database every two minutes.
+
+        A SELF-PING CANNOT PROVE THE BOT WAS UP, and that is why this exists
+        separately. The ping loop dies with the process, so when the service
+        stops there is nothing left running to report it -- on 14 September
+        nothing published between 01:00 and 11:36 PKT and the only way to
+        know was to notice the hole in the articles table ten hours later.
+
+        A timestamp written every two minutes turns that into a measurement:
+        a gap in `last_seen` IS the outage, to the minute, whatever caused
+        it. It also records why the process started again, which separates a
+        deploy from a crash from an idle spin-down.
+        """
+        started = datetime.now(timezone.utc)
+        try:
+            previous = await db.load_state("liveness") or {}
+        except Exception:
+            previous = {}
+
+        # The gap between the last heartbeat and this startup is exactly how
+        # long the bot was not running.
+        if previous.get("last_seen"):
+            try:
+                last = datetime.fromisoformat(
+                    str(previous["last_seen"]).replace("Z", "+00:00"))
+                down = (started - last).total_seconds() / 60
+                if down > 8:
+                    logger.warning(
+                        f"The bot was NOT RUNNING for {down:.0f} minutes "
+                        f"(last seen {last:%d %b %H:%M} UTC). Slots inside "
+                        f"that window did not fire.")
+                    if down > 30 and notification_manager:
+                        await notification_manager.send_notification(
+                            subject=f"Bot was down for {down/60:.1f} hours",
+                            message=(
+                                f"Last heartbeat: {last:%d %b %Y %H:%M} UTC\n"
+                                f"Restarted:      {started:%d %b %Y %H:%M} UTC\n"
+                                f"Down for:       {down/60:.1f} hours\n\n"
+                                f"Everything scheduled in that window was "
+                                f"missed. If this keeps happening on Render's "
+                                f"free tier, an external uptime pinger "
+                                f"(cron-job.org, UptimeRobot) is what wakes a "
+                                f"service that has already stopped -- the "
+                                f"built-in self-ping only keeps a RUNNING "
+                                f"service awake and dies with the process."),
+                            is_critical=True)
+            except (ValueError, TypeError):
+                pass
+
+        while True:
+            try:
+                await db.save_state("liveness", {
+                    "last_seen": datetime.now(timezone.utc).isoformat(),
+                    "started_at": started.isoformat(),
+                    "uptime_minutes": round(
+                        (datetime.now(timezone.utc) - started).total_seconds() / 60),
+                })
+            except Exception as e:
+                logger.debug(f"Liveness write failed: {type(e).__name__}")
+            await asyncio.sleep(120)
+
+    asyncio.create_task(liveness_loop())
+    logger.info("Liveness recorder started (every 2 minutes).")
     
     # 13. Heartbeat Monitor
     async def heartbeat_monitor():

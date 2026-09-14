@@ -59,10 +59,24 @@ TIMEOUT = 90.0
 
 # The only thing the model is asked. Short, literal, and the same question
 # every time -- which is what makes the result stable enough to test.
-DESCRIBE = ("Describe this photograph in under 12 words. Say plainly what "
+DESCRIBE = ("Describe this photograph in under 14 words. Say plainly what "
             "is in it and where it was taken. If it is not a photograph -- "
             "a drawing, painting, illustration, diagram or museum object -- "
-            "say so first.")
+            "say so first. Then add one of BRIGHT, PLAIN or DARK: BRIGHT if "
+            "it is well lit, tidy and attractive; DARK if it is dim, "
+            "cluttered or drab; PLAIN otherwise.")
+
+# Pinterest's home-organisation audience saves bright, airy, uncluttered
+# rooms. The first two advice pins that published were both CORRECT -- the
+# right subject, a real home, everything the rules asked for -- and both
+# were dowdy: a purple plastic spray trigger, and a cluttered kitchen with
+# someone's back in the frame. Correct is not the same as saveable.
+#
+# So the describer grades the picture too, and a bright one is taken over a
+# plain one when both are available. DARK is refused outright.
+LOOK_BRIGHT = "bright"
+LOOK_PLAIN = "plain"
+LOOK_DARK = "dark"
 
 # A description containing any of these means the picture cannot be used.
 #
@@ -130,6 +144,10 @@ _WEAK = {
     "photograph", "picture", "image", "shows", "showing", "taken", "white",
     "black", "grey", "gray", "wooden", "wood", "metal", "plastic", "glass",
     "modern", "clean", "tidy", "neat", "inside", "indoor", "indoors",
+    # The grade the describer appends. Without these, a subject containing
+    # "dark" would match a photograph graded DARK and count as relevant.
+    "bright", "plain", "dark", "dim", "cluttered", "drab", "attractive",
+    "lit", "well",
 }
 
 UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -148,6 +166,28 @@ def _words(text: str) -> set:
         if w.endswith("s") and len(w) > 3:
             out.add(w[:-1])
     return out
+
+
+def look_of(description: str) -> str:
+    """
+    BRIGHT, PLAIN or DARK, as the describer graded it.
+
+    MATCHED IN CAPITALS ONLY, and that is not fussiness. The describer is
+    asked to append the grade in capitals, while the same words appear in
+    ordinary prose describing what is in the frame -- "a white towel hangs
+    on a dark tiled bathroom wall" is a perfectly bright photograph of dark
+    tiles, and a lowercase search threw it away.
+
+    Defaults to PLAIN when no grade is found -- an ungraded photograph is
+    usable, just not preferred, and a missing word must never become a
+    rejection.
+    """
+    text = description or ""
+    if re.search(r"\bDARK\b", text):
+        return LOOK_DARK
+    if re.search(r"\bBRIGHT\b", text):
+        return LOOK_BRIGHT
+    return LOOK_PLAIN
 
 
 def banned_reason(description: str) -> Optional[str]:
@@ -189,6 +229,8 @@ def judge(description: str, subject: str) -> Tuple[bool, str]:
         return False, reason
     if not is_relevant(description, subject):
         return False, f"nothing in common with {subject!r}"
+    if look_of(description) == LOOK_DARK:
+        return False, "dim, cluttered or drab"
     return True, "ok"
 
 
@@ -377,7 +419,18 @@ class PhotoVerifier:
         one call. `limit` stops a bad query spending the day's allowance on
         a single tip.
         """
+        first_plain = None
         for url in list(urls)[:limit]:
-            if await self.verify_url(url, subject, caption):
+            if not await self.verify_url(url, subject, caption):
+                continue
+            if look_of(self.last_description) == LOOK_BRIGHT:
                 return url
-        return None
+            # Usable, but keep looking for a brighter one. The first two
+            # advice pins to publish were both correct and both dowdy, and
+            # a dowdy pin is not one anybody saves.
+            if first_plain is None:
+                first_plain = url
+        if first_plain:
+            logger.info(f"No bright photograph for '{subject[:32]}'; "
+                        f"using a plain one.")
+        return first_plain
