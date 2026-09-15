@@ -292,7 +292,8 @@ class TipWriter:
                 "photo": tip["photo"], "credit": "", "image": ""}
 
     async def write_for_photo(self, board: str, description: str,
-                              avoid: Optional[List[str]] = None
+                              avoid: Optional[List[str]] = None,
+                              avoid_subjects: Optional[List[str]] = None
                               ) -> Optional[Dict]:
         """
         A tip written to suit a photograph that has already been found.
@@ -322,7 +323,7 @@ class TipWriter:
             f"IN it, not about something it reminds you of. Do not describe "
             f"the photograph; give advice."
         )
-        taken = self._objects_taken(avoid or [])
+        taken = list(avoid_subjects or []) + self._objects_taken(avoid or [])
         if taken:
             rules += ("\n\nAlready covered, so choose a different angle on "
                       "the picture if any of these fit it:\n" + ", ".join(taken))

@@ -604,7 +604,9 @@ class TestDuplicateGuardCompareLikeForLike(unittest.TestCase):
 
     def test_only_the_title_is_compared(self):
         import inspect
-        source = inspect.getsource(self.PinAgent.build_one)
+        # The per-candidate loop lives in _pick_product since build_one
+        # gained its two passes.
+        source = inspect.getsource(self.PinAgent._pick_product)
         call = source[source.index("_too_similar_to_recent"):][:120]
         self.assertNotIn("description", call,
                          "comparing title+description against title-only "
@@ -1549,6 +1551,15 @@ class TestTheAffiliateRatio(unittest.TestCase):
         self.agent = PinAgent.__new__(PinAgent)
         self.agent.config = MagicMock(pins_per_day=15)
         self.agent._first_pin_at = None
+        self.agent._product_attempts_today = 0
+        # The ratio is now checked against the database in every branch, so
+        # even the rank test needs a store.
+        self.agent.store = MagicMock()
+
+        async def none_today(kind="all"):
+            return 0
+
+        self.agent.store.posted_today = none_today
 
     def _at_cap(self, cap):
         self.agent.daily_cap = lambda: cap
@@ -1624,10 +1635,23 @@ class TestTheFallbackOnlyRunsOneWay(unittest.TestCase):
         agent.published_today = 0
         agent.daily_cap = lambda: 4
         agent._consecutive_failures = 0
+        agent._product_attempts_today = 0
+        agent._affiliate_alerted_on = None
+        agent.last_product_error = ""
         agent.last_error = ""
         agent.last_run = None
         agent.nm = None
         agent.built = []
+        agent.store = MagicMock()
+
+        async def none_today(kind="all"):
+            return 0
+
+        async def never_sold():
+            return None
+
+        agent.store.posted_today = none_today
+        agent.store.last_affiliate_pin_at = never_sold
 
         async def build_one():
             agent.built.append("product")
@@ -1665,6 +1689,7 @@ class TestBuildingAnAdvicePin(unittest.TestCase):
         agent.recent_tips = []
         agent.recent_titles = []
         agent.recent_boards = []
+        agent.recent_types = []
         agent.last_error = ""
         agent.upload_image = None
         agent.imaging = MagicMock()
@@ -1933,8 +1958,9 @@ class TestTheSameSubjectDoesNotRepeat(unittest.TestCase):
     def test_build_one_checks_the_cooldown(self):
         import inspect
         from pin_agent.pin_bot import PinAgent
-        src = inspect.getsource(PinAgent.build_one)
-        self.assertIn("blocked_by_cooldown", src,
+        src = (inspect.getsource(PinAgent.build_one)
+               + inspect.getsource(PinAgent._pick_product))
+        self.assertIn("blocked", src,
                       "the cooldown must be enforced where pins are built")
         self.assertIn('classify(copy["title"])', src,
                       "classify on the TITLE - descriptions mention other "
@@ -1944,7 +1970,8 @@ class TestTheSameSubjectDoesNotRepeat(unittest.TestCase):
     def test_the_type_is_what_gets_stored(self):
         import inspect
         from pin_agent.pin_bot import PinAgent
-        src = inspect.getsource(PinAgent.build_one)
+        src = (inspect.getsource(PinAgent.build_one)
+               + inspect.getsource(PinAgent._pick_product))
         self.assertIn('"category": product_type', src,
                       "the category column held 'Home & Garden' on all 47 "
                       "pins - one value for everything, so it carried no "
@@ -2167,10 +2194,11 @@ class TestASlotIsNotLostToAStrictVerifier(unittest.TestCase):
         from pin_agent.pin_bot import PinAgent
         agent = PinAgent.__new__(PinAgent)
         agent.recent_tips = []
+        agent.recent_types = []
         agent.writer = object()          # present, so only prefer_bank skips
         called = []
 
-        async def fresh(seen):
+        async def fresh(seen, blocked=None):
             called.append(1)
             return {"board": "Bathroom Storage Ideas", "title": "x" * 45,
                     "body": "b", "photo": "p", "image": "https://x/1.jpg",
@@ -2611,3 +2639,393 @@ class TestARewordedRepeatIsCaught(unittest.TestCase):
     def test_a_short_title_does_not_crash_the_comparison(self):
         a = self._agent("Keep eggs fresh without cracks or spills")
         self.assertFalse(a._too_similar_to_recent("Hi"))
+
+
+class TestTheClassifierIsFineEnoughForAdvice(unittest.TestCase):
+    """
+    The catch-all was holding a quarter of the tip bank.
+
+    Twelve of the forty-five hand-written tips classified as
+    `general_organizer` together -- keys, a knife, a scale, measuring spoons,
+    a timer, the worktop, the back of a bathroom door, folding clothes. They
+    are twelve different subjects, and a cooldown that treats them as one
+    would lock out eleven the first time any of them published. That is
+    precisely how the thirty-two hour outage happened, so the classifier had
+    to be narrowed before the guard could be switched on at all.
+    """
+
+    def setUp(self):
+        from pin_agent import product_types, tips
+        self.pt = product_types
+        self.tips = tips
+
+    def test_the_catch_all_is_small_enough_to_participate(self):
+        # At 12/45 the bucket is a dumping ground and the cooldown on it is
+        # indiscriminate. At 4/45 it is a real subject like any other.
+        from collections import Counter
+        counts = Counter(self.pt.classify(t["title"])
+                         for t in self.tips.TIP_BANK)
+        share = counts[self.pt.FALLBACK] / len(self.tips.TIP_BANK)
+        self.assertLessEqual(share, 0.15,
+                             f"{counts[self.pt.FALLBACK]} of "
+                             f"{len(self.tips.TIP_BANK)} tips are unnamed")
+
+    def test_the_bank_has_enough_distinct_subjects_to_rotate(self):
+        subjects = {self.pt.classify(t["title"]) for t in self.tips.TIP_BANK}
+        self.assertGreaterEqual(len(subjects), 24,
+                                "too few subjects and the window blocks the "
+                                "bank faster than it refills")
+
+    def test_the_two_live_duplicates_now_collide(self):
+        # Verbatim from the board. Published 2 hours and 42 hours apart.
+        for a, b in (
+            ("Place an egg timer on the counter while cooking",
+             "Set the timer before you start, not after"),
+            ("Place a shoe rack on a shelf inside the closet",
+             "Keep shoes out of the kitchen for guests"),
+        ):
+            self.assertEqual(self.pt.classify(a), self.pt.classify(b),
+                             f"{a!r} and {b!r} are the same subject")
+
+    def test_tips_that_merely_shared_the_catch_all_do_not_collide(self):
+        # All of these were `general_organizer` together before.
+        for a, b in (
+            ("A sharp kitchen knife is safer than a blunt one",
+             "Give keys a home within arm's reach of the door"),
+            ("A scale makes baking work the first time",
+             "Set the timer before you start, not after"),
+            ("Keep measuring spoons loose, not on a ring",
+             "In a tiny kitchen, clear one worktop completely"),
+        ):
+            self.assertNotEqual(self.pt.classify(a), self.pt.classify(b),
+                                f"{a!r} and {b!r} are different subjects")
+
+    def test_the_new_rules_did_not_steal_from_the_old_ones(self):
+        """
+        A frozen corpus. TYPE_RULES is first-match-wins, so a new entry in
+        the wrong place silently swallows an existing one -- it happened
+        twice while writing these: "fold" took "Store bathroom towels
+        rolled, not folded" from towel_rack, and "blade" took "Herb Scissors
+        with 5 Blades" from kitchen_tool.
+        """
+        for title, expected in (
+            ("Store bathroom towels rolled, not folded", "towel_rack"),
+            ("These stainless steel herb scissors feature five precision "
+             "blades", "kitchen_tool"),
+            ("Keep your kitchen clear with a spice drawer organizer",
+             "spice_rack"),
+            ("Keep eggs fresh without cracks or spills", "egg_holder"),
+            ("Compact pull-out organizer for tiny kitchen sinks",
+             "under_sink"),
+            ("Keep your drawer tidy with foldable underwear organizer",
+             "closet_organizer"),
+            ("Elegant clear acrylic wall shelf", "wall_shelf"),
+        ):
+            self.assertEqual(self.pt.classify(title), expected, title)
+
+    def test_a_chopping_board_is_not_a_drawer_divider(self):
+        # "board" belongs to divider_board and "chopping" to kitchen_tool,
+        # so chopping_board has to sit above both.
+        self.assertEqual(self.pt.classify("Keep one board for raw meat and "
+                                          "never mix them"), "chopping_board")
+        self.assertEqual(self.pt.classify("White expandable divider board "
+                                          "saves kitchen space"),
+                         "divider_board")
+
+    def test_every_rule_name_is_unique(self):
+        names = [n for n, _ in self.pt.TYPE_RULES]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertNotIn(self.pt.FALLBACK, names)
+
+
+class TestAdvicePinsHaveASubjectGuard(unittest.TestCase):
+    """
+    The duplicate the owner kept finding, and the reason it got through.
+
+    `blocked_by_cooldown` was called in `build_one()` -- the affiliate path
+    -- and nowhere in `build_value_pin()`. Advice pins had no subject guard
+    at all, and the writer and the bank could not see each other's subjects.
+    So on 15 September the bot wrote "Place an egg timer on the counter
+    while cooking" at 05:05 and pulled "Set the timer before you start, not
+    after" out of the bank at 07:03. Two hours apart, on the same subject.
+    """
+
+    def _agent(self, tips_seen=(), types_seen=()):
+        from pin_agent.pin_bot import PinAgent
+        a = PinAgent.__new__(PinAgent)
+        a.recent_tips = list(tips_seen)
+        a.recent_types = list(types_seen)
+        a.writer = None
+        return a
+
+    def test_a_published_advice_tip_puts_its_subject_on_hold(self):
+        a = self._agent(tips_seen=["Set the timer before you start, not after"])
+        self.assertIn("kitchen_timer", a.subject_window())
+
+    def test_the_egg_timer_tip_would_now_be_blocked(self):
+        from pin_agent import product_types
+        a = self._agent(tips_seen=["Set the timer before you start, not after"])
+        subject = product_types.classify(
+            "Place an egg timer on the counter while cooking")
+        self.assertIn(subject, a.subject_window())
+
+    def test_product_and_advice_subjects_share_one_window(self):
+        """
+        A shoe-rack product pin and "keep shoes out of the kitchen" are one
+        duplicate to anyone scrolling. That comparison is only possible if
+        both kinds are classified the same way.
+        """
+        a = self._agent(tips_seen=["Keep only this week's shoes by the front door"],
+                        types_seen=["spice_rack"])
+        window = a.subject_window()
+        self.assertIn("shoe_storage", window)
+        self.assertIn("spice_rack", window)
+
+    def test_advice_subjects_can_be_excluded_for_the_product_path(self):
+        # The earning pin is the scarce thing, so advice subjects are only a
+        # soft block on it -- dropped on the relief pass.
+        a = self._agent(tips_seen=["Set the timer before you start, not after"],
+                        types_seen=["spice_rack"])
+        hard_only = a.subject_window(include_advice=False)
+        self.assertIn("spice_rack", hard_only)
+        self.assertNotIn("kitchen_timer", hard_only)
+
+    def test_the_advice_window_is_shorter_than_the_product_cooldown(self):
+        """
+        Supply is asymmetric. Advice is effectively unlimited; the live
+        selector produced FOUR product candidates out of forty sourced. A
+        symmetric window would put ~28 subjects on hold and starve the
+        scarcer side.
+        """
+        from pin_agent.pin_bot import PinAgent
+        a = self._agent(tips_seen=[f"Tip number {i}" for i in range(40)])
+        self.assertLessEqual(len(a.recent_tips[:PinAgent.ADVICE_SUBJECT_COUNT]),
+                             PinAgent.ADVICE_SUBJECT_COUNT)
+        self.assertLessEqual(PinAgent.ADVICE_SUBJECT_COUNT, 20)
+
+    def test_the_bank_avoids_a_held_subject_when_it_can(self):
+        from pin_agent import product_types, tips
+        picked = tips.next_tip([], blocked_subjects={"kitchen_timer"})
+        self.assertNotEqual(product_types.classify(picked["title"]),
+                            "kitchen_timer")
+
+    def test_the_bank_still_returns_a_tip_when_every_subject_is_held(self):
+        """
+        The relief valve, and it is not optional. An over-strict duplicate
+        guard once stopped this agent publishing for thirty-two hours.
+        """
+        from pin_agent import product_types, tips
+        everything = {product_types.classify(t["title"])
+                      for t in tips.TIP_BANK}
+        self.assertIsNotNone(tips.next_tip([], blocked_subjects=everything))
+
+    def test_the_bank_still_returns_a_tip_when_everything_is_seen_and_held(self):
+        from pin_agent import product_types, tips
+        everything = {product_types.classify(t["title"])
+                      for t in tips.TIP_BANK}
+        seen = [t["title"] for t in tips.TIP_BANK]
+        self.assertIsNotNone(tips.next_tip(seen, blocked_subjects=everything))
+
+    def test_subject_lookup_is_memoised_not_hand_written(self):
+        # Hand-writing the subject into 45 dicts would drift the moment a
+        # rule in product_types changed.
+        from pin_agent import product_types, tips
+        for tip in tips.TIP_BANK[:6]:
+            self.assertEqual(tips.subject_of(tip["title"]),
+                             product_types.classify(tip["title"]))
+
+    def test_the_writer_is_told_which_subjects_are_held(self):
+        from pin_agent.tip_writer import TipWriter
+        import inspect
+        src = inspect.getsource(TipWriter.write_for_photo)
+        self.assertIn("avoid_subjects", src,
+                      "naming the held subject in the prompt costs nothing; "
+                      "rejecting a finished tip costs a Groq call")
+
+
+class TestTheEarningPinSurvivesAFailedSlot(unittest.TestCase):
+    """
+    The affiliate pin published on 13 September and then stopped for two
+    days, and nothing said so.
+
+    `wants_product_pin()` returned `rank <= quota`, so ONLY rank 1 could
+    ever sell. One dry sourcing call and the day earned nothing. Meanwhile
+    the slot itself "succeeded" -- it published an advice pin -- so
+    `_note_failure()` never fired and the board went on looking busy.
+    """
+
+    def _agent(self, published=0, attempts=0, last_sold_hours=None):
+        from datetime import datetime, timedelta, timezone
+        from pin_agent.pin_bot import PinAgent
+        a = PinAgent.__new__(PinAgent)
+        a.config = MagicMock(pins_per_day=15)
+        a.daily_cap = lambda: 5
+        a._product_attempts_today = attempts
+        a._affiliate_alerted_on = None
+        a.last_error = "no product passed the filters"
+        a.last_product_error = ""
+        a.selector = MagicMock(rejections={"price below floor": 21},
+                               min_price=8.0)
+        a.nm = None
+        a.store = MagicMock()
+
+        async def posted_today(kind="all"):
+            return published
+
+        async def last_at():
+            if last_sold_hours is None:
+                return None
+            return (datetime.now(timezone.utc)
+                    - timedelta(hours=last_sold_hours))
+
+        a.store.posted_today = posted_today
+        a.store.last_affiliate_pin_at = last_at
+        return a
+
+    def test_the_designated_slot_still_sells_first(self):
+        self.assertTrue(asyncio.run(
+            self._agent().wants_product_pin({"rank": 1})))
+
+    def test_no_other_slot_sells_until_the_designated_one_has_failed(self):
+        """
+        Rank order is not clock order. At a cap of five the PKT day starts
+        at 23:00, which is rank 2 -- so without a lower bound on the retry
+        counter the earning pin would be taken by a mediocre slot before
+        05:00, the best hour of the day, ever ran.
+        """
+        a = self._agent(attempts=0)
+        for rank in (2, 3, 4, 5):
+            self.assertFalse(asyncio.run(a.wants_product_pin({"rank": rank})),
+                             f"rank {rank} must not sell before rank 1 has "
+                             f"had its turn")
+
+    def test_a_later_slot_retries_once_the_first_has_failed(self):
+        self.assertTrue(asyncio.run(
+            self._agent(attempts=1).wants_product_pin({"rank": 2})))
+        self.assertTrue(asyncio.run(
+            self._agent(attempts=2).wants_product_pin({"rank": 3})))
+
+    def test_retries_are_capped_so_a_dead_api_cannot_burn_the_day(self):
+        from pin_agent.pin_bot import PinAgent
+        a = self._agent(attempts=PinAgent.PRODUCT_ATTEMPTS_PER_DAY)
+        self.assertFalse(asyncio.run(a.wants_product_pin({"rank": 4})))
+
+    def test_the_ratio_can_never_be_breached(self):
+        # Once one affiliate pin is published nothing else may sell, whatever
+        # the rank and whatever the counter says.
+        for rank, attempts in ((1, 0), (2, 1), (3, 2)):
+            a = self._agent(published=1, attempts=attempts)
+            self.assertFalse(asyncio.run(a.wants_product_pin({"rank": rank})),
+                             f"rank {rank} sold twice in one day")
+
+    def test_a_manual_run_also_respects_the_published_count(self):
+        # This closes a hole that was already open: the rank test used to
+        # short-circuit before the count was read, so a dashboard run plus
+        # the 05:00 slot published two affiliate pins.
+        self.assertTrue(asyncio.run(self._agent(published=0).wants_product_pin()))
+        self.assertFalse(asyncio.run(self._agent(published=1).wants_product_pin()))
+
+    def test_a_miss_is_counted_and_remembered(self):
+        a = self._agent(last_sold_hours=2)
+        asyncio.run(a._note_product_miss())
+        self.assertEqual(a._product_attempts_today, 1)
+        self.assertEqual(a.last_product_error, "no product passed the filters")
+
+    def test_a_recent_sale_does_not_raise_the_alarm(self):
+        a = self._agent(last_sold_hours=2)
+        a.nm = MagicMock()
+        sent = []
+
+        async def send(**kw):
+            sent.append(kw)
+
+        a.nm.send_notification = send
+        asyncio.run(a._note_product_miss())
+        self.assertEqual(sent, [], "two hours is not a drought")
+
+    def test_a_stale_earning_pin_raises_the_alarm_once(self):
+        a = self._agent(last_sold_hours=30)
+        a.nm = MagicMock()
+        sent = []
+
+        async def send(**kw):
+            sent.append(kw)
+
+        a.nm.send_notification = send
+        asyncio.run(a._note_product_miss())
+        asyncio.run(a._note_product_miss())
+        self.assertEqual(len(sent), 1, "it must email once a day, not hourly")
+        self.assertTrue(sent[0]["is_critical"])
+        # The histogram is what makes the email actionable.
+        self.assertIn("price below floor", sent[0]["message"])
+
+    def test_the_counter_resets_with_the_day(self):
+        a = self._agent(attempts=3)
+        a.published_today = 4
+        a.reset_daily()
+        self.assertEqual(a._product_attempts_today, 0)
+
+
+class TestProductSupplyIsWideEnough(unittest.TestCase):
+    """
+    Measured live: one keyword round returned forty products of which FOUR
+    survived -- "already posted: 9, price below floor: 21, rating too low:
+    6". Four candidates cannot absorb a rejection, and that is why the
+    earning pin stopped.
+    """
+
+    def test_several_keyword_rounds_are_fetched(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        self.assertGreaterEqual(PinAgent.SOURCING_ROUNDS, 2)
+        src = inspect.getsource(PinAgent.build_one)
+        self.assertIn("SOURCING_ROUNDS", src)
+        self.assertIn("seen_ids", src, "rounds must be deduped on product_id")
+
+    def test_the_candidate_list_is_longer_than_it_was(self):
+        from pin_agent.pin_bot import PinAgent
+        self.assertGreaterEqual(PinAgent.CANDIDATE_LIMIT, 10)
+
+    def test_the_price_floor_can_be_relaxed_per_call(self):
+        sel = ProductSelector(min_price=8.0)
+        product = {"affiliate_url": "https://s.click.aliexpress.com/e/_x",
+                   "images": ["x"], "rating": 98, "orders": 900,
+                   "price": 5.5,
+                   "title": "A perfectly ordinary drawer tray for cutlery"}
+        self.assertFalse(sel.is_eligible(product))
+        self.assertTrue(sel.is_eligible(product, price_floor=5.0))
+
+    def test_the_safety_filters_never_relax(self):
+        # Only the price floor gives way. Rating, orders and the banned
+        # terms are what protect the account.
+        sel = ProductSelector(min_rating=90.0, min_orders=100, min_price=8.0)
+        for bad in ({"rating": 70, "orders": 900, "price": 20},
+                    {"rating": 98, "orders": 5, "price": 20}):
+            product = {"affiliate_url": "https://s.click.aliexpress.com/e/_x",
+                       "images": ["x"],
+                       "title": "A perfectly ordinary drawer tray here"}
+            product.update(bad)
+            self.assertFalse(sel.is_eligible(product, price_floor=1.0))
+
+    def test_build_one_runs_a_strict_pass_then_a_relaxed_one(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent.build_one)
+        self.assertIn("for relaxed in (False, True)", src)
+        self.assertIn("price_floor", src)
+
+    def test_the_relaxed_pass_reuses_the_copy_it_already_paid_for(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent._pick_product)
+        self.assertIn("written", src,
+                      "a second pass must not pay the AI twice for the same "
+                      "product")
+
+    def test_the_failure_reason_names_the_filter(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent.build_one)
+        self.assertIn("self.selector.rejections", src,
+                      "'no candidate produced a compliant pin' does not say "
+                      "the price floor ate 21 of 40")

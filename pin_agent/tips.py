@@ -36,7 +36,7 @@ obligation -- `credit` is present for the one that eventually does not.
 """
 import logging
 import random
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 logger = logging.getLogger("PinAgent.Tips")
 
@@ -488,22 +488,57 @@ def _key(title: str) -> str:
     return " ".join(sorted((title or "").lower().split()))
 
 
-def next_tip(recent_titles: Optional[List[str]] = None) -> Optional[Dict[str, str]]:
+# title -> subject, built once at import. Classifying forty-five titles on
+# every slot is wasteful, and hand-writing the subject into forty-five dicts
+# would drift the moment a rule in product_types changes.
+_SUBJECTS: Dict[str, str] = {}
+
+
+def subject_of(title: str) -> str:
+    """The product_types subject for a tip title, memoised."""
+    from pin_agent import product_types
+    if not _SUBJECTS:
+        for tip in TIP_BANK:
+            _SUBJECTS[tip["title"]] = product_types.classify(tip["title"])
+    cached = _SUBJECTS.get(title)
+    return cached if cached else product_types.classify(title)
+
+
+def next_tip(recent_titles: Optional[List[str]] = None,
+             blocked_subjects: Optional[Iterable[str]] = None
+             ) -> Optional[Dict[str, str]]:
     """
-    A tip that has not been used lately.
+    A tip that has not been used lately, on a subject that is not on hold.
 
     Shuffled rather than cycled in order: a fixed order makes the board read
     top-to-bottom as a list, which is the look the whole exercise is trying
     to avoid.
+
+    TIERS DOWN TWICE, and that is not optional. Twelve of these forty-five
+    tips used to classify into one bucket, so a subject filter over a coarse
+    classifier could empty the bank on its own -- and an over-strict
+    duplicate guard once stopped this agent publishing for thirty-two hours.
+    The subject filter is therefore allowed to narrow the choice and never
+    allowed to be the reason nothing comes back.
     """
     if not TIP_BANK:
         return None
 
     seen = {_key(t) for t in (recent_titles or [])}
-    fresh = [t for t in TIP_BANK if _key(t["title"]) not in seen]
-    if not fresh:
-        # Every tip has run recently. Better to repeat the oldest than to
-        # publish nothing -- an empty slot helps nobody.
-        logger.info("Tip bank exhausted against recent history; reusing.")
-        fresh = list(TIP_BANK)
-    return random.choice(fresh)
+    blocked = set(blocked_subjects or ())
+
+    unseen = [t for t in TIP_BANK if _key(t["title"]) not in seen]
+
+    best = [t for t in unseen if subject_of(t["title"]) not in blocked]
+    if best:
+        return random.choice(best)
+
+    if unseen:
+        logger.info("Every unused tip is on a held subject; taking one "
+                    "anyway rather than losing the slot.")
+        return random.choice(unseen)
+
+    # Every tip has run recently. Better to repeat the oldest than to
+    # publish nothing -- an empty slot helps nobody.
+    logger.info("Tip bank exhausted against recent history; reusing.")
+    return random.choice(TIP_BANK)

@@ -94,7 +94,8 @@ class ProductSelector:
     def _reject(self, reason: str) -> None:
         self.rejections[reason] = self.rejections.get(reason, 0) + 1
 
-    def is_eligible(self, product: Dict) -> bool:
+    def is_eligible(self, product: Dict,
+                    price_floor: Optional[float] = None) -> bool:
         """
         Whether this product may be promoted at all.
 
@@ -129,7 +130,14 @@ class ProductSelector:
             return False
 
         price = product.get("price", 0)
-        if price < self.min_price:
+        # THE PRICE FLOOR IS THE BIGGEST SINGLE LOSS. Measured live: of
+        # forty products sourced, twenty-one were refused on price alone --
+        # more than the other reasons combined. It is a conversion
+        # preference, not an account-safety rule, so it is the one filter
+        # worth relaxing on a second pass when the day would otherwise earn
+        # nothing. Rating, orders and the banned terms never relax.
+        floor = self.min_price if price_floor is None else price_floor
+        if price < floor:
             self._reject("price below floor")
             return False
         if price > self.max_price:
@@ -187,7 +195,8 @@ class ProductSelector:
         return round(score, 2)
 
     def select(self, products: List[Dict], limit: int = 10,
-               exclude_ids: Optional[set] = None) -> List[Dict]:
+               exclude_ids: Optional[set] = None,
+               price_floor: Optional[float] = None) -> List[Dict]:
         """Returns the best eligible products, best first."""
         exclude_ids = exclude_ids or set()
         self.rejections = {}
@@ -197,7 +206,7 @@ class ProductSelector:
             if str(product.get("product_id")) in exclude_ids:
                 self._reject("already posted")
                 continue
-            if self.is_eligible(product):
+            if self.is_eligible(product, price_floor=price_floor):
                 product = dict(product)
                 product["score"] = self.score(product)
                 product["clean_title"] = self.clean_title(product.get("title", ""))

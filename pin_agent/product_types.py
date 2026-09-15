@@ -84,12 +84,53 @@ TYPE_RULES: List[Tuple[str, Tuple[str, ...]]] = [
                           "drawer tray", "drawer insert", "drawer")),
     ("cabinet_organizer", ("cabinet", "cupboard", "pantry shelf")),
     ("desk_organizer", ("desk", "stationery", "pen holder", "office")),
+
+    # A CHOPPING BOARD IS NOT A DRAWER DIVIDER, and the order here is what
+    # decides that. "board" belongs to divider_board and "chopping" to
+    # kitchen_tool, so this has to sit above both or a cutting board lands
+    # in whichever of them comes first.
+    # "raw meat" is here because the tip that needs it says only "board":
+    # "Keep one board for raw meat and never mix them". A bare board falls
+    # to divider_board, which is a different thing entirely.
+    ("chopping_board", ("chopping board", "cutting board", "carving board",
+                        "bread board", "butcher block", "raw meat",
+                        "meat board")),
+
     # Added after seven live pins fell into the catch-all and partly blocked
     # each other. Two of them were herb scissors under different wording.
     ("kitchen_tool", ("scissors", "shears", "peeler", "grater", "slicer",
                       "chopper", "cutter", "masher", "whisk", "tongs",
                       "opener", "corer", "zester", "mandoline", "chopping",
                       "veggies", "vegetable prep")),
+
+    # THE THINGS ADVICE TALKS ABOUT AND PRODUCTS DO NOT.
+    #
+    # Twelve of the forty-five hand-written tips -- more than a quarter --
+    # landed in the catch-all together: keys, a knife, a scale, measuring
+    # spoons, a timer, the worktop, the back of a bathroom door, folding
+    # clothes. They are twelve different subjects and the cooldown treated
+    # them as one, so the first of them to publish would have locked out the
+    # other eleven. Switching the guard on before fixing this is exactly how
+    # the thirty-two hour outage happened.
+    #
+    # Placed late, immediately above divider_board, so every existing rule
+    # above keeps its priority.
+    ("kitchen_timer", ("timer", "timers", "stopwatch", "minute timer")),
+    ("kitchen_scale", ("scale", "scales", "weighing", "weigh")),
+    ("measuring_tools", ("measuring spoon", "measuring cup", "measuring jug",
+                         "measuring spoons", "measuring cups")),
+    ("key_holder", ("key", "keys", "keyring", "key hook", "key rack")),
+    # "blade" is deliberately NOT here: it stole "Herb Scissors with 5
+    # Blades" from kitchen_tool.
+    ("knife_storage", ("knife", "knives", "honing", "knife rack",
+                       "magnetic strip")),
+    # "fold" and "folded" are deliberately NOT here: they stole "Store
+    # bathroom towels rolled, not folded" from towel_rack.
+    ("laundry_folding", ("laundry", "ironing", "creases", "crease",
+                         "washing line", "airer")),
+    ("worktop_space", ("worktop", "countertop", "counter top", "work surface",
+                       "bench top")),
+
     ("divider_board", ("divider", "partition", "separator", "board",
                        "insert panel")),
     ("coat_storage", ("coat", "coats", "blanket", "blankets", "scarf",

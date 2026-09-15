@@ -94,6 +94,11 @@ class PinAgent:
         self.recent_photos: List[str] = []
         # Consecutive slots that produced nothing. See _note_failure.
         self._consecutive_failures = 0
+        # Attempts at the earning pin today, and the date the "no affiliate
+        # pin" warning last went out, so it emails once rather than hourly.
+        self._product_attempts_today = 0
+        self._affiliate_alerted_on = None
+        self.last_product_error = ""
         self.last_run: Optional[datetime] = None
         self.last_error = ""
 
@@ -116,6 +121,10 @@ class PinAgent:
             "tips_in_bank": len(tip_bank.TIP_BANK),
             "subject_cooldown_days": product_types.COOLDOWN_DAYS,
             "subjects_on_cooldown": len(set(self.recent_types)),
+            "advice_subjects_on_cooldown": len(
+                self.subject_window() - set(self.recent_types)),
+            "product_attempts_today": self._product_attempts_today,
+            "last_product_error": self.last_product_error,
             "days_live": self.days_live,
             "awaiting_review": len(self.pending_review),
             "review_required": self.config.require_review,
@@ -422,23 +431,81 @@ class PinAgent:
         preparing a batch, because each stage costs an API call or an image
         download and most rejections happen early.
         """
-        products = await self.sourcing.fetch_products()
+        # THREE KEYWORD ROUNDS, NOT ONE. next_keywords() is round-robin
+        # and this used to call it once, so every slot saw a single one of
+        # the twenty-four search terms, page one, forty rows -- of which
+        # four survived the filters. Four candidates cannot absorb a single
+        # rejection, which is why the affiliate pin quietly stopped for two
+        # days. Three rounds roughly triples the pool for two extra HTTP
+        # calls and changes no policy at all.
+        products: List[Dict] = []
+        seen_ids = set()
+        for _ in range(self.SOURCING_ROUNDS):
+            batch = await self.sourcing.fetch_products()
+            for p in batch or ():
+                pid = str(p.get("product_id") or "")
+                if pid and pid not in seen_ids:
+                    seen_ids.add(pid)
+                    products.append(p)
         if not products:
             self.last_error = self.sourcing.last_error or "no products returned"
             logger.warning(f"Sourcing produced nothing: {self.last_error}")
             return None
-
-        candidates = self.selector.select(
-            products, limit=6, exclude_ids=self.gate.seen_products)
-        if not candidates:
-            self.last_error = "no product passed the filters"
-            logger.info(self.last_error)
-            return None
+        logger.info(f"{len(products)} distinct products from "
+                    f"{self.SOURCING_ROUNDS} keyword rounds.")
 
         recent_angles = await self.store.recent_angles()
+        written: Dict[str, Dict] = {}
+
+        # Strict first, then relaxed. Nothing that protects the account is
+        # ever relaxed -- compliance, the title guard, the seven-day product
+        # cooldown, the rating and order floors and the banned terms all
+        # hold on both passes. Only the two preferences give way: the price
+        # floor, and the soft collision with an advice subject.
+        for relaxed in (False, True):
+            floor = (max(3.0, self.selector.min_price * 0.6) if relaxed
+                     else None)
+            candidates = self.selector.select(
+                products, limit=self.CANDIDATE_LIMIT,
+                exclude_ids=self.gate.seen_products, price_floor=floor)
+            if not candidates:
+                continue
+            pin = await self._pick_product(candidates, recent_angles,
+                                           relaxed, written)
+            if pin:
+                return pin
+            if not relaxed:
+                logger.info("No product survived the strict pass; relaxing "
+                            "the price floor and the advice-subject check.")
+
+        # The histogram is the difference between "something is wrong" and
+        # "the price floor is eating twenty-one of forty".
+        why = ", ".join(f"{k}: {v}" for k, v in
+                        sorted(self.selector.rejections.items()))
+        self.last_error = (f"no candidate produced a compliant pin"
+                           + (f" ({why})" if why else ""))
+        logger.info(self.last_error)
+        return None
+
+    async def _pick_product(self, candidates: List[Dict],
+                            recent_angles: List[str], relaxed: bool,
+                            written: Dict[str, Dict]) -> Optional[Dict]:
+        """
+        The first candidate that survives every stage, or None.
+
+        `written` caches the copy per product id, so the relaxed pass does
+        not pay the AI a second time for a product the strict pass already
+        wrote about.
+        """
+        blocked = self.subject_window(include_advice=not relaxed)
 
         for product in candidates:
-            copy = await self.copywriter.write(product, recent_angles)
+            pid = str(product.get("product_id") or "")
+            copy = written.get(pid)
+            if copy is None:
+                copy = await self.copywriter.write(product, recent_angles)
+                if copy:
+                    written[pid] = copy
             if not copy:
                 continue
 
@@ -484,12 +551,11 @@ class PinAgent:
             # passing, and classifying on them put a rolling cart and a pair
             # of scissors in the spice bucket.
             product_type = product_types.classify(copy["title"])
-            if product_types.blocked_by_cooldown(product_type,
-                                                 self.recent_types):
+            if product_type in blocked:
                 logger.info(
                     f"Skipping '{copy['title'][:40]}' — another "
-                    f"{product_types.describe(product_type)} was pinned in "
-                    f"the last {product_types.COOLDOWN_DAYS} days.")
+                    f"{product_types.describe(product_type)} was pinned "
+                    f"recently.")
                 continue
 
             image_path, image_bytes = await self.imaging.build(
@@ -542,8 +608,6 @@ class PinAgent:
 
             return pin
 
-        self.last_error = "no candidate produced a compliant pin"
-        logger.info(self.last_error)
         return None
 
     # ── advice pins ──────────────────────────────────────────────
@@ -564,6 +628,27 @@ class PinAgent:
 
     # One in five carries a link.
     PRODUCT_SHARE = 5
+
+    # HOW MUCH PRODUCT SUPPLY EACH SLOT SEES.
+    #
+    # Measured live: one keyword round returned forty products, of which
+    # FOUR survived the filters ("already posted: 9, price below floor: 21,
+    # rating too low: 6"). Four candidates cannot absorb a rejection, and
+    # the affiliate pin silently stopped for two days because of it.
+    # next_keywords() is round-robin over twenty-four terms, so asking three
+    # times sees three different corners of the niche.
+    SOURCING_ROUNDS = 3
+    CANDIDATE_LIMIT = 10
+
+    # Attempts a day at the earning pin before giving up. Each failure costs
+    # real time -- sourcing, the copywriter, an image download -- so a dead
+    # AliExpress must not be allowed to burn every slot.
+    PRODUCT_ATTEMPTS_PER_DAY = 3
+
+    # How stale the last affiliate pin may get before it is worth an email.
+    # Twenty-six hours rather than twenty-four so a slot drifting by an hour
+    # does not cry wolf.
+    AFFILIATE_ALERT_HOURS = 26
 
     # How many tips are held back before one may repeat. The bank holds
     # forty-five, so seventeen are always fresh to reach for. At three advice
@@ -597,17 +682,44 @@ class PinAgent:
         this young.
         """
         quota = self.product_quota()
+        published = await self.store.posted_today("product")
+
+        # THE RATIO IS CHECKED FIRST, IN EVERY BRANCH, and that is what makes
+        # the retry below safe. It also closes a hole that was already open:
+        # the rank test used to short-circuit before this line, so a manual
+        # run from the dashboard followed by the 05:00 slot published two
+        # affiliate pins on the same day.
+        if published >= quota:
+            return False
+
         rank = (slot or {}).get("rank")
-        if rank:
-            return rank <= quota
+        if rank and rank <= quota:
+            return True
+
+        # A RETRY, not a second sale. The designated slot can fail for
+        # reasons that have nothing to do with the day -- a dry sourcing
+        # call, a rejected batch, AliExpress timing out -- and until now that
+        # cost the whole day's earnings: the last affiliate pin published on
+        # 13 September and the next two days sold nothing while the board
+        # still looked busy.
+        #
+        # Expressed in attempts rather than ranks on purpose. Rank order is
+        # not clock order: at a cap of five the slots run 01:00 (rank 4),
+        # 05:00 (rank 1), 06:00 (rank 3), 07:00 (rank 5), 23:00 (rank 2), so
+        # "promote rank 2" would mean waiting until the last slot of the day.
+        # A RETRY REQUIRES A PRIOR FAILURE. Without the lower bound any rank
+        # sells while the counter is at zero, and since rank order is not
+        # clock order the FIRST slot of the PKT day is 23:00 at rank 2 --
+        # so the earning pin would be taken by a mediocre slot before 05:00,
+        # the best hour of the day, ever ran.
+        if rank and 1 <= self._product_attempts_today < self.PRODUCT_ATTEMPTS_PER_DAY:
+            logger.info(f"Retrying the earning pin at rank {rank} "
+                        f"(attempt {self._product_attempts_today + 1} of "
+                        f"{self.PRODUCT_ATTEMPTS_PER_DAY} today).")
+            return True
 
         # Run by hand from the dashboard, so there is no slot to place it in.
-        # Ask the day instead: sell only while the day is still short of its
-        # quota. Counted in the DATABASE rather than in memory, so a restart
-        # cannot reset it -- the same defect that let eight pins publish
-        # while pin_posts held nothing.
-        published = await self.store.posted_today("product")
-        return published < quota
+        return not rank
 
     @staticmethod
     def _tip_id(title: str) -> str:
@@ -637,16 +749,30 @@ class PinAgent:
         at all.
         """
         seen = self.recent_tips + tried
+        blocked = self.subject_window(include_advice=True)
 
         if self.writer and not prefer_bank:
-            tip = await self._write_from_a_photograph(seen)
-            if tip and not self._tip_already_used(tip["title"], seen):
-                return tip
+            tip = await self._write_from_a_photograph(seen, blocked)
             if tip:
-                logger.info(f"Written tip too close to a recent one: "
-                            f"{tip['title'][:46]}")
+                subject = product_types.classify(tip["title"])
+                if subject in blocked:
+                    # THE DUPLICATE THE OWNER KEPT FINDING. An egg-timer tip
+                    # was written two hours after a timer tip came out of the
+                    # bank, and the word check passed it: "Place an egg timer
+                    # on the counter while cooking" and "Set the timer before
+                    # you start, not after" share one meaningful word against
+                    # a bar of three.
+                    logger.info(
+                        f"Written tip is another "
+                        f"{product_types.describe(subject)}; skipping: "
+                        f"{tip['title'][:44]}")
+                elif self._tip_already_used(tip["title"], seen):
+                    logger.info(f"Written tip too close to a recent one: "
+                                f"{tip['title'][:46]}")
+                else:
+                    return tip
 
-        fallback = tip_bank.next_tip(seen)
+        fallback = tip_bank.next_tip(seen, blocked_subjects=blocked)
         if fallback:
             logger.info("Using a tip from the hand-written bank.")
         return fallback
@@ -654,8 +780,43 @@ class PinAgent:
     # Photo subjects used lately, so a board's six do not become one.
     RECENT_SUBJECT_COUNT = 18
 
-    async def _write_from_a_photograph(self,
-                                       seen: List[str]) -> Optional[Dict]:
+    # How many recent ADVICE pins count towards the subject window.
+    #
+    # TWELVE, and shorter than the product cooldown on purpose. Advice
+    # supply is effectively unlimited -- the writer can produce a tip for
+    # any board, and the bank holds forty-five more -- while product supply
+    # was measured at FOUR candidates out of forty sourced. A symmetric
+    # seven-day window would put close to thirty subjects on cooldown and
+    # starve the scarcer side. Twelve is about three days at the current
+    # volume, which catches both repeats found on the live board: two timer
+    # pins two hours apart, and two shoe pins forty-two hours apart.
+    ADVICE_SUBJECT_COUNT = 12
+
+    def subject_window(self, include_advice: bool = True) -> set:
+        """
+        The subjects that may not be published again yet.
+
+        ONE VOCABULARY FOR BOTH KINDS OF PIN, because the collision that
+        matters is across them: a shoe-rack product pin and "keep shoes out
+        of the kitchen" are one duplicate to anyone scrolling, and that
+        comparison is only possible if both sides are classified the same
+        way.
+
+        Advice subjects are derived from the stored TITLE rather than stored
+        as a column. That needs no migration and, better, it backfills --
+        the two timer pins already in pin_posts are inside the window the
+        moment this ships, instead of a week from now.
+        """
+        window = set(self.recent_types)
+        if include_advice:
+            window |= {product_types.classify(t)
+                       for t in self.recent_tips[:self.ADVICE_SUBJECT_COUNT]
+                       if t}
+        return window
+
+    async def _write_from_a_photograph(
+            self, seen: List[str],
+            blocked: Optional[set] = None) -> Optional[Dict]:
         """
         Find a good photograph first, then write a tip that suits it.
 
@@ -693,8 +854,13 @@ class PinAgent:
                 continue
 
             description = self.verifier.last_description
-            tip = await self.writer.write_for_photo(board, description,
-                                                    avoid=seen)
+            # The blocked subjects go into the prompt as well as being
+            # checked afterwards. Rejecting a finished tip costs a Groq
+            # call; naming the subject up front spends nothing.
+            tip = await self.writer.write_for_photo(
+                board, description, avoid=seen,
+                avoid_subjects=sorted(product_types.describe(b)
+                                      for b in (blocked or ())))
             if not tip:
                 logger.info(f"No tip written for '{description[:44]}': "
                             f"{self.writer.last_error}")
@@ -917,6 +1083,62 @@ class PinAgent:
         except Exception as e:
             logger.warning(f"Could not send the pin alarm: {type(e).__name__}")
 
+    async def _note_product_miss(self) -> None:
+        """
+        Says something when the day stops earning.
+
+        _note_failure() cannot see this, and that is the whole problem. The
+        slot SUCCEEDS -- it publishes an advice pin instead -- so nothing
+        counts as a failure and nothing is logged above INFO. The affiliate
+        pin stopped on 13 September and the first anyone knew was reading
+        the table two days later.
+        """
+        self._product_attempts_today += 1
+        self.last_product_error = self.last_error
+        logger.warning(f"No earning pin this slot "
+                       f"({self._product_attempts_today}/"
+                       f"{self.PRODUCT_ATTEMPTS_PER_DAY} attempts today): "
+                       f"{self.last_error}")
+
+        last = await self.store.last_affiliate_pin_at()
+        if last is None:
+            hours = None
+        else:
+            hours = (datetime.now(timezone.utc) - last).total_seconds() / 3600
+            if hours < self.AFFILIATE_ALERT_HOURS:
+                return
+
+        today = self._pkt_now().date()
+        if self._affiliate_alerted_on == today or not self.nm:
+            return
+        self._affiliate_alerted_on = today
+
+        # The histogram is the difference between "something is wrong" and
+        # "the price floor is eating twenty-one of forty".
+        why = ", ".join(f"{k}: {v}" for k, v in
+                        sorted(self.selector.rejections.items()))
+        age = "never" if hours is None else f"{hours:.0f} hours ago"
+        try:
+            await self.nm.send_notification(
+                subject=f"Pinterest has not earned in {age}",
+                message=(
+                    f"The last pin carrying an affiliate link published "
+                    f"{age}.\n\n"
+                    f"Advice pins are still going out, so the board looks "
+                    f"busy and nothing else would have told you.\n\n"
+                    f"Attempts today: {self._product_attempts_today}/"
+                    f"{self.PRODUCT_ATTEMPTS_PER_DAY}\n"
+                    f"Last reason:    {self.last_error}\n\n"
+                    f"Why products were refused this run:\n  {why or 'n/a'}\n\n"
+                    f"A run of 'price below floor' means the $"
+                    f"{self.selector.min_price:.0f} floor is too high for "
+                    f"what the niche is returning. A run of 'already posted' "
+                    f"means the 120-day exclusion has eaten the pool."),
+                is_critical=True)
+        except Exception as e:
+            logger.warning(f"Could not send the earning alarm: "
+                           f"{type(e).__name__}")
+
     async def run_once(self, slot: Optional[Dict] = None) -> Optional[Dict]:
         """
         One cycle: build a pin, then either queue it for review or publish it.
@@ -945,6 +1167,7 @@ class PinAgent:
             # the ratio, never breach it. The reverse fallback does not
             # exist, deliberately.
             if not pin:
+                await self._note_product_miss()
                 logger.info(f"No product pin this slot ({self.last_error}); "
                             f"publishing advice instead.")
                 pin = await self.build_value_pin()
@@ -1107,3 +1330,4 @@ class PinAgent:
 
     def reset_daily(self) -> None:
         self.published_today = 0
+        self._product_attempts_today = 0

@@ -191,6 +191,49 @@ class PinStore:
         result = await self._run(query)
         return [whole(r) for r in (getattr(result, "data", None) or [])]
 
+    async def last_affiliate_pin_at(self) -> Optional[datetime]:
+        """
+        When a pin carrying a link last published, or None.
+
+        The daily counter cannot answer this. A product slot that fails
+        falls through to an advice pin, so the slot SUCCEEDS and nothing
+        counts as missed -- the affiliate pin stopped on 13 September and
+        nobody knew for two days. Age is also the right question rather
+        than "did one publish today": posted_today() is anchored to UTC
+        midnight while the schedule runs on Pakistan days, and PKT midnight
+        is 19:00 UTC the day before.
+        """
+        if not self.enabled:
+            stamps = [p.get("created_at") for p in self._memory
+                      if p.get("status") == "published"
+                      and not self._is_kind(p, "tip")]
+            if not stamps:
+                return None
+            newest = max(str(s) for s in stamps if s)
+            try:
+                parsed = datetime.fromisoformat(newest.replace("Z", "+00:00"))
+                return parsed if parsed.tzinfo else parsed.replace(
+                    tzinfo=timezone.utc)
+            except (ValueError, TypeError):
+                return None
+
+        def query():
+            return (self.client.table("pin_posts").select("created_at")
+                    .eq("status", "published").neq("angle", TIP_ANGLE)
+                    .order("created_at", desc=True).limit(1).execute())
+
+        result = await self._run(query)
+        rows = getattr(result, "data", None) or []
+        if not rows:
+            return None
+        try:
+            stamp = str(rows[0].get("created_at") or "").replace("Z", "+00:00")
+            parsed = datetime.fromisoformat(stamp)
+            return parsed if parsed.tzinfo else parsed.replace(
+                tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            return None
+
     async def recent_types(self, days: int = 7) -> List[str]:
         """
         Product types pinned inside the cooldown window.
