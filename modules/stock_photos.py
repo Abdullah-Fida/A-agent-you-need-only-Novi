@@ -234,36 +234,62 @@ class StockPhotoFinder:
 
         out: List[str] = []
         seen = set(exclude)
-        for licences in LICENCE_TIERS:
+
+        # THE CURATED SOURCES FIRST, THEN THE WHOLE INDEX -- and the second
+        # pass runs only if the first came up short.
+        #
+        # Measured across eight household subjects: filtered, the search
+        # returns a median of THREE photographs and nothing at all for two
+        # of them; unfiltered, the same queries return a full page every
+        # time. A short shortlist is what sends an advice pin back to the
+        # forty-five-tip bank, and repeated pins earn nothing.
+        #
+        # Widening is safe here in a way it would not be for an article:
+        # every pin photograph is described by a vision model and judged
+        # before it is used, and "museum" -- the exact failure PIN_SOURCES
+        # was added for -- is one of the buckets that model already
+        # rejects. So the filter stays the preference and stops being the
+        # ceiling.
+        for sources in (self.PIN_SOURCES, None):
             if len(out) >= limit:
                 break
-            try:
-                async with httpx.AsyncClient(timeout=self.TIMEOUT,
-                                             follow_redirects=True) as client:
-                    r = await client.get(ENDPOINT, headers=UA, params={
-                        "q": query, "license": licences,
-                        "source": self.PIN_SOURCES,
-                        "page_size": 20, "mature": "false", "size": "large",
-                    })
-                if r.status_code != 200:
-                    self.last_error = f"HTTP {r.status_code}"
-                    continue
-                results = (r.json() or {}).get("results") or []
-            except Exception as e:
-                self.last_error = f"{type(e).__name__}: {e}"
-                logger.info(f"Photo shortlist failed: {self.last_error}")
-                continue
+            if sources is None and out:
+                logger.info(f"Only {len(out)} photograph(s) from the curated "
+                            f"sources for '{query[:36]}'; widening.")
 
-            for item in results:
-                url = item.get("url") or ""
-                if url in seen or not self._usable(item):
-                    continue
-                if not self._relevant(item, query):
-                    continue
-                seen.add(url)
-                out.append(url)
+            for licences in LICENCE_TIERS:
                 if len(out) >= limit:
                     break
+                params = {"q": query, "license": licences,
+                          "page_size": 20, "mature": "false",
+                          "size": "large"}
+                if sources:
+                    params["source"] = sources
+                try:
+                    async with httpx.AsyncClient(
+                            timeout=self.TIMEOUT,
+                            follow_redirects=True) as client:
+                        r = await client.get(ENDPOINT, headers=UA,
+                                             params=params)
+                    if r.status_code != 200:
+                        self.last_error = f"HTTP {r.status_code}"
+                        continue
+                    results = (r.json() or {}).get("results") or []
+                except Exception as e:
+                    self.last_error = f"{type(e).__name__}: {e}"
+                    logger.info(f"Photo shortlist failed: {self.last_error}")
+                    continue
+
+                for item in results:
+                    url = item.get("url") or ""
+                    if url in seen or not self._usable(item):
+                        continue
+                    if not self._relevant(item, query):
+                        continue
+                    seen.add(url)
+                    out.append(url)
+                    if len(out) >= limit:
+                        break
 
         logger.info(f"{len(out)} photo candidate(s) for '{query[:36]}'.")
         return out

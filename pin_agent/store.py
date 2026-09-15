@@ -38,6 +38,8 @@ class PinStore:
             logger.warning("No Supabase client — pin history is in memory only, "
                            "so duplicates will reappear after a restart.")
         self._memory: List[Dict] = []
+        # Said once rather than on every pin. See save_pin.
+        self._warned_missing_columns = False
 
     async def _run(self, fn, default=None):
         if not self.enabled:
@@ -190,6 +192,53 @@ class PinStore:
 
         result = await self._run(query)
         return [whole(r) for r in (getattr(result, "data", None) or [])]
+
+    async def verified_photos(self, limit: int = 120) -> List[Dict[str, str]]:
+        """
+        Photographs the vision check has already approved, newest first.
+
+        WHY THIS IS WORTH A QUERY. The free vision allowance is twenty
+        requests per key per model per day. Every photograph that passed was
+        being forgotten the moment the process restarted, so that allowance
+        bought one pin each and nothing accumulated. Read back, the same
+        calls build a pool that only grows.
+
+        Reusing a photograph under a different tip is not a repeat pin --
+        only the finished composite has to be unique, and the image hash
+        already enforces that. What must not repeat is the pairing, and the
+        caller holds recent_photos for that.
+        """
+        def usable(rows):
+            # A URL without the description is no use here: the cached
+            # tier exists to skip the vision call, and write_for_photo
+            # takes the DESCRIPTION as its input, not the picture.
+            out, seen = [], set()
+            for row in rows:
+                url = (row.get("photo_url") or "").strip()
+                note = (row.get("photo_note") or "").strip()
+                if not url or not note or url in seen:
+                    continue
+                seen.add(url)
+                out.append({"photo_url": url, "photo_note": note})
+            return out
+
+        if not self.enabled:
+            # Newest first, to match the ordering of the live query --
+            # the caller reads the head of this list.
+            return usable(reversed(self._memory))[:limit]
+
+        def query():
+            return (self.client.table("pin_posts")
+                    .select("photo_url,photo_note")
+                    .eq("angle", TIP_ANGLE)
+                    .neq("photo_url", "")
+                    .order("created_at", desc=True).limit(limit).execute())
+
+        # _run swallows the error and returns None if the column is not
+        # there yet, which reads back as an empty pool -- the live search
+        # simply carries on as it did before.
+        result = await self._run(query)
+        return usable(getattr(result, "data", None) or [])
 
     async def last_affiliate_pin_at(self) -> Optional[datetime]:
         """
@@ -349,6 +398,11 @@ class PinStore:
             "score": float(pin.get("score") or 0),
             "status": pin.get("status", "queued"),
             "external_id": (pin.get("external_id") or "")[:120],
+            # The SOURCE photograph and what the vision check saw in it.
+            # image_url above is the finished composite; these are what let
+            # a verified picture be reused instead of re-verified.
+            "photo_url": (pin.get("photo_url") or "")[:1000],
+            "photo_note": (pin.get("photo_note") or "")[:400],
         }
 
         if not self.enabled:
@@ -364,6 +418,36 @@ class PinStore:
         if rows:
             logger.info(f"Pin recorded: {record['title'][:44]}")
             return rows[0]
+
+        # THE NEW COLUMNS MAY NOT BE THERE YET, and a pin is worth more than
+        # a cached photograph. photo_url and photo_note are additive, so a
+        # table that predates them rejects the whole INSERT -- which would
+        # stop every pin being recorded, and everything that reads the table
+        # with it: the duplicate guard, the daily cap, the ramp.
+        #
+        # So the write is retried without them. The bot keeps working the
+        # moment this ships and gains the cache when the migration is run,
+        # in either order.
+        if any(k in record for k in ("photo_url", "photo_note")):
+            trimmed = {k: v for k, v in record.items()
+                       if k not in ("photo_url", "photo_note")}
+
+            def insert_trimmed():
+                return self.client.table("pin_posts").insert(trimmed).execute()
+
+            result = await self._run(insert_trimmed)
+            rows = getattr(result, "data", None) or []
+            if rows:
+                if not self._warned_missing_columns:
+                    self._warned_missing_columns = True
+                    logger.warning(
+                        "pin_posts has no photo_url/photo_note column, so "
+                        "verified photographs cannot be cached and every "
+                        "vision check is spent again. Run "
+                        "database/pin_schema.sql in the SQL editor -- it is "
+                        "additive and safe to re-run.")
+                return rows[0]
+
         logger.error("Pin could not be saved. Has database/pin_schema.sql been run?")
         return None
 

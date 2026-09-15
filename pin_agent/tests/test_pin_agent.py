@@ -256,6 +256,9 @@ class TestReviewQueueSurvivesRestart(unittest.TestCase):
         async def recent_types(days=7):
             return []
 
+        async def verified_photos(limit=120):
+            return []
+
         agent.store.posted_history = history
         agent.store.posted_today = posted_today
         agent.store.pending_pins = pending
@@ -264,6 +267,7 @@ class TestReviewQueueSurvivesRestart(unittest.TestCase):
         agent.store.recent_titles = recent_titles
         agent.store.recent_tip_titles = recent_tip_titles
         agent.store.recent_types = recent_types
+        agent.store.verified_photos = verified_photos
 
         asyncio.run(agent.connect())
         self.assertEqual(len(agent.pending_review), 1)
@@ -2184,11 +2188,24 @@ class TestASlotIsNotLostToAStrictVerifier(unittest.TestCase):
     never reached even though its photographs need no approval at all.
     """
 
-    def test_the_first_attempt_is_fresh_and_the_rest_are_banked(self):
+    def test_the_first_attempts_are_fresh_and_the_rest_are_banked(self):
+        """
+        TWO fresh, then banked -- it was one, until the failures were
+        measured.
+
+        Most first-attempt failures turned out not to be the verifier at
+        all: Openverse times out on one subject and answers a different one
+        seconds later. So a second attempt is a different draw rather than
+        the same one repeated. Past that the bank still takes over, which
+        is what this test is really guarding.
+        """
         import inspect
         from pin_agent.pin_bot import PinAgent
         src = inspect.getsource(PinAgent.build_value_pin)
-        self.assertIn("prefer_bank=attempt > 0", src)
+        self.assertIn("prefer_bank=attempt > 1", src)
+        self.assertGreater(PinAgent.VALUE_PIN_ATTEMPTS, 2,
+                           "two fresh attempts must still leave one for "
+                           "the bank")
 
     def test_prefer_bank_skips_the_writer_entirely(self):
         from pin_agent.pin_bot import PinAgent
@@ -3029,3 +3046,476 @@ class TestProductSupplyIsWideEnough(unittest.TestCase):
         self.assertIn("self.selector.rejections", src,
                       "'no candidate produced a compliant pin' does not say "
                       "the price floor ate 21 of 40")
+
+
+
+class FakeResult:
+    def __init__(self, data):
+        self.data = data
+
+
+class FakeTable:
+    """
+    A pin_posts table that predates the photo columns -- exactly the live
+    table until database/pin_schema.sql is run.
+    """
+
+    def __init__(self, log, strict=True):
+        self.log = log
+        self.strict = strict
+        self._record = None
+
+    def insert(self, record):
+        self._record = record
+        return self
+
+    def execute(self):
+        self.log.append(self._record)
+        if self.strict and "photo_url" in self._record:
+            raise RuntimeError("column pin_posts.photo_url does not exist")
+        return FakeResult([self._record])
+
+
+class FakeClient:
+    def __init__(self, strict=True):
+        self.inserts = []
+        self.strict = strict
+
+    def table(self, name):
+        return FakeTable(self.inserts, self.strict)
+
+
+class TestVerifiedPhotographsAreRemembered(unittest.TestCase):
+    """
+    Every photograph the vision check approved was forgotten on restart.
+
+    photo_url was set on the pin dict and save_pin() never wrote it, so a
+    hard allowance of twenty checks per key per model per day bought exactly
+    twenty pins and left nothing behind. Kept, the same calls build a pool
+    that only grows -- and reusing a photograph under a different tip is not
+    a repeat pin, because only the finished composite has to be unique and
+    the image hash already enforces that.
+    """
+
+    def _store(self):
+        from pin_agent.store import PinStore
+        return PinStore(None)
+
+    # -- persistence ---------------------------------------------
+
+    def test_the_source_photograph_is_written_not_just_the_composite(self):
+        store = self._store()
+        saved = asyncio.run(store.save_pin({
+            "title": "Keep the worktop clear", "angle": "tip",
+            "image_url": "https://cdn/composite.jpg",
+            "photo_url": "https://cdn/source.jpg",
+            "photo_note": "A bright tidy kitchen worktop. BRIGHT"}))
+        self.assertEqual(saved["photo_url"], "https://cdn/source.jpg")
+        self.assertEqual(saved["photo_note"],
+                         "A bright tidy kitchen worktop. BRIGHT",
+                         "the description is what lets a cached photograph "
+                         "be written about without a second vision call")
+
+    def test_a_missing_column_does_not_stop_a_pin_being_recorded(self):
+        """
+        The columns are additive and the live table predates them. A table
+        without them rejects the whole INSERT, which would stop every pin
+        being recorded -- and with it the duplicate guard, the daily cap and
+        the volume ramp, all of which read that table.
+        """
+        from pin_agent.store import PinStore
+        client = FakeClient(strict=True)
+        store = PinStore(client)
+        saved = asyncio.run(store.save_pin({
+            "title": "Keep the worktop clear", "angle": "tip",
+            "photo_url": "https://cdn/source.jpg",
+            "photo_note": "A bright tidy worktop. BRIGHT"}))
+
+        self.assertIsNotNone(saved, "the pin must still be recorded")
+        self.assertEqual(len(client.inserts), 2, "full insert, then trimmed")
+        self.assertNotIn("photo_url", client.inserts[1])
+        self.assertNotIn("photo_note", client.inserts[1])
+        self.assertEqual(client.inserts[1]["title"], "Keep the worktop clear",
+                         "a pin is worth more than a cached photograph")
+
+    def test_the_warning_is_said_once_not_per_pin(self):
+        from pin_agent.store import PinStore
+        store = PinStore(FakeClient(strict=True))
+        for _ in range(3):
+            asyncio.run(store.save_pin({"title": "x", "angle": "tip",
+                                        "photo_url": "https://cdn/a.jpg"}))
+        self.assertTrue(store._warned_missing_columns,
+                        "the operator has to be told the migration is owed")
+
+    def test_a_migrated_table_takes_the_columns_first_time(self):
+        from pin_agent.store import PinStore
+        client = FakeClient(strict=False)
+        store = PinStore(client)
+        asyncio.run(store.save_pin({"title": "x", "angle": "tip",
+                                    "photo_url": "https://cdn/a.jpg",
+                                    "photo_note": "a tidy shelf"}))
+        self.assertEqual(len(client.inserts), 1, "no pointless second write")
+        self.assertFalse(store._warned_missing_columns)
+
+    # -- reading the pool back -----------------------------------
+
+    def test_an_empty_pool_is_not_an_error(self):
+        # _run swallows the APIError and returns None when the column is not
+        # there, which must read back as "no cached photographs" and let the
+        # live search carry on exactly as before.
+        self.assertEqual(asyncio.run(self._store().verified_photos()), [])
+
+    def test_the_pool_drops_entries_with_no_description(self):
+        # A URL without the model's note is useless here: write_for_photo
+        # needs the description, not the picture.
+        store = self._store()
+        store._memory = [
+            {"photo_url": "https://a/1.jpg", "photo_note": "a tidy pantry"},
+            {"photo_url": "https://a/2.jpg", "photo_note": ""},
+            {"photo_url": "", "photo_note": "orphaned note"},
+        ]
+        got = asyncio.run(store.verified_photos())
+        self.assertEqual([g["photo_url"] for g in got], ["https://a/1.jpg"])
+
+    def test_the_pool_is_newest_first_and_deduped(self):
+        # The caller reads the HEAD of this list, so the order is the policy.
+        store = self._store()
+        store._memory = [
+            {"photo_url": "https://a/old.jpg", "photo_note": "an old shelf"},
+            {"photo_url": "https://a/new.jpg", "photo_note": "a new shelf"},
+            {"photo_url": "https://a/new.jpg", "photo_note": "a new shelf"},
+        ]
+        got = asyncio.run(store.verified_photos())
+        self.assertEqual([g["photo_url"] for g in got],
+                         ["https://a/new.jpg", "https://a/old.jpg"])
+
+    def test_a_saved_pin_turns_up_in_the_pool(self):
+        # The round trip is the whole point: what save_pin writes is what
+        # connect() reads back on the next run.
+        store = self._store()
+        asyncio.run(store.save_pin({
+            "title": "Keep the worktop clear", "angle": "tip",
+            "photo_url": "https://cdn/source.jpg",
+            "photo_note": "A bright tidy worktop. BRIGHT"}))
+        pool = asyncio.run(store.verified_photos())
+        self.assertEqual(pool,
+                         [{"photo_url": "https://cdn/source.jpg",
+                           "photo_note": "A bright tidy worktop. BRIGHT"}])
+
+    # -- the cached tier -----------------------------------------
+
+    def _agent(self, pool):
+        from pin_agent.pin_bot import PinAgent
+        a = PinAgent.__new__(PinAgent)
+        a.recent_boards = []
+        a.recent_photos = []
+        a.photo_pool = list(pool)
+        return a
+
+    def test_the_cached_tier_costs_no_vision_call(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent._write_from_a_cached_photograph)
+        self.assertNotIn("verifier", src,
+                         "the photograph was approved once already; checking "
+                         "it again spends the allowance this tier exists to "
+                         "save")
+        self.assertNotIn("candidates", src,
+                         "and it must not search Openverse either")
+
+    def test_the_cached_tier_sits_between_the_search_and_the_bank(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent._write_from_a_photograph)
+        self.assertIn("_write_from_a_cached_photograph", src,
+                      "a failed live search should try the pool before "
+                      "falling all the way back to the hand-picked bank")
+
+    def test_an_empty_pool_falls_through_quietly(self):
+        agent = self._agent([])
+        agent.writer = MagicMock()
+        self.assertIsNone(asyncio.run(
+            agent._write_from_a_cached_photograph([], set())))
+
+    def test_a_cached_tip_arrives_with_its_photograph_attached(self):
+        agent = self._agent([{"photo_url": "https://a/pantry.jpg",
+                              "photo_note": "A bright tidy pantry. BRIGHT"}])
+        seen_descriptions = []
+
+        class Writer:
+            @staticmethod
+            def pick_board(recent):
+                return "Pantry and Fridge Storage"
+
+            async def write_for_photo(self, board, description, avoid=None,
+                                      avoid_subjects=None):
+                seen_descriptions.append(description)
+                return {"board": board,
+                        "title": "Group the tall jars at the back",
+                        "body": "b", "photo": "", "image": "", "credit": ""}
+
+        agent.writer = Writer()
+        tip = asyncio.run(agent._write_from_a_cached_photograph([], set()))
+        self.assertEqual(seen_descriptions, ["A bright tidy pantry. BRIGHT"],
+                         "the stored description IS the input; that is why "
+                         "no new vision call is needed")
+        self.assertEqual(tip["image"], "https://a/pantry.jpg")
+        self.assertEqual(tip["photo_note"], "A bright tidy pantry. BRIGHT",
+                         "carried through so the reuse is itself cached")
+
+    def test_an_unused_photograph_is_preferred(self):
+        agent = self._agent([{"photo_url": "https://a/used.jpg",
+                              "photo_note": "a used shelf"},
+                             {"photo_url": "https://a/fresh.jpg",
+                              "photo_note": "a fresh shelf"}])
+        agent.recent_photos = ["https://a/used.jpg"]
+
+        class Writer:
+            @staticmethod
+            def pick_board(recent):
+                return "Pantry and Fridge Storage"
+
+            async def write_for_photo(self, board, description, avoid=None,
+                                      avoid_subjects=None):
+                return {"board": board, "title": "t", "body": "b",
+                        "photo": "", "image": "", "credit": ""}
+
+        agent.writer = Writer()
+        tip = asyncio.run(agent._write_from_a_cached_photograph([], set()))
+        self.assertEqual(tip["image"], "https://a/fresh.jpg")
+
+    def test_a_used_photograph_is_a_preference_not_a_prohibition(self):
+        """
+        The same relief rule as everywhere else in this bot: nothing new may
+        become the reason nothing publishes.
+        """
+        agent = self._agent([{"photo_url": "https://a/used.jpg",
+                              "photo_note": "a used shelf"}])
+        agent.recent_photos = ["https://a/used.jpg"]
+
+        class Writer:
+            @staticmethod
+            def pick_board(recent):
+                return "Pantry and Fridge Storage"
+
+            async def write_for_photo(self, board, description, avoid=None,
+                                      avoid_subjects=None):
+                return {"board": board, "title": "t", "body": "b",
+                        "photo": "", "image": "", "credit": ""}
+
+        agent.writer = Writer()
+        tip = asyncio.run(agent._write_from_a_cached_photograph([], set()))
+        self.assertIsNotNone(tip, "every photograph was used, so one of them "
+                                  "has to be allowed again")
+        self.assertEqual(tip["image"], "https://a/used.jpg")
+
+    def test_the_tier_gives_up_rather_than_grinding(self):
+        # Each try costs a Groq call. A writer that refuses everything must
+        # not walk a pool of 120.
+        from pin_agent.pin_bot import PinAgent
+        agent = self._agent([{"photo_url": "https://a/%d.jpg" % i,
+                              "photo_note": "shelf %d" % i}
+                             for i in range(40)])
+        calls = []
+
+        class Writer:
+            @staticmethod
+            def pick_board(recent):
+                return "Pantry and Fridge Storage"
+
+            async def write_for_photo(self, board, description, avoid=None,
+                                      avoid_subjects=None):
+                calls.append(description)
+                return None
+
+        agent.writer = Writer()
+        self.assertIsNone(asyncio.run(
+            agent._write_from_a_cached_photograph([], set())))
+        self.assertLessEqual(len(calls), PinAgent.CACHED_PHOTO_TRIES * 2,
+                             "bounded by CACHED_PHOTO_TRIES on each pass")
+
+    def test_recent_photos_is_loaded_durably(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent.connect)
+        self.assertIn("self.recent_photos", src,
+                      "held only in memory, a redeploy re-enabled a "
+                      "photograph that had already been used")
+        self.assertIn("verified_photos", src)
+
+
+
+class TestTitlesRenderOnAnyHost(unittest.TestCase):
+    """
+    A title is drawn in 56px bold across the middle of the image, so one
+    character the host font lacks is a blank box on a published pin -- and
+    no length or content check would catch it.
+
+    Seen live: the model wrote "coat drop-off" with a NON-BREAKING HYPHEN
+    (U+2011). Arial has that glyph and so does DejaVu, which is what the
+    Linux host uses, but the pipeline should not depend on which font
+    happens to be installed.
+    """
+
+    def setUp(self):
+        from pin_agent.tip_writer import TipWriter
+        self.T = TipWriter
+
+    def test_the_character_that_actually_turned_up(self):
+        self.assertEqual(
+            self.T._tidy("use wall hooks and bench for coat drop\u2011off"),
+            "Use wall hooks and bench for coat drop-off")
+
+    def test_dashes_quotes_and_the_ellipsis_all_fold(self):
+        got = self.T._tidy("don\u2019t stack pans \u2014 stand them "
+                           "upright\u2026")
+        self.assertEqual(got, "Don't stack pans - stand them upright...")
+
+    def test_invisible_spacing_characters_go(self):
+        # A non-breaking space measures as a character but can draw as a box.
+        self.assertEqual(self.T._tidy("keep \u201cdaily\u201d items"
+                                      "\u00a0at eye level"),
+                         'Keep "daily" items at eye level')
+        self.assertEqual(self.T._tidy("a\u200bb"), "Ab")
+
+    def test_plain_text_is_left_alone(self):
+        plain = "Group the tall jars at the back of the shelf"
+        self.assertEqual(self.T._tidy(plain), plain)
+
+    def test_a_proper_noun_still_survives(self):
+        # The original promise of _tidy: only the FIRST character is touched.
+        self.assertEqual(self.T._tidy("use a lazy Susan for oils"),
+                         "Use a lazy Susan for oils")
+
+    def test_folding_happens_before_the_length_check(self):
+        """
+        The ellipsis becomes three characters, so measuring the raw answer
+        and drawing the folded one would let a 60-character title through
+        and render 62.
+        """
+        import inspect
+        src = inspect.getsource(self.T._parse)
+        self.assertIn("_tidy", src,
+                      "_parse must fold before _problems measures anything")
+
+
+
+class TestProductTitlesFoldToo(unittest.TestCase):
+    """
+    The very next pin the end-to-end run built had U+2011 in its PRODUCT
+    title, minutes after the same character turned up in an advice title.
+    Both are drawn in the same 56px bold on the same image, so both fold --
+    and through one shared table, because two copies would drift.
+    """
+
+    def test_the_product_title_folds(self):
+        from pin_agent.content import PinCopywriter
+        self.assertEqual(
+            PinCopywriter._tidy_title("Drawer Organiser \u2014 6\u2011Pack"),
+            "Drawer Organiser - 6-Pack")
+
+    def test_the_product_title_keeps_its_own_rules(self):
+        from pin_agent.content import PinCopywriter
+        self.assertEqual(PinCopywriter._tidy_title("LOUD TITLE HERE!"),
+                         "Loud Title Here")
+
+    def test_both_paths_use_the_same_table(self):
+        from pin_agent import content, tip_writer
+        from pin_agent.text import fold_typographic
+        self.assertIs(content.fold_typographic, fold_typographic)
+        self.assertIs(tip_writer.fold_typographic, fold_typographic)
+
+    def test_the_fold_leaves_ordinary_text_alone(self):
+        from pin_agent.text import fold_typographic
+        plain = "Keep one board for raw meat and never mix them"
+        self.assertEqual(fold_typographic(plain), plain)
+        self.assertEqual(fold_typographic(""), "")
+        self.assertEqual(fold_typographic(None), "")
+
+
+class TestThePhotoSearchIsNotStarvedByItsOwnFilter(unittest.TestCase):
+    """
+    PIN_SOURCES was added for a good reason -- Openverse indexes museums, and
+    "storage basket" returned a Pomo artefact from the Honolulu Museum. But
+    measured across ten household subjects it had become the ceiling:
+
+        curated only -> 26 photographs, and NOTHING for 2 of 10 subjects
+        then widened -> 37 photographs, and nothing for 0 of 10
+
+    A subject with no photograph is an advice pin that falls back to the
+    forty-five-tip bank, and the bank is where the repeats came from. The
+    vision check already rejects "museum", so widening is safe here in a way
+    it would not be for an article.
+    """
+
+
+    def setUp(self):
+        from modules.stock_photos import StockPhotoFinder
+        self.FINDER = StockPhotoFinder
+
+    def _source(self):
+        import inspect
+        return inspect.getsource(self.FINDER.candidates)
+
+    def test_the_curated_sources_are_still_tried_first(self):
+        src = self._source()
+        self.assertIn("for sources in (self.PIN_SOURCES, None)", src,
+                      "curated first, whole index second")
+
+    def test_widening_only_happens_when_the_shortlist_is_short(self):
+        src = self._source()
+        self.assertIn("if len(out) >= limit:", src,
+                      "a full shortlist must not pay for a second search")
+
+    def test_the_filter_is_still_defined(self):
+        # Removing it outright is the wrong fix: it is a good preference.
+        self.assertTrue(self.FINDER.PIN_SOURCES)
+        for name in ("stocksnap", "rawpixel", "wordpress", "nappy"):
+            self.assertIn(name, self.FINDER.PIN_SOURCES)
+
+    def test_both_licence_tiers_are_still_walked(self):
+        self.assertIn("for licences in LICENCE_TIERS", self._source())
+
+
+
+class TestOnePhotoFailureDoesNotCostTheSlot(unittest.TestCase):
+    """
+    `prefer_bank=attempt > 0` sent every attempt after the first to the
+    bank, and the bank is where the repeated pins came from.
+
+    The reasoning was that the verifier is hard to satisfy, so a retry fails
+    the same way. Measuring the failures showed otherwise: Openverse times
+    out on ONE subject and answers a different one seconds later -- live,
+    "kitchen sink" timed out while "kitchen pantry" returned four
+    photographs, one of which passed and was published. A second attempt is
+    a genuinely different draw.
+
+    At a measured two-in-three success rate that moves bank fallback from
+    about a third of advice slots to about one in nine.
+    """
+
+    def test_two_attempts_are_fresh_before_the_bank(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent.build_value_pin)
+        self.assertIn("prefer_bank=attempt > 1", src)
+
+    def test_the_bank_still_takes_over(self):
+        # Unbounded fresh retries would spend the whole hour failing.
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent.build_value_pin)
+        self.assertIn("prefer_bank", src,
+                      "the bank must still be reachable, or a bad photo "
+                      "hour publishes nothing at all")
+        self.assertGreaterEqual(PinAgent.VALUE_PIN_ATTEMPTS, 3,
+                                "two fresh attempts plus at least one bank "
+                                "attempt")
+
+    def test_prefer_bank_skips_the_writer_entirely(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent._next_tip)
+        self.assertIn("if self.writer and not prefer_bank", src,
+                      "a banked attempt must not pay for a search it is "
+                      "not going to use")

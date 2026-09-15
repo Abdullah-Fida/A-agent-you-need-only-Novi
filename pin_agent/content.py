@@ -16,6 +16,8 @@ import random
 import re
 from typing import Dict, List, Optional
 
+from pin_agent.text import fold_typographic
+
 logger = logging.getLogger("PinAgent.Content")
 
 # How a product is framed. Each is a genuinely different opening, not a
@@ -218,7 +220,8 @@ class PinCopywriter:
     @staticmethod
     def _tidy_title(title: str) -> str:
         """Strips the shouting and trailing punctuation Pinterest dislikes."""
-        text = re.sub(r"\s+", " ", str(title or "")).strip().strip('"')
+        text = fold_typographic(str(title or ""))
+        text = re.sub(r"\s+", " ", text).strip().strip('"')
         text = text.replace("!", "").strip()
         if text.isupper():
             text = text.title()

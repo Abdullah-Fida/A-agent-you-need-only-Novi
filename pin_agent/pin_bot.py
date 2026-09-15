@@ -92,6 +92,10 @@ class PinAgent:
         # one, and photographs already used, so none appears twice.
         self.recent_subjects: List[str] = []
         self.recent_photos: List[str] = []
+        # Photographs the vision check approved on earlier runs, with the
+        # description it gave them. Loaded on connect, so a restart no
+        # longer throws away the whole day's verification allowance.
+        self.photo_pool: List[Dict] = []
         # Consecutive slots that produced nothing. See _note_failure.
         self._consecutive_failures = 0
         # Attempts at the earning pin today, and the date the "no affiliate
@@ -118,6 +122,7 @@ class PinAgent:
             "affiliate_pins_per_day": self.product_quota(),
             "tips_written": (self.writer.status if self.writer else {}),
             "photo_checks": self.verifier.status,
+            "verified_photos_cached": len(self.photo_pool),
             "tips_in_bank": len(tip_bank.TIP_BANK),
             "subject_cooldown_days": product_types.COOLDOWN_DAYS,
             "subjects_on_cooldown": len(set(self.recent_types)),
@@ -408,6 +413,13 @@ class PinAgent:
             self.TIP_ROTATION)
         self.recent_types = await self.store.recent_types(
             product_types.COOLDOWN_DAYS)
+        self.photo_pool = await self.store.verified_photos()
+        # Durable now. Held only in memory, a redeploy re-enabled a
+        # photograph that had already been used.
+        self.recent_photos = [p["photo_url"] for p in self.photo_pool[:60]]
+        if self.photo_pool:
+            logger.info(f"{len(self.photo_pool)} photograph(s) already "
+                        f"verified and reusable.")
 
         # Pins that were waiting for a decision when the process last
         # stopped. Without this the queue is empty after every deploy and
@@ -640,6 +652,10 @@ class PinAgent:
     SOURCING_ROUNDS = 3
     CANDIDATE_LIMIT = 10
 
+    # How many cached photographs to offer the writer before giving up on
+    # the tier. Each one costs a Groq call and no vision call.
+    CACHED_PHOTO_TRIES = 3
+
     # Attempts a day at the earning pin before giving up. Each failure costs
     # real time -- sourcing, the copywriter, an image download -- so a dead
     # AliExpress must not be allowed to burn every slot.
@@ -741,12 +757,17 @@ class PinAgent:
         be worst.
 
         `prefer_bank` is what stops a slot being lost. Every written tip
-        needs a photograph found and approved, and the verifier is
-        deliberately hard to satisfy; asking the writer again after a photo
-        failure just spends another minute failing the same way. So the
-        first attempt is always fresh and every attempt after it comes from
-        the bank, whose photographs were chosen by eye and need no approval
-        at all.
+        needs a photograph found and approved, so a slot that kept asking
+        the writer could spend the whole hour failing. The caller allows
+        TWO fresh attempts and banks the rest.
+
+        Two rather than one because the failures were measured, and most of
+        them are not the verifier being strict -- they are Openverse timing
+        out on one subject while answering a different one two seconds
+        later. That makes a second attempt a genuinely different draw
+        rather than the same one repeated. Past that the bank takes over,
+        and its photographs were chosen by eye and need no approval at
+        all.
         """
         seen = self.recent_tips + tried
         blocked = self.subject_window(include_advice=True)
@@ -868,11 +889,54 @@ class PinAgent:
 
             tip["image"] = url
             tip["photo"] = subject
+            tip["photo_note"] = description
             self.recent_subjects.insert(0, subject)
             del self.recent_subjects[self.RECENT_SUBJECT_COUNT:]
             return tip
 
         logger.info(f"No usable photograph for '{subject}'.")
+        return await self._write_from_a_cached_photograph(seen, blocked)
+
+    async def _write_from_a_cached_photograph(
+            self, seen: List[str],
+            blocked: Optional[set] = None) -> Optional[Dict]:
+        """
+        A tip written for a photograph that was verified on an earlier run.
+
+        THE MIDDLE TIER, and the reason the daily vision allowance stops
+        being the ceiling. Twenty checks per key per model per day used to
+        buy twenty pins and then be forgotten; the same calls now leave a
+        pool behind. This path costs no Openverse search and no vision call
+        at all -- the picture was approved once and the description was
+        kept, and write_for_photo already takes a description as its input.
+
+        Reusing a photograph is not a repeat pin: only the finished
+        composite must be unique, and the image hash enforces that.
+        """
+        if not (self.writer and self.photo_pool):
+            return None
+
+        board = self.writer.pick_board(self.recent_boards)
+        fresh = [p for p in self.photo_pool
+                 if p["photo_url"] not in self.recent_photos]
+        # A used photograph is a preference, not a prohibition -- the same
+        # rule as everywhere else here.
+        for pool in (fresh, self.photo_pool):
+            for entry in pool[:self.CACHED_PHOTO_TRIES]:
+                tip = await self.writer.write_for_photo(
+                    board, entry["photo_note"], avoid=seen,
+                    avoid_subjects=sorted(product_types.describe(b)
+                                          for b in (blocked or ())))
+                if not tip:
+                    continue
+                tip["image"] = entry["photo_url"]
+                tip["photo_note"] = entry["photo_note"]
+                tip["photo"] = tip.get("photo") or "cached"
+                logger.info("Reusing a photograph verified earlier.")
+                return tip
+            if fresh:
+                logger.info("Every unused verified photograph was exhausted; "
+                            "allowing one that has been used before.")
         return None
 
     @staticmethod
@@ -964,8 +1028,12 @@ class PinAgent:
         """
         tried: List[str] = []
         for attempt in range(self.VALUE_PIN_ATTEMPTS):
-            # Fresh on the first try, banked after. See _next_tip.
-            tip = await self._next_tip(tried, prefer_bank=attempt > 0)
+            # TWO fresh attempts, then the bank. Most first-attempt
+            # failures are an Openverse timeout on one subject rather than
+            # the verifier refusing, and a different subject is a genuinely
+            # different draw -- measured, one subject timed out while the
+            # next returned four photographs and published. See _next_tip.
+            tip = await self._next_tip(tried, prefer_bank=attempt > 1)
             if not tip:
                 self.last_error = "no tip could be produced"
                 logger.error(self.last_error)
@@ -1024,6 +1092,7 @@ class PinAgent:
                 "board_name": board,
                 "board_id": self.config.buffer_board_id,
                 "photo_url": photo_url,
+                "photo_note": tip.get("photo_note", ""),
             }
 
             ok, reasons = self.gate.approve(pin)

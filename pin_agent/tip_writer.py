@@ -33,6 +33,7 @@ import re
 from typing import Dict, List, Optional
 
 from pin_agent import boards as board_routing
+from pin_agent.text import fold_typographic
 
 logger = logging.getLogger("PinAgent.TipWriter")
 
@@ -213,15 +214,19 @@ class TipWriter:
     @staticmethod
     def _tidy(text: str) -> str:
         """
-        Capitalise the opening letter and nothing else.
+        Capitalise the opening letter, and fold fancy punctuation.
 
         The model returns a lowercase first word perhaps one time in seven
         -- "use a pull-out knife tray", "hang loofahs on wall hooks" -- and
         on a pin, where the title is set in 56px bold, that reads as a
         mistake. Only the first character is touched: "lazy Susan" and any
         other proper noun the model got right must survive.
+
+        The folding is the other half, and it happens here rather than at
+        render time so the length checks measure what will be drawn. See
+        pin_agent/text.py.
         """
-        text = (text or "").strip()
+        text = fold_typographic(text or "").strip()
         return text[:1].upper() + text[1:] if text else text
 
     @classmethod

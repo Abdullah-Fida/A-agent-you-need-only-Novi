@@ -64,6 +64,23 @@ CREATE INDEX IF NOT EXISTS pin_posts_created_idx ON pin_posts (created_at DESC);
 CREATE INDEX IF NOT EXISTS pin_posts_status_idx  ON pin_posts (status);
 CREATE INDEX IF NOT EXISTS pin_posts_hash_idx    ON pin_posts (image_hash);
 
+-- THE SOURCE PHOTOGRAPH, AND WHAT THE VISION CHECK SAW IN IT.
+--
+-- image_url holds the finished 1000x1500 composite; these hold the picture
+-- it was built from and the model's one-line description of it. Without
+-- them every verified photograph was forgotten on restart, so each call
+-- against a hard allowance of twenty per key per model bought exactly one
+-- pin and was then thrown away.
+--
+-- Additive and safe to re-run, like the rest of this file. Old rows read
+-- back as NULL, which every caller treats as "no cached photograph".
+ALTER TABLE pin_posts ADD COLUMN IF NOT EXISTS photo_url  TEXT;
+ALTER TABLE pin_posts ADD COLUMN IF NOT EXISTS photo_note TEXT;
+
+-- Looked up by URL when checking whether a photograph has been used, and
+-- scanned for the cached pool.
+CREATE INDEX IF NOT EXISTS pin_posts_photo_idx ON pin_posts (photo_url);
+
 ALTER TABLE pin_posts ENABLE ROW LEVEL SECURITY;
 
 -- The bot authenticates with the anon key, so the policy must admit anon.
