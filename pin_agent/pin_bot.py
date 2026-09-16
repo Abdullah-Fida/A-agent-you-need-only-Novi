@@ -417,9 +417,26 @@ class PinAgent:
         # Durable now. Held only in memory, a redeploy re-enabled a
         # photograph that had already been used.
         self.recent_photos = [p["photo_url"] for p in self.photo_pool[:60]]
+
+        # AND THE ONES THAT CAN BE WORKED OUT FROM THE TITLE. The bank is a
+        # fixed table of title -> photograph, so a recent bank pin says
+        # exactly which picture it used even though photo_url was never
+        # stored. Until the migration runs this is the only durable memory
+        # of a published photograph there is, and without it the same
+        # picture goes out again after any restart -- on 15 September the
+        # same egg timer published twice in two hours.
+        for title in self.recent_tips:
+            url = tip_bank.photo_for(title)
+            if url and url not in self.recent_photos:
+                self.recent_photos.append(url)
+        del self.recent_photos[60:]
+
         if self.photo_pool:
             logger.info(f"{len(self.photo_pool)} photograph(s) already "
                         f"verified and reusable.")
+        if self.recent_photos:
+            logger.info(f"{len(self.recent_photos)} photograph(s) published "
+                        f"recently and held back.")
 
         # Pins that were waiting for a decision when the process last
         # stopped. Without this the queue is empty after every deploy and
@@ -988,6 +1005,13 @@ class PinAgent:
                 continue
             tried.add(attempt)
             candidates = await self.photos.candidates(attempt, limit=4)
+            # Already-published photographs are dropped BEFORE the vision
+            # check, so a repeat never costs part of the daily allowance.
+            # _write_from_a_photograph has always done this; this path did
+            # not, and it is the same mistake that published one egg timer
+            # twice in two hours.
+            fresh = [u for u in candidates if u not in self.recent_photos]
+            candidates = fresh or candidates
             if not candidates:
                 continue
             found = await self.verifier.first_approved(
@@ -1027,6 +1051,9 @@ class PinAgent:
         photo providers are down, which is the one thing this must not do.
         """
         tried: List[str] = []
+        # On the final attempt every preference is dropped. A repeated
+        # photograph is worse than a fresh one and better than no pin.
+        last_attempt = self.VALUE_PIN_ATTEMPTS - 1
         for attempt in range(self.VALUE_PIN_ATTEMPTS):
             # TWO fresh attempts, then the bank. Most first-attempt
             # failures are an Openverse timeout on one subject rather than
@@ -1052,6 +1079,20 @@ class PinAgent:
                     logger.info(f"No verified photograph for "
                                 f"'{tip['photo']}'; trying another tip.")
                     continue
+            elif photo_url in self.recent_photos and attempt < last_attempt:
+                # A BANK TIP ARRIVES WITH ITS PHOTOGRAPH ALREADY CHOSEN, so
+                # it never passed through _find_photo, where this check
+                # lives for written tips. That is how the same egg timer
+                # published twice in two hours on 15 September -- once
+                # under a written tip that found the picture on Openverse,
+                # once under the bank tip that has it hard-coded.
+                #
+                # The gate cannot catch this: it fingerprints the finished
+                # composite, and the same photograph under two different
+                # titles is two different images.
+                logger.info(f"'{tip['title'][:40]}' reuses a photograph "
+                            f"published recently; trying another tip.")
+                continue
 
             # The tip names its own board. Running advice through the
             # product keyword router put a tea-towel tip on the bathroom

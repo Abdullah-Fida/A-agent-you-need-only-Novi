@@ -1694,6 +1694,10 @@ class TestBuildingAnAdvicePin(unittest.TestCase):
         agent.recent_titles = []
         agent.recent_boards = []
         agent.recent_types = []
+        # A real agent always has this from __init__; build_value_pin now
+        # reads it, because a BANK tip's photograph was never checked
+        # against the ones just published.
+        agent.recent_photos = []
         agent.last_error = ""
         agent.upload_image = None
         agent.imaging = MagicMock()
@@ -3519,3 +3523,189 @@ class TestOnePhotoFailureDoesNotCostTheSlot(unittest.TestCase):
         self.assertIn("if self.writer and not prefer_bank", src,
                       "a banked attempt must not pay for a search it is "
                       "not going to use")
+
+
+
+class TestTheSamePhotographDoesNotPublishTwice(unittest.TestCase):
+    """
+    On 15 September the board published the SAME stainless egg timer twice,
+    two hours apart:
+
+        05:05  "Place an egg timer on the counter while cooking"  (written)
+        07:03  "Set the timer before you start, not after"        (bank)
+
+    recent_photos was consulted in _find_photo, which only runs for a
+    freshly written tip that arrives with no picture. A BANK tip arrives
+    with its photograph already chosen, so build_value_pin took tip["image"]
+    and never looked.
+
+    Nothing downstream could catch it: the compliance gate fingerprints the
+    FINISHED composite, and the same photograph under two different titles
+    renders two different images with two different hashes.
+    """
+
+    EGG_TIMER = "https://images.rawpixel.com/egg-timer.jpg"
+
+    def _agent(self, tips_in_order):
+        from unittest.mock import MagicMock
+        from pin_agent.pin_bot import PinAgent
+        a = PinAgent.__new__(PinAgent)
+        a.recent_photos = [self.EGG_TIMER]
+        a.recent_tips = []
+        a.recent_boards = []
+        a.last_error = ""
+        a.upload_image = None
+        a.config = MagicMock(buffer_board_id="b1")
+        a.imaging = MagicMock()
+        a.served = []
+
+        queue = list(tips_in_order)
+
+        async def next_tip(tried, prefer_bank=False):
+            return queue.pop(0) if queue else None
+
+        async def build(product, title, eyebrow="", require_photo=False):
+            a.served.append(product["images"][0])
+            return ("/tmp/pin.jpg", b"bytes")
+
+        a._next_tip = next_tip
+        a.imaging.build = build
+        a._tip_id = lambda t: "tip_" + str(abs(hash(t)))[:8]
+        a.gate = MagicMock()
+        a.gate.approve = lambda pin: (True, [])
+        a.gate.image_fingerprint = lambda b: "hash"
+        return a
+
+    @staticmethod
+    def _tip(title, image):
+        return {"title": title, "board": "Kitchen Gadgets Worth Buying",
+                "body": "b", "photo": "egg timer", "image": image,
+                "credit": "", "photo_note": ""}
+
+    def test_a_bank_tip_reusing_a_recent_photograph_is_skipped(self):
+        agent = self._agent([
+            self._tip("Set the timer before you start, not after",
+                      self.EGG_TIMER),
+            self._tip("Keep one board for raw meat and never mix them",
+                      "https://images.rawpixel.com/board.jpg"),
+        ])
+        pin = asyncio.run(agent.build_value_pin())
+        self.assertIsNotNone(pin)
+        self.assertEqual(pin["photo_url"],
+                         "https://images.rawpixel.com/board.jpg",
+                         "the egg timer had just gone out")
+        self.assertNotIn(self.EGG_TIMER, agent.served,
+                         "it must not even be rendered")
+
+    def test_an_unused_photograph_publishes_straight_away(self):
+        agent = self._agent([
+            self._tip("Keep one board for raw meat and never mix them",
+                      "https://images.rawpixel.com/board.jpg"),
+        ])
+        pin = asyncio.run(agent.build_value_pin())
+        self.assertIsNotNone(pin)
+        self.assertEqual(pin["photo_url"],
+                         "https://images.rawpixel.com/board.jpg")
+
+    def test_the_last_attempt_publishes_anyway(self):
+        """
+        The usual relief valve. A repeated photograph is worse than a fresh
+        one and better than an empty slot -- and an empty slot is how the
+        32-hour outage happened.
+        """
+        from pin_agent.pin_bot import PinAgent
+        agent = self._agent([
+            self._tip("t%d" % i, self.EGG_TIMER)
+            for i in range(PinAgent.VALUE_PIN_ATTEMPTS)
+        ])
+        pin = asyncio.run(agent.build_value_pin())
+        self.assertIsNotNone(pin, "publishing nothing is the worse failure")
+        self.assertEqual(pin["photo_url"], self.EGG_TIMER)
+
+    def test_the_photograph_is_recorded_so_the_next_slot_sees_it(self):
+        # The guard is only as good as what _remember keeps.
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent._remember)
+        self.assertIn("recent_photos.insert(0, photo)", src)
+        self.assertIn('pin.get("photo_url")', src,
+                      "a bank pin records its photograph the same way a "
+                      "written one does")
+
+    def test_every_path_that_picks_a_photograph_checks(self):
+        """
+        There are three, and all three must look: the photo-first writer,
+        the tip-first fallback, and the bank. Missing any one of them is
+        how the timer pair happened.
+        """
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        for method in (PinAgent._write_from_a_photograph,
+                       PinAgent._find_photo,
+                       PinAgent.build_value_pin):
+            self.assertIn("recent_photos", inspect.getsource(method),
+                          f"{method.__name__} can publish a repeat")
+
+    def test_the_fallback_path_prefers_rather_than_forbids(self):
+        # If every candidate has been used, one of them is still better
+        # than no photograph at all.
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        self.assertIn("fresh or candidates",
+                      inspect.getsource(PinAgent._find_photo))
+
+
+
+class TestRecentPhotographsSurviveARestart(unittest.TestCase):
+    """
+    recent_photos is what stops a picture going out twice, and it lived only
+    in memory. On Render that is emptied by every deploy and every wake from
+    sleep, so the guard was off more often than it was on.
+
+    photo_url is stored now, but only once the migration has been run. Until
+    then a BANK tip's photograph can still be recovered, because the bank is
+    a fixed table of title -> image and the tip TITLES are stored. That is
+    the half that can be fixed without waiting for anything.
+    """
+
+    def test_a_banked_title_names_its_photograph(self):
+        from pin_agent import tips
+        banked = tips.TIP_BANK[0]
+        self.assertEqual(tips.photo_for(banked["title"]), banked["image"])
+
+    def test_a_written_title_names_nothing(self):
+        # Nothing can recover a written pin's photograph until the column
+        # exists. This must say so rather than guess.
+        from pin_agent import tips
+        self.assertEqual(
+            tips.photo_for("Place an egg timer on the counter while cooking"),
+            "")
+        self.assertEqual(tips.photo_for(""), "")
+
+    def test_the_lookup_ignores_the_things_that_are_not_the_sentence(self):
+        from pin_agent import tips
+        banked = tips.TIP_BANK[0]
+        self.assertEqual(tips.photo_for("  " + banked["title"].upper() + " "),
+                         banked["image"],
+                         "the same title stored back from the database "
+                         "should still match")
+
+    def test_every_banked_tip_resolves(self):
+        from pin_agent import tips
+        missing = [t["title"] for t in tips.TIP_BANK
+                   if not tips.photo_for(t["title"])]
+        self.assertEqual(missing, [])
+
+    def test_connect_seeds_from_the_recent_tips(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent.connect)
+        self.assertIn("photo_for", src)
+        self.assertIn("self.recent_tips", src)
+
+    def test_the_list_stays_bounded(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent.connect)
+        self.assertIn("del self.recent_photos[60:]", src,
+                      "an unbounded list grows for the life of the process")

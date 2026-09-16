@@ -504,6 +504,25 @@ def subject_of(title: str) -> str:
     return cached if cached else product_types.classify(title)
 
 
+
+# title -> the photograph that tip uses, built once at import.
+#
+# photo_url is not stored on a pin yet, so after a restart nothing remembers
+# which pictures have just gone out. For a BANK tip it can be recovered: the
+# title identifies the entry, and the entry names the photograph. See
+# PinAgent.connect.
+_PHOTOS: Dict[str, str] = {}
+
+
+def photo_for(title: str) -> str:
+    """The photograph a banked tip uses, or "" if the title is not banked."""
+    if not _PHOTOS:
+        for t in TIP_BANK:
+            key = _key(t["title"])
+            if key:
+                _PHOTOS[key] = t.get("image", "")
+    return _PHOTOS.get(_key(title or ""), "")
+
 def next_tip(recent_titles: Optional[List[str]] = None,
              blocked_subjects: Optional[Iterable[str]] = None
              ) -> Optional[Dict[str, str]]:
