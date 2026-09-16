@@ -3818,3 +3818,101 @@ class TestThePhotoMemoryNeedsNothingRunByHand(unittest.TestCase):
         self.assertIn("remember_photo", src,
                       "a photograph that published must be written down, or "
                       "the next restart lets it go out again")
+
+
+
+class TestATipMustBeAboutItsOwnPhotograph(unittest.TestCase):
+    """
+    A finished pin published "Put a shallow shelf above the sink for quick
+    towel drying" over a photograph of a bathroom sink with NO shelf and NO
+    towel in it.
+
+    The prompt already asked for advice about what is in the picture. Asking
+    is not enforcing, and a pin whose words argue with its image is the kind
+    that looks careless to everyone who sees it.
+
+    Checked in plain code over the model's own description -- the same shape
+    as the photo check, where the model describes and code decides, because
+    a yes/no judgement from a model drifts and this does not.
+    """
+
+    BATHROOM = "A modern bathroom with a vanity, toilet and shower. BRIGHT."
+    PANTRY = "Glass jars of food on wooden pantry shelves. BRIGHT."
+
+    def test_the_pin_that_actually_went_wrong(self):
+        from pin_agent.tip_writer import anchored
+        self.assertFalse(anchored(
+            "Put a shallow shelf above the sink for quick towel drying",
+            self.BATHROOM),
+            "there is no shelf and no towel in that photograph")
+
+    def test_a_tip_about_what_is_there_passes(self):
+        from pin_agent.tip_writer import anchored
+        for tip in ("Keep the vanity clear and store daily things in a tray",
+                    "Hang a caddy in the shower so bottles stay off the floor"):
+            self.assertTrue(anchored(tip, self.BATHROOM), tip)
+
+    def test_a_tip_about_a_different_room_is_refused(self):
+        from pin_agent.tip_writer import anchored
+        self.assertFalse(anchored(
+            "Hang coats on hooks by the front door", self.PANTRY))
+
+    def test_singulars_and_plurals_match(self):
+        from pin_agent.tip_writer import anchored
+        self.assertTrue(anchored("Label the front of each jar", self.PANTRY))
+        self.assertTrue(anchored("Wipe the shelves twice a year", self.PANTRY))
+
+    def test_one_thing_in_common_is_enough(self):
+        """
+        ONE word in common passes. A tip is advice, not a caption -- it
+        should say more than the picture does.
+        """
+        from pin_agent.tip_writer import anchored
+        self.assertTrue(anchored(
+            "Decant rice and pasta into jars so you see what is running low",
+            self.PANTRY))
+
+    def test_the_rule_is_strict_and_the_prompt_pays_for_it(self):
+        """
+        A tip can be perfectly good and still share no word with the
+        description -- "Decant rice and pasta so you can see what is running
+        low" is sound advice for a pantry photograph, and this refuses it.
+
+        That is accepted on purpose, because the prompt now tells the model
+        to name something from the description, and measured on real output
+        the rule refused NOTHING: 8 tips asked for, 8 kept, every one of
+        them naming what was actually in its picture -- glass jars on
+        pantry shelves, hooks above the bench, the knife block.
+
+        If that rate ever climbs, soften this rather than let the writer be
+        starved back to the fixed set.
+        """
+        from pin_agent.tip_writer import anchored
+        self.assertFalse(anchored(
+            "Decant rice and pasta so you can see what is running low",
+            self.PANTRY))
+
+    def test_filler_words_do_not_count_as_a_match(self):
+        from pin_agent.tip_writer import anchored
+        # "a", "the", "with", "bright" are in every description ever written.
+        self.assertFalse(anchored("Keep the things in a bright place",
+                                  self.PANTRY))
+
+    def test_an_empty_description_never_blocks(self):
+        # Nothing to check against is not a reason to publish nothing.
+        from pin_agent.tip_writer import anchored
+        self.assertTrue(anchored("Any tip at all here", ""))
+
+    def test_the_writer_enforces_it(self):
+        import inspect
+        from pin_agent.tip_writer import TipWriter
+        src = inspect.getsource(TipWriter.write_for_photo)
+        self.assertIn("anchored(", src)
+        self.assertIn("description", src)
+
+    def test_the_prompt_says_so_as_well(self):
+        # Rejecting costs a call; asking properly costs nothing.
+        import inspect
+        from pin_agent.tip_writer import TipWriter
+        src = inspect.getsource(TipWriter.write_for_photo)
+        self.assertIn("does not list", src)

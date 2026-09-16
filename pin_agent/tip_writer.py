@@ -102,6 +102,61 @@ laundry", "kitchen drawer". Never abstract ("organisation", "tidiness"), \
 never a brand, never a person.""" % (TITLE_MIN, TITLE_MAX, BODY_MIN, BODY_MAX)
 
 
+
+# Words that carry no subject -- ignored when checking that a tip is about
+# something actually in the photograph.
+_EMPTY = {
+    "a", "an", "the", "and", "or", "but", "of", "in", "on", "at", "to", "for",
+    "with", "from", "by", "into", "onto", "over", "under", "above", "below",
+    "up", "down", "out", "off", "is", "are", "was", "were", "be", "been",
+    "it", "its", "this", "that", "these", "those", "your", "you", "them",
+    "they", "keep", "put", "use", "using", "store", "storing", "make", "get",
+    "give", "take", "one", "two", "three", "each", "every", "all", "some",
+    "any", "more", "most", "less", "than", "then", "so", "not", "no", "can",
+    "will", "do", "does", "photograph", "photo", "bright", "plain", "dark",
+    "indoors", "modern", "home", "interior", "shot", "image", "there",
+    "here", "where", "when", "what", "how", "if", "as", "back", "front",
+    "side", "top", "bottom", "left", "right", "near", "next", "first",
+    "last", "new", "old", "good", "best", "small", "large", "big", "little",
+}
+
+
+def _things(text: str) -> set:
+    """The words in a piece of text that name something."""
+    words = re.findall(r"[a-z]+", (text or "").lower())
+    out = set()
+    for w in words:
+        if len(w) < 3 or w in _EMPTY:
+            continue
+        out.add(w)
+        # So "shelves" matches "shelf" and "jars" matches "jar".
+        if w.endswith("ies") and len(w) > 4:
+            out.add(w[:-3] + "y")
+        elif w.endswith("ves") and len(w) > 4:
+            out.add(w[:-3] + "f")
+        elif w.endswith("es") and len(w) > 3:
+            out.add(w[:-2])
+        elif w.endswith("s") and len(w) > 3:
+            out.add(w[:-1])
+    return out
+
+
+def anchored(tip_text: str, description: str) -> bool:
+    """
+    Does the tip talk about anything the photograph actually shows?
+
+    A pin published "Put a shallow shelf above the sink for quick towel
+    drying" over a sink with no shelf and no towel in it. The prompt asks
+    the model not to do that; this is what stops it.
+
+    Deliberately generous -- ONE thing in common is enough. The tip is
+    advice, not a caption, so it should say more than the picture does. What
+    it must not do is be about something else entirely.
+    """
+    seen = _things(description)
+    return not seen or bool(_things(tip_text) & seen)
+
+
 class TipWriter:
     """Turns a board into a fresh, publishable tip."""
 
@@ -326,7 +381,11 @@ class TipWriter:
             f"this photograph illustrates. The tip must make sense to "
             f"someone looking at that exact picture -- write about what is "
             f"IN it, not about something it reminds you of. Do not describe "
-            f"the photograph; give advice."
+            f"the photograph; give advice.\n\n"
+            f"Name at least one thing from that description in the tip. Do "
+            f"NOT mention an object the description does not list: a tip "
+            f"about a shelf over a photograph with no shelf in it looks "
+            f"like a mistake to everyone who sees it."
         )
         taken = list(avoid_subjects or []) + self._objects_taken(avoid or [])
         if taken:
@@ -349,6 +408,18 @@ class TipWriter:
         if problems:
             self.rejected += 1
             self.last_error = "; ".join(problems)
+            return None
+
+        # IT HAS TO BE ABOUT THE PICTURE. A pin published "Put a shallow
+        # shelf above the sink for quick towel drying" over a sink with no
+        # shelf and no towel in it. The prompt asks for advice about what is
+        # in the photograph; this is what enforces it.
+        if not anchored(f"{tip['title']} {tip['body']}", description):
+            self.rejected += 1
+            self.last_error = ("the tip is not about anything in the "
+                               "photograph")
+            logger.info(f"Refused a tip that ignored its picture: "
+                        f"{tip['title'][:46]}")
             return None
 
         if board not in board_routing.ALL_BOARDS:
