@@ -413,30 +413,34 @@ class PinAgent:
             self.TIP_ROTATION)
         self.recent_types = await self.store.recent_types(
             product_types.COOLDOWN_DAYS)
-        self.photo_pool = await self.store.verified_photos()
-        # Durable now. Held only in memory, a redeploy re-enabled a
-        # photograph that had already been used.
-        self.recent_photos = [p["photo_url"] for p in self.photo_pool[:60]]
+        # THE PHOTO MEMORY, from the image bucket. It needs no migration,
+        # so this works the day it ships: every photograph published is
+        # remembered and never repeats, and every photograph the vision
+        # check approved stays available to write about again.
+        memory = await self.store.photo_memory()
+        self.recent_photos = list(memory["used"])
+        self.photo_pool = list(memory["pool"])
 
-        # AND THE ONES THAT CAN BE WORKED OUT FROM THE TITLE. The bank is a
-        # fixed table of title -> photograph, so a recent bank pin says
-        # exactly which picture it used even though photo_url was never
-        # stored. Until the migration runs this is the only durable memory
-        # of a published photograph there is, and without it the same
-        # picture goes out again after any restart -- on 15 September the
-        # same egg timer published twice in two hours.
+        # The database columns say the same thing, and are authoritative
+        # once the migration has been run. Merged rather than replaced, so
+        # neither source can lose what the other knows.
+        for entry in await self.store.verified_photos():
+            if entry["photo_url"] not in {p["photo_url"]
+                                          for p in self.photo_pool}:
+                self.photo_pool.append(entry)
+
+        # And anything that can be worked out from a title. A tip taken
+        # from the fixed set names its own photograph, so an older pin
+        # still counts against repeats even if it predates this memory.
         for title in self.recent_tips:
             url = tip_bank.photo_for(title)
             if url and url not in self.recent_photos:
                 self.recent_photos.append(url)
-        del self.recent_photos[60:]
+        del self.recent_photos[self.store.USED_LIMIT:]
 
-        if self.photo_pool:
-            logger.info(f"{len(self.photo_pool)} photograph(s) already "
-                        f"verified and reusable.")
-        if self.recent_photos:
-            logger.info(f"{len(self.recent_photos)} photograph(s) published "
-                        f"recently and held back.")
+        logger.info(f"Photo memory: {len(self.recent_photos)} published "
+                    f"(held back), {len(self.photo_pool)} verified and "
+                    f"reusable.")
 
         # Pins that were waiting for a decision when the process last
         # stopped. Without this the queue is empty after every deploy and
@@ -1336,7 +1340,7 @@ class PinAgent:
             photo = pin.get("photo_url") or ""
             if photo:
                 self.recent_photos.insert(0, photo)
-                del self.recent_photos[60:]
+                del self.recent_photos[self.store.USED_LIMIT:]
             return
 
         self.recent_titles.insert(
@@ -1386,6 +1390,12 @@ class PinAgent:
             # Kept in memory too, so two pins in the same session cannot
             # describe the same product before the next connect() reload.
             self._remember(pin)
+            # AND WRITTEN DOWN, so a restart cannot let the same photograph
+            # go out again. Last, after the pin is safely away: a storage
+            # hiccup may cost the memory, never the pin.
+            if pin.get("photo_url"):
+                await self.store.remember_photo(pin["photo_url"],
+                                                pin.get("photo_note", ""))
             logger.info(f"Pin published ({self.published_today}/"
                         f"{self.daily_cap()} today, "
                         f"{self.gate.kind_of(pin)}).")

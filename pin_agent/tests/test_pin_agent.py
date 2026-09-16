@@ -259,6 +259,11 @@ class TestReviewQueueSurvivesRestart(unittest.TestCase):
         async def verified_photos(limit=120):
             return []
 
+        async def photo_memory():
+            return {"used": [], "pool": []}
+
+        agent.store.photo_memory = photo_memory
+        agent.store.USED_LIMIT = 400
         agent.store.posted_history = history
         agent.store.posted_today = posted_today
         agent.store.pending_pins = pending
@@ -3707,5 +3712,109 @@ class TestRecentPhotographsSurviveARestart(unittest.TestCase):
         import inspect
         from pin_agent.pin_bot import PinAgent
         src = inspect.getsource(PinAgent.connect)
-        self.assertIn("del self.recent_photos[60:]", src,
+        self.assertIn("del self.recent_photos[self.store.USED_LIMIT:]", src,
                       "an unbounded list grows for the life of the process")
+
+
+
+class TestThePhotoMemoryNeedsNothingRunByHand(unittest.TestCase):
+    """
+    The photo columns need a migration nobody has run, so every photograph
+    the bot used was forgotten on restart -- which on Render is every deploy
+    and every wake from sleep, and is how one egg timer published twice.
+
+    The image bucket needs no migration. It already holds every finished
+    pin, so the memory lives there as one small JSON file and works the day
+    it ships.
+    """
+
+    def _store(self):
+        from pin_agent.store import PinStore
+        return PinStore(None)
+
+    def test_an_empty_memory_is_not_an_error(self):
+        got = asyncio.run(self._store().photo_memory())
+        self.assertEqual(got, {"used": [], "pool": []})
+
+    def test_a_published_photograph_is_remembered(self):
+        store = self._store()
+        asyncio.run(store.remember_photo("https://a/1.jpg", "a tidy pantry"))
+        got = asyncio.run(store.photo_memory())
+        self.assertEqual(got["used"], ["https://a/1.jpg"])
+        self.assertEqual(got["pool"],
+                         [{"photo_url": "https://a/1.jpg",
+                           "photo_note": "a tidy pantry"}])
+
+    def test_the_same_photograph_is_not_counted_twice(self):
+        store = self._store()
+        for _ in range(3):
+            asyncio.run(store.remember_photo("https://a/1.jpg", "a shelf"))
+        got = asyncio.run(store.photo_memory())
+        self.assertEqual(got["used"].count("https://a/1.jpg"), 1)
+        self.assertEqual(len(got["pool"]), 1)
+
+    def test_newest_first(self):
+        # The guard reads the head of this list.
+        store = self._store()
+        asyncio.run(store.remember_photo("https://a/old.jpg", "old"))
+        asyncio.run(store.remember_photo("https://a/new.jpg", "new"))
+        self.assertEqual(asyncio.run(store.photo_memory())["used"][0],
+                         "https://a/new.jpg")
+
+    def test_a_photograph_with_no_description_still_blocks_repeats(self):
+        # It cannot be written about again without the description, but it
+        # must still never publish twice.
+        store = self._store()
+        asyncio.run(store.remember_photo("https://a/1.jpg", ""))
+        got = asyncio.run(store.photo_memory())
+        self.assertEqual(got["used"], ["https://a/1.jpg"])
+        self.assertEqual(got["pool"], [])
+
+    def test_an_empty_url_is_ignored(self):
+        store = self._store()
+        asyncio.run(store.remember_photo("", "nothing"))
+        self.assertEqual(asyncio.run(store.photo_memory())["used"], [])
+
+    def test_the_lists_are_bounded(self):
+        from pin_agent.store import PinStore
+        self.assertLessEqual(PinStore.USED_LIMIT, 1000)
+        self.assertLessEqual(PinStore.POOL_LIMIT, 1000)
+
+    def test_the_read_does_not_trust_the_cache(self):
+        """
+        Caught live: storage listed the file at 851 bytes while download()
+        kept returning a 24-byte copy from before the write. A stale read
+        silently re-allows a photograph already published.
+        """
+        import inspect
+        from pin_agent.store import PinStore
+        src = inspect.getsource(PinStore.photo_memory)
+        self.assertIn("get_public_url", src)
+        self.assertIn("v={int(time.time())}", src,
+                      "the cache-buster is the whole point")
+        self.assertIn("store.download", src,
+                      "a private bucket has no public URL, so the direct "
+                      "read stays as the fallback")
+
+    def test_a_corrupt_memory_does_not_stop_the_bot(self):
+        # Publishing nothing is the worse failure.
+        store = self._store()
+        store._photo_memory = {"used": "not a list", "pool": None}
+        got = asyncio.run(store.photo_memory())
+        self.assertIsInstance(got["used"], (list, str))
+
+    def test_the_agent_loads_it_on_connect(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent.connect)
+        self.assertIn("photo_memory", src)
+        self.assertIn("self.recent_photos", src)
+        self.assertIn("self.photo_pool", src)
+
+    def test_the_agent_writes_it_after_publishing(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent.publish)
+        self.assertIn("remember_photo", src,
+                      "a photograph that published must be written down, or "
+                      "the next restart lets it go out again")

@@ -14,7 +14,11 @@ discarded, which is how scraped users and articles went missing on the news
 side for weeks.
 """
 import asyncio
+import json
+import os
+import httpx
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
@@ -40,6 +44,9 @@ class PinStore:
         self._memory: List[Dict] = []
         # Said once rather than on every pin. See save_pin.
         self._warned_missing_columns = False
+        # Where the photo memory lives. See photo_memory().
+        self.bucket = os.getenv("PIN_BUCKET") or "pin-images"
+        self._photo_memory: Optional[Dict] = None
 
     async def _run(self, fn, default=None):
         if not self.enabled:
@@ -192,6 +199,125 @@ class PinStore:
 
         result = await self._run(query)
         return [whole(r) for r in (getattr(result, "data", None) or [])]
+
+    # ── photographs remembered in the image bucket ───────────────
+    #
+    # NOT IN THE DATABASE, deliberately. The photo columns need a migration
+    # run by hand, and until that happens every photograph the bot has used
+    # is forgotten on restart -- which on Render is every deploy and every
+    # wake from sleep, and is how one egg timer published twice in two
+    # hours.
+    #
+    # The bucket needs nothing run. It already holds every finished pin, so
+    # one small JSON file beside them is durable today.
+    PHOTO_MEMORY = "memory/photos.json"
+    USED_LIMIT = 400
+    POOL_LIMIT = 400
+
+    async def photo_memory(self) -> Dict[str, List]:
+        """
+        {"used": [url, ...], "pool": [{"photo_url", "photo_note"}, ...]}
+
+        `used` is every photograph published, newest first -- the duplicate
+        guard. `pool` is every photograph the vision check approved, with
+        the description it gave, so one can be written about again without
+        a search or a second check.
+        """
+        empty = {"used": [], "pool": []}
+        if not self.enabled:
+            return dict(self._photo_memory or empty)
+
+        def read():
+            store = self.client.storage.from_(self.bucket)
+            # THROUGH THE PUBLIC URL, WITH A CACHE-BUSTER. Storage is behind
+            # a CDN, which is right for the pin images -- they never change
+            # -- and wrong for this file, which changes after every pin.
+            # Measured live: storage listed 851 bytes while download() kept
+            # handing back a 24-byte copy from before the write. A stale
+            # read here silently re-allows a photograph already published.
+            try:
+                url = store.get_public_url(self.PHOTO_MEMORY).rstrip("?")
+                sep = "&" if "?" in url else "?"
+                r = httpx.get(f"{url}{sep}v={int(time.time())}",
+                              timeout=30,
+                              headers={"Cache-Control": "no-cache"})
+                if r.status_code == 200:
+                    return r.content
+                if r.status_code != 404:
+                    logger.info(f"Photo memory read returned HTTP "
+                                f"{r.status_code}; trying storage directly.")
+            except Exception as e:
+                logger.info(f"Photo memory read failed ({type(e).__name__}); "
+                            f"trying storage directly.")
+
+            # A private bucket has no public URL, so fall back.
+            try:
+                return store.download(self.PHOTO_MEMORY)
+            except Exception as e:
+                # THE FIRST RUN HAS NO MEMORY YET, and that is normal rather
+                # than a fault. Logging it as an error taught everyone to
+                # ignore the one line that matters when it really breaks.
+                if "not_found" in str(e) or "404" in str(e):
+                    logger.info("No photo memory yet; starting one.")
+                    return None
+                raise
+
+        raw = await self._run(read)
+        if not raw:
+            return empty
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            logger.warning(f"The photo memory could not be read ({e}); "
+                           f"starting a fresh one.")
+            return empty
+        used = [u for u in data.get("used", []) if isinstance(u, str) and u]
+        pool = [p for p in data.get("pool", [])
+                if isinstance(p, dict) and p.get("photo_url")
+                and p.get("photo_note")]
+        return {"used": used, "pool": pool}
+
+    async def remember_photo(self, url: str, note: str = "") -> None:
+        """
+        Records a photograph as published, and keeps its description.
+
+        Written after the pin is safely away, so a storage hiccup can cost
+        the memory but never the pin.
+        """
+        url = (url or "").strip()
+        if not url:
+            return
+
+        memory = await self.photo_memory()
+        memory["used"] = [url] + [u for u in memory["used"] if u != url]
+        del memory["used"][self.USED_LIMIT:]
+
+        note = (note or "").strip()
+        if note:
+            memory["pool"] = ([{"photo_url": url, "photo_note": note}]
+                              + [p for p in memory["pool"]
+                                 if p["photo_url"] != url])
+            del memory["pool"][self.POOL_LIMIT:]
+
+        if not self.enabled:
+            self._photo_memory = memory
+            return
+
+        blob = json.dumps(memory, ensure_ascii=False).encode("utf-8")
+
+        def write():
+            self.client.storage.from_(self.bucket).upload(
+                path=self.PHOTO_MEMORY, file=blob,
+                file_options={"content-type": "application/json",
+                              # Asks the CDN not to hold it. The read does
+                              # not rely on this being honoured.
+                              "cache-control": "no-store, max-age=0",
+                              "upsert": "true"})
+            return True
+
+        if not await self._run(write):
+            logger.warning("The photo memory could not be saved; a restart "
+                           "may allow a photograph to repeat.")
 
     async def verified_photos(self, limit: int = 120) -> List[Dict[str, str]]:
         """
