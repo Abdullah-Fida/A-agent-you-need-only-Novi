@@ -182,8 +182,8 @@ TIP_BANK: List[Dict[str, str]] = [
              "slowing it. A cool cupboard for a few days, or the freezer for "
              "anything longer, keeps the loaf far better."},
     {"board": "Pantry and Fridge Storage",
-     "photo": "cereal",
-     "image": "https://cdn.stocksnap.io/img-thumbs/960w/BC5DD62102.jpg",
+     "photo": "pantry shelves food",
+     "image": "https://upload.wikimedia.org/wikipedia/commons/b/be/Container_storage_at_a_kitchen_pantry_with_different_types_of_food_items_in_jars_and_bottles_at_home.jpg",
      "credit": "",
      "title": "Group pantry food by meal, not by packet size",
      "body": "Breakfast things together, baking things together. Organising "
@@ -272,8 +272,8 @@ TIP_BANK: List[Dict[str, str]] = [
              "thing you have. Shelves above door height hold everything used "
              "seasonally."},
     {"board": "Tiny Apartment Solutions",
-     "photo": "shoes in a hallway",
-     "image": "https://images.rawpixel.com/editor_1024/cHJpdmF0ZS9sci9pbWFnZXMvd2Vic2l0ZS8yMDIyLTA0L3Vwd2s2MTg0NzM1Ni13aWtpbWVkaWEtaW1hZ2Uta293cGsyYTEuanBn.jpg",
+     "photo": "shoes by front door",
+     "image": "https://pd.w.org/2023/02/96263ef372d17fcb0.24847333-1127x2048.jpg",
      "credit": "",
      "title": "Keep only this week's shoes by the front door",
      "body": "An entryway holds four pairs before it looks chaotic. "
@@ -374,8 +374,8 @@ TIP_BANK: List[Dict[str, str]] = [
      "body": "Rigid colanders are mostly air and take a whole shelf. One "
              "that folds flat does the same job and stores in a drawer."},
     {"board": "Kitchen Gadgets Worth Buying",
-     "photo": "jar lid",
-     "image": "https://images.rawpixel.com/editor_1024/cHJpdmF0ZS9sci9pbWFnZXMvd2Vic2l0ZS8yMDIzLTAzL2NsZTE5OTctLTIwLS1iLWltYWdlLmpwZw.jpg",
+     "photo": "glass jars kitchen",
+     "image": "https://cdn.stocksnap.io/img-thumbs/960w/XVIICAUSKR.jpg",
      "credit": "",
      "title": "Hot water opens a stuck jar lid in seconds",
      "body": "Thirty seconds of hot tap water on the lid expands the metal "
