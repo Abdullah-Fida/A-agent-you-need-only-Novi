@@ -130,12 +130,18 @@ def _things(text: str) -> set:
             continue
         out.add(w)
         # So "shelves" matches "shelf" and "jars" matches "jar".
+        #
+        # BOTH forms for an "es" ending, because one rule cannot tell
+        # "boxes" (box) from "spices" (spice) -- and taking only the first
+        # turned "spices" into "spic", which then failed to match "spice
+        # jars" and refused a perfectly good tip.
         if w.endswith("ies") and len(w) > 4:
             out.add(w[:-3] + "y")
         elif w.endswith("ves") and len(w) > 4:
             out.add(w[:-3] + "f")
         elif w.endswith("es") and len(w) > 3:
             out.add(w[:-2])
+            out.add(w[:-1])
         elif w.endswith("s") and len(w) > 3:
             out.add(w[:-1])
     return out

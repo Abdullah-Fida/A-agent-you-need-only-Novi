@@ -18,6 +18,7 @@ from typing import Dict, List, Optional
 from pin_agent import boards as board_routing
 from pin_agent import product_types
 from pin_agent import tips as tip_bank
+from pin_agent import tip_writer
 from pin_agent.tip_writer import TipWriter
 from pin_agent.compliance import ComplianceGate
 from pin_agent.photo_check import PhotoVerifier
@@ -1044,6 +1045,58 @@ class PinAgent:
                 return room
         return words[-1] if len(words) > 1 else ""
 
+    async def _picture_suits(self, tip: Dict, photo_url: str) -> bool:
+        """
+        Does an already-chosen picture actually suit the tip's words?
+
+        A TIP THAT ARRIVES WITH ITS PICTURE has never been asked this. The
+        picture was chosen against a SEARCH TERM, and "kitchen drawer" is
+        perfectly satisfied by a drawer full of cutlery under a tip about
+        stacking pans. Three of fifteen published pins went out that way,
+        every one of them from the fixed set:
+
+            "Stack pans with the lids stored separately"   cutlery
+            "Only daily appliances deserve worktop space"  fruit
+            "One hook per person beats one rail"           people
+
+        Asking the vision model for a verdict does NOT catch these -- tried
+        against those three photographs, it allowed all three, because the
+        verdict is reached against that same search term. Its DESCRIPTION
+        of each was exactly right, though, so the description is what gets
+        judged, in plain code, by the same rule a freshly written tip has
+        to satisfy. On the real descriptions: 3 of 3 bad caught, 4 of 4
+        good kept.
+
+        THE SAFETY NET MUST NOT DEPEND ON THE THING IT PROTECTS AGAINST.
+        This set exists for the moments the vision check cannot answer, so
+        "no answer" means yes.
+        """
+        if not (self.verifier and self.verifier.is_ready and photo_url):
+            return True
+
+        note = tip.get("photo_note") or ""
+        if not note:
+            ok = await self.verifier.verify_url(
+                photo_url, tip.get("photo") or tip["title"],
+                caption=tip["title"])
+            if ok is False:
+                return False
+            note = self.verifier.last_description or ""
+            if not note:
+                return True
+            tip["photo_note"] = note
+
+        # THE TITLE ONLY. The body is not printed on the image, and on a
+        # fixed-set tip it is a paragraph of related words -- "drawer",
+        # "cabinet", "kitchen" -- that anchored every one of the three
+        # known-bad pictures and let them straight through. What a viewer
+        # compares against the photograph is the sentence across it.
+        if tip_writer.anchored(tip["title"], note):
+            return True
+        logger.info(f"'{tip['title'][:40]}' does not match its picture "
+                    f"({note[:52]}).")
+        return False
+
     async def build_value_pin(self) -> Optional[Dict]:
         """
         Produces one advice pin, or None.
@@ -1083,6 +1136,11 @@ class PinAgent:
                     logger.info(f"No verified photograph for "
                                 f"'{tip['photo']}'; trying another tip.")
                     continue
+            elif (attempt < last_attempt
+                    and not await self._picture_suits(tip, photo_url)):
+                logger.info(f"The picture for '{tip['title'][:40]}' does "
+                            f"not suit it; trying another tip.")
+                continue
             elif photo_url in self.recent_photos and attempt < last_attempt:
                 # A BANK TIP ARRIVES WITH ITS PHOTOGRAPH ALREADY CHOSEN, so
                 # it never passed through _find_photo, where this check

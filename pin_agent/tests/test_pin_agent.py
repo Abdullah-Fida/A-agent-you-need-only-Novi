@@ -3556,6 +3556,9 @@ class TestTheSamePhotographDoesNotPublishTwice(unittest.TestCase):
         from pin_agent.pin_bot import PinAgent
         a = PinAgent.__new__(PinAgent)
         a.recent_photos = [self.EGG_TIMER]
+        # A real agent always has one; build_value_pin now asks it whether
+        # a fixed-set picture suits its title.
+        a.verifier = None
         a.recent_tips = []
         a.recent_boards = []
         a.last_error = ""
@@ -3916,3 +3919,130 @@ class TestATipMustBeAboutItsOwnPhotograph(unittest.TestCase):
         from pin_agent.tip_writer import TipWriter
         src = inspect.getsource(TipWriter.write_for_photo)
         self.assertIn("does not list", src)
+
+
+
+class TestAFixedTipsPictureMustSuitItsTitle(unittest.TestCase):
+    """
+    Three of the last fifteen published pins had a picture that did not show
+    what the title said, and every one came from the fixed set:
+
+        "Stack pans with the lids stored separately"      a cutlery drawer
+        "Only daily appliances deserve worktop space"     a bowl of fruit
+        "One hook per person beats one rail for everyone" people, no hooks
+
+    Auditing those photographs missed all three, because the audit asked the
+    question the photograph was CHOSEN by -- does this match the search term
+    "kitchen drawer" -- and a cutlery drawer does. Nobody asked whether it
+    matched the TITLE. A freshly written tip is asked exactly that, so the
+    fixed set is now asked it too.
+    """
+
+    def _agent(self, verdicts, verifier_ready=True):
+        from unittest.mock import MagicMock
+        from pin_agent.pin_bot import PinAgent
+        a = PinAgent.__new__(PinAgent)
+        a.recent_photos = []
+        a.recent_tips = []
+        a.recent_boards = []
+        a.last_error = ""
+        a.upload_image = None
+        a.config = MagicMock(buffer_board_id="b1")
+        a.imaging = MagicMock()
+        a.asked = []
+
+        class Verifier:
+            is_ready = verifier_ready
+            last_description = ""
+
+            async def verify_url(self, url, subject, caption=""):
+                a.asked.append((url, caption))
+                # What the model SAW, which is what gets judged -- its
+                # yes/no is reached against the search term and allowed
+                # all three of the real failures.
+                self.last_description = verdicts.get(url, "")
+                return True
+
+        a.verifier = Verifier()
+
+        # Cycles, because the real _next_tip always returns SOMETHING --
+        # the fixed set tiers down to "anything" rather than give up.
+        tips_left = list(self.TIPS)
+
+        async def next_tip(tried, prefer_bank=False):
+            if not tips_left:
+                tips_left.extend(self.TIPS)
+            return dict(tips_left.pop(0))
+
+        async def build(product, title, eyebrow="", require_photo=False):
+            return ("/tmp/pin.jpg", b"bytes")
+
+        a._next_tip = next_tip
+        a.imaging.build = build
+        a._tip_id = lambda t: "tip"
+        a.gate = MagicMock()
+        a.gate.approve = lambda pin: (True, [])
+        a.gate.image_fingerprint = lambda b: "hash"
+        return a
+
+    TIPS = [
+        {"title": "Stack pans with the lids stored separately",
+         "board": "Under Sink and Cabinet Storage", "body": "b",
+         "photo": "kitchen drawer", "image": "https://a/cutlery.jpg",
+         "credit": "", "photo_note": ""},
+        {"title": "Keep eggs in their carton, pointed end down",
+         "board": "Pantry and Fridge Storage", "body": "b",
+         "photo": "eggs", "image": "https://a/eggs.jpg",
+         "credit": "", "photo_note": ""},
+    ]
+
+    CUTLERY = "Cutlery in a wooden drawer organizer in a kitchen. BRIGHT."
+    EGGS = "Brown eggs in a green cardboard carton. BRIGHT."
+
+    def test_a_picture_that_does_not_suit_the_title_is_skipped(self):
+        agent = self._agent({"https://a/cutlery.jpg": self.CUTLERY,
+                             "https://a/eggs.jpg": self.EGGS})
+        pin = asyncio.run(agent.build_value_pin())
+        self.assertIsNotNone(pin)
+        self.assertEqual(pin["photo_url"], "https://a/eggs.jpg")
+
+    def test_the_title_is_what_it_is_judged_against(self):
+        # Not the search term -- that is the question it already passed.
+        agent = self._agent({"https://a/cutlery.jpg": self.CUTLERY})
+        asyncio.run(agent.build_value_pin())
+        self.assertTrue(agent.asked)
+        url, caption = agent.asked[0]
+        self.assertEqual(caption, "Stack pans with the lids stored separately")
+
+    def test_a_good_picture_publishes_without_fuss(self):
+        agent = self._agent({"https://a/cutlery.jpg":
+                             "Stacked pans and lids in a cabinet. BRIGHT."})
+        pin = asyncio.run(agent.build_value_pin())
+        self.assertEqual(pin["photo_url"], "https://a/cutlery.jpg")
+
+    def test_no_description_means_yes(self):
+        # A vision check that cannot answer must not silence the slot.
+        agent = self._agent({})
+        pin = asyncio.run(agent.build_value_pin())
+        self.assertEqual(pin["photo_url"], "https://a/cutlery.jpg")
+
+    def test_nothing_is_checked_when_the_verifier_is_down(self):
+        """
+        THE SAFETY NET MUST NOT DEPEND ON THE THING IT PROTECTS AGAINST.
+        The fixed set exists for the moments the vision check cannot
+        answer, so when it is unavailable the pin goes out as before.
+        """
+        agent = self._agent({"https://a/cutlery.jpg": self.CUTLERY},
+                            verifier_ready=False)
+        pin = asyncio.run(agent.build_value_pin())
+        self.assertEqual(pin["photo_url"], "https://a/cutlery.jpg")
+        self.assertEqual(agent.asked, [], "it must not even be asked")
+
+    def test_the_last_attempt_publishes_anyway(self):
+        # A dull pin beats an empty slot.
+        from pin_agent.pin_bot import PinAgent
+        agent = self._agent({"https://a/cutlery.jpg": self.CUTLERY,
+                             "https://a/eggs.jpg": self.CUTLERY})
+        agent.TIPS = self.TIPS
+        pin = asyncio.run(agent.build_value_pin())
+        self.assertIsNotNone(pin, "publishing nothing is the worse failure")
