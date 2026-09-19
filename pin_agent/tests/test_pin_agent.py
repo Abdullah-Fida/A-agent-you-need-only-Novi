@@ -2211,8 +2211,8 @@ class TestASlotIsNotLostToAStrictVerifier(unittest.TestCase):
         import inspect
         from pin_agent.pin_bot import PinAgent
         src = inspect.getsource(PinAgent.build_value_pin)
-        self.assertIn("prefer_bank=attempt > 1", src)
-        self.assertGreater(PinAgent.VALUE_PIN_ATTEMPTS, 2,
+        self.assertIn("prefer_bank=attempt > 2", src)
+        self.assertGreater(PinAgent.VALUE_PIN_ATTEMPTS, 3,
                            "two fresh attempts must still leave one for "
                            "the bank")
 
@@ -3507,7 +3507,7 @@ class TestOnePhotoFailureDoesNotCostTheSlot(unittest.TestCase):
         import inspect
         from pin_agent.pin_bot import PinAgent
         src = inspect.getsource(PinAgent.build_value_pin)
-        self.assertIn("prefer_bank=attempt > 1", src)
+        self.assertIn("prefer_bank=attempt > 2", src)
 
     def test_the_bank_still_takes_over(self):
         # Unbounded fresh retries would spend the whole hour failing.

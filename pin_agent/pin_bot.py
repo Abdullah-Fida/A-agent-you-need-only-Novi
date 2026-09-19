@@ -695,7 +695,7 @@ class PinAgent:
     # Tips to try before giving the slot up. Each attempt is one image
     # download now that the photographs are chosen rather than searched, so
     # this can be generous.
-    VALUE_PIN_ATTEMPTS = 4
+    VALUE_PIN_ATTEMPTS = 5
 
     def product_quota(self) -> int:
         """
@@ -1059,12 +1059,12 @@ class PinAgent:
         # photograph is worse than a fresh one and better than no pin.
         last_attempt = self.VALUE_PIN_ATTEMPTS - 1
         for attempt in range(self.VALUE_PIN_ATTEMPTS):
-            # TWO fresh attempts, then the bank. Most first-attempt
+            # THREE fresh attempts, then the fixed set. Most first-attempt
             # failures are an Openverse timeout on one subject rather than
             # the verifier refusing, and a different subject is a genuinely
             # different draw -- measured, one subject timed out while the
             # next returned four photographs and published. See _next_tip.
-            tip = await self._next_tip(tried, prefer_bank=attempt > 1)
+            tip = await self._next_tip(tried, prefer_bank=attempt > 2)
             if not tip:
                 self.last_error = "no tip could be produced"
                 logger.error(self.last_error)
