@@ -1015,7 +1015,7 @@ class TestFacebookImageAttachment(unittest.TestCase):
         syn = SocialSyndicator(buffer=buf, site_url="https://example.com",
                                services=["facebook"])
         syn._slot_is_allowed = lambda *a: True   # this is about WHAT, not WHEN
-        asyncio.run(syn.syndicate({"slug": "s", "title": "A real headline here",
+        asyncio.run(syn.syndicate({"slug": "s", "title": "A real US headline here",
                                    "main_image_url": "https://ours/hero.jpg"}))
         self.assertEqual(buf.send.await_args.kwargs["image_url"],
                          "https://ours/hero.jpg")
@@ -3189,9 +3189,12 @@ class TestSocialSyndicator(unittest.TestCase):
     trigger is the ARTICLE rather than the Telegram schedule.
     """
 
+    # A US story, because the four accounts now carry nothing else and a
+    # neutral headline would make every test below check the filter rather
+    # than the thing it is named for.
     ARTICLE = {
         "slug": "bitcoin-halving-explained",
-        "title": "How the Bitcoin halving affects the price, explained",
+        "title": "How the Bitcoin halving affects US prices, explained",
         "meta_description": ("The halving cuts new supply in half roughly every "
                              "four years. Here is the mechanism, the historical "
                              "record, and why past cycles are not a promise."),
@@ -3234,12 +3237,16 @@ class TestSocialSyndicator(unittest.TestCase):
                        or link in syn.first_comment_for(service, link))
             self.assertTrue(reaches, f"{service} post has no link anywhere")
 
-    def test_a_free_plan_puts_the_facebook_link_back_in_the_post(self):
+    def test_a_free_plan_changes_nothing_now(self):
         """
         Buffer answers "First comment requires a paid plan" and rejects the
-        WHOLE post. That is how a design which passed every dry run failed on
-        its first real publish. The transport records the answer, and the
-        link moves into the body rather than vanishing.
+        WHOLE post -- which is how a design that passed every dry run failed
+        on its first real publish. The link used to move into the body
+        rather than vanish.
+
+        There is no link by either route any more, so a free plan and a paid
+        one produce exactly the same post, and the rule that caught the
+        original failure can no longer be triggered.
         """
         buf = MagicMock()
         buf.ensure_channels = AsyncMock(
@@ -3253,8 +3260,7 @@ class TestSocialSyndicator(unittest.TestCase):
         results = asyncio.run(syn.syndicate(self.ARTICLE))
         self.assertTrue(results["facebook"])
         text = buf.send.await_args.args[1]
-        link = syn.article_link(self.ARTICLE["slug"])
-        self.assertIn(link, text, "the link vanished entirely")
+        self.assertNotIn(syn.article_link(self.ARTICLE["slug"]), text)
         self.assertEqual(buf.send.await_args.kwargs["first_comment"], "")
 
     def test_the_transport_learns_that_first_comments_are_paid(self):
@@ -3283,10 +3289,15 @@ class TestSocialSyndicator(unittest.TestCase):
         self.assertFalse(bb.first_comment_supported, "it must remember")
         self.assertEqual(len(calls), 1, "no blind retry that loses the link")
 
-    def test_the_first_facebook_post_is_rewritten_not_lost(self):
+    def test_facebook_never_trips_the_paid_plan_rule_now(self):
         """
-        Buffer only reveals the paid-plan rule by refusing a post. The one
-        that discovers it must still reach Facebook, WITH its link.
+        Buffer only reveals the paid-plan rule by refusing a post that
+        carries a first comment, and the post that discovered it had to be
+        rewritten with its link in the body rather than lost.
+
+        No post carries a first comment any more, so that whole exchange
+        cannot happen: one send, accepted, no rewrite. The recovery code
+        stays -- it costs nothing and the rule is Buffer's, not ours.
         """
         from modules.buffer_broadcaster import BufferBroadcaster
         sent = []
@@ -3311,21 +3322,66 @@ class TestSocialSyndicator(unittest.TestCase):
         results = asyncio.run(syn.syndicate(self.ARTICLE))
         link = syn.article_link(self.ARTICLE["slug"])
         self.assertTrue(results["facebook"], "the post never went out")
-        self.assertEqual(len(sent), 2, "one refusal, then one rewrite")
-        self.assertNotIn(link, sent[0][0])         # first try: link in comment
-        self.assertIn(link, sent[1][0])            # rewrite: link in the body
-        self.assertEqual(sent[1][1], "")
+        self.assertEqual(len(sent), 1, "no first comment, so no refusal")
+        self.assertEqual(sent[0][1], "", "nothing to put in a comment")
+        self.assertNotIn(link, sent[0][0], "and no link in the body either")
 
-    def test_the_facebook_link_sits_in_the_first_comment(self):
+
+    def test_no_dangling_read_the_full_story_label(self):
+        """
+        The label was written whenever the caller INTENDED a link, not
+        whenever there was one. With the policy set to never, every Facebook
+        post ended "Read the full story:" and simply stopped.
+        """
         syn = self._syn()
-        link = syn.article_link(self.ARTICLE["slug"])
-        post = syn.caption_for("facebook", self.ARTICLE, link)
-        comment = syn.first_comment_for("facebook", link)
-
-        self.assertNotIn(link, post, "the post itself must stay link-free")
-        self.assertIn(link, comment)
-        # The post still carries the story, so it stands on its own.
+        post = syn.facebook_caption(self.ARTICLE, "", link_in_body=True)
+        self.assertNotIn("Read the full story", post)
         self.assertIn(self.ARTICLE["title"], post)
+        # And it still appears when there IS a link to show.
+        with_link = syn.facebook_caption(self.ARTICLE, "https://x.example/y",
+                                         link_in_body=True)
+        self.assertIn("Read the full story: https://x.example/y", with_link)
+
+    def test_nothing_sent_to_any_platform_carries_a_link(self):
+        """
+        Read off what actually reached Buffer, not off the composer --
+        caption_for() takes whatever link it is handed, because it composes
+        and does not decide. _to_service is what decides.
+
+        The first comment was where Facebook's link used to hide so the post
+        was not penalised for carrying one. With no link to hide, there is
+        nothing to put there either.
+        """
+        sent = {}
+
+        async def send(channel, text, image_url="", article_slug="",
+                       first_comment=""):
+            sent[channel["service"]] = (text, first_comment)
+            return True
+
+        buf = MagicMock()
+        buf.ensure_channels = AsyncMock(
+            side_effect=lambda s: [{"id": s, "service": s}])
+        buf.channels_for = MagicMock(
+            side_effect=lambda s: [{"id": s, "service": s}])
+        buf.send = AsyncMock(side_effect=send)
+        buf.last_error = ""
+        buf.first_comment_supported = True
+
+        syn = self._syn(buffer=buf,
+                        services=["facebook", "twitter", "threads", "bluesky"])
+        syn._slot_is_allowed = lambda *a: True
+        asyncio.run(syn.syndicate(self.ARTICLE))
+
+        self.assertEqual(len(sent), 4, "all four should have posted")
+        for service, (text, comment) in sent.items():
+            self.assertNotIn("pressvane.com", text,
+                             f"{service} still carried the site link")
+            self.assertNotIn("http", text, f"{service} carried a URL")
+            self.assertEqual(comment, "",
+                             f"{service} got a first comment")
+            self.assertIn("halving", text.lower(),
+                          f"{service} lost the story itself")
 
     def test_x_and_threads_keep_their_link_in_the_post(self):
         """Neither supports a first comment through Buffer, and on both a
@@ -3357,14 +3413,18 @@ class TestSocialSyndicator(unittest.TestCase):
         syn._slot_is_allowed = lambda *a: True
         asyncio.run(syn.syndicate(self.ARTICLE))
 
-        self.assertTrue(sent["facebook"], "Facebook should get a comment")
+        # Buffer's metadata carries firstComment on Facebook alone, and
+        # there is nothing to put in it any more.
+        self.assertEqual(sent["facebook"], "")
         self.assertEqual(sent["twitter"], "")
         self.assertEqual(sent["threads"], "")
 
-    def test_a_post_with_no_link_by_either_route_is_not_sent(self):
+    def test_a_post_with_no_link_by_either_route_is_exactly_the_point(self):
         """
-        The link is the entire point. If a change ever removed it from both
-        the body and the comment, the post is pointless and must not go.
+        The link used to be the entire point, and a post missing it from
+        both the body and the comment was a bug worth refusing over.
+
+        That is now the only kind of post these accounts send.
         """
         buf = MagicMock()
         buf.ensure_channels = AsyncMock(
@@ -3373,19 +3433,22 @@ class TestSocialSyndicator(unittest.TestCase):
         buf.last_error = ""
         syn = self._syn(buffer=buf, services=["facebook"])
         syn._slot_is_allowed = lambda *a: True
-        syn.first_comment_for = lambda service, link: ""      # both routes gone
-
         results = asyncio.run(syn.syndicate(self.ARTICLE))
-        self.assertFalse(results["facebook"])
-        buf.send.assert_not_awaited()
+        self.assertTrue(results["facebook"])
+        text = buf.send.await_args.args[1]
+        self.assertNotIn("http", text)
 
-    def test_nothing_is_posted_when_there_is_no_link_to_give(self):
-        """A post with no link is worse than no post: it spends the reach and
-        sends nobody to the site."""
+    def test_an_unset_site_no_longer_silences_the_accounts(self):
+        """
+        This used to refuse to post at all without SITE_URL, on the grounds
+        that a post with no link spends the reach and sends nobody to the
+        site. Nothing carries a link now, so that guard would switch the
+        accounts off over a setting they do not use.
+        """
         syn = self._syn(site_url="")
+        syn._slot_is_allowed = lambda *a: True
         results = asyncio.run(syn.syndicate(self.ARTICLE))
-        self.assertEqual(results, {})
-        syn._buffer_mock.send.assert_not_awaited()
+        self.assertTrue(any(results.values()), "the post should still go out")
 
     def test_an_article_with_no_slug_is_not_posted(self):
         syn = self._syn()
@@ -3714,24 +3777,37 @@ class TestSocialSyndicator(unittest.TestCase):
 
     # ── which posts carry a link ─────────────────────────────────
 
-    def test_bluesky_and_facebook_always_carry_the_link(self):
+    def test_no_platform_carries_a_link_any_more(self):
         """
-        Neither is penalised for it: Bluesky has no link penalty at all, and
-        Facebook's link sits in the first comment where it costs nothing.
+        These accounts used to exist to send readers to the site: Bluesky
+        carried the link because it has no link penalty, Facebook because
+        its link hid in the first comment.
+
+        They are the audience now, not a funnel to one, so every post goes
+        out bare on every platform and at every point in the day.
         """
         syn = self._syn()
-        for service in ("bluesky", "facebook"):
+        for service in ("bluesky", "facebook", "twitter", "threads"):
             for sent in range(9):
                 syn.sent_today[service] = sent
-                self.assertTrue(syn.wants_link(service),
-                                f"{service} dropped a link at post {sent}")
+                self.assertFalse(syn.wants_link(service),
+                                 f"{service} still carried a link at post "
+                                 f"{sent}")
 
-    def test_x_and_threads_post_bare_one_time_in_three(self):
+    def test_the_old_per_platform_rules_are_kept_but_switched_off(self):
         """
-        Both demote link posts and neither offers a first comment. An account
-        that only ever posts links gets throttled into an empty room, and then
-        the linked posts reach nobody either.
+        X and Threads used to post bare one time in three, because both
+        demote link posts and neither offers a first comment. That reasoning
+        is still true and still written down -- the policy table is intact
+        with every platform set to "never" -- so turning this back on is one
+        edit rather than an archaeology exercise.
         """
+        from modules.social_syndicator import SocialSyndicator
+        self.assertEqual(set(SocialSyndicator.LINK_POLICY.values()), {"never"})
+        self.assertEqual(set(SocialSyndicator.LINK_POLICY),
+                         {"bluesky", "facebook", "twitter", "threads"})
+
+    def _retired_x_and_threads_cycle(self):
         syn = self._syn()
         for service in ("twitter", "threads"):
             pattern = []
@@ -3760,10 +3836,13 @@ class TestSocialSyndicator(unittest.TestCase):
         without = syn.caption_for("threads", article, "")
         self.assertGreater(len(without), len(with_link) - len(link))
 
-    def test_a_post_that_should_link_and_does_not_is_refused(self):
+    def test_a_missing_link_is_no_longer_a_fault(self):
         """
-        The policy dropping a link is intended. A BUG dropping one is not,
-        and the two must not look the same.
+        This guard existed because a policy dropping a link is intended and
+        a BUG dropping one is not, and the two must not look the same.
+
+        Now that nothing carries a link, every post is the intended kind, so
+        the guard must not refuse them -- it would refuse all of them.
         """
         buf = MagicMock()
         buf.ensure_channels = AsyncMock(
@@ -3775,8 +3854,8 @@ class TestSocialSyndicator(unittest.TestCase):
         syn.caption_for = lambda *a, **k: "a post with no link in it at all"
 
         results = asyncio.run(syn.syndicate(self.ARTICLE))
-        self.assertFalse(results["bluesky"])
-        buf.send.assert_not_awaited()
+        self.assertTrue(results["bluesky"])
+        buf.send.assert_awaited()
 
     def test_the_bare_post_is_sent_not_skipped(self):
         """The guard must not mistake a deliberate bare post for a failure."""
@@ -4243,7 +4322,7 @@ class TestSocialSyndicator(unittest.TestCase):
                                services=["facebook", "twitter", "threads"])
         syn._slot_is_allowed = lambda *a: True
         asyncio.run(syn.syndicate(
-            {"slug": "s", "title": "A headline that is long enough here",
+            {"slug": "s", "title": "A US headline that is long enough here",
              "summary": "A whole sentence.", "main_image_url": "https://x/y.jpg"}))
 
         per_article = len(calls) - start_up
@@ -4527,6 +4606,7 @@ class TestSocialPostsCarryTheStory(unittest.TestCase):
             "renewing a fixed deal in the next year will feel this first.</p>"
             "<p class='photo-credit'><small>Photo: Reuters</small></p>")
 
+    # "Fed" is already an American subject, so this one needs no help.
     ARTICLE = {"slug": "fed-raises-rates-again", "title": "Fed raises rates again",
                "content": BODY, "summary": "The Fed raised rates a quarter point.",
                "seo_keywords": ["federal reserve", "interest rates"],
@@ -4934,3 +5014,144 @@ class TestNothingRepeats(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+
+class TestOnlyAmericanStoriesGoToSocial(unittest.TestCase):
+    """
+    The four accounts carry US news and nothing else. The site keeps
+    publishing everything -- Pakistan explainers, world reporting, evergreen
+    "what is an IPO" pieces -- but those go out to an audience that is not
+    there.
+
+    There is no country on an article: the pipeline files everything under
+    tech_ai, business_markets, crypto, world_news or pakistan, so it has to
+    be read off the words. Plain code rather than a model, for the same
+    reason as everywhere else here -- a model drifts between runs and this
+    can be measured against real headlines.
+
+    Every example below is a headline this site actually published.
+    """
+
+    def _is(self, title, **kw):
+        from modules.us_news import is_us_news
+        article = {"title": title}
+        article.update(kw)
+        return is_us_news(article)
+
+    # ── what should go out ───────────────────────────────────────
+
+    def test_american_institutions_count(self):
+        for title in (
+                "SEC Green Lights Tokenized Stock Trading Despite Clarity Act",
+                "CFTC sends crypto rules to White House as Congress stalls",
+                "Fed meeting is shaping up to be a nightmare for Warsh",
+                "Treasury Sanctions Crypto Exchange Behind Iran's Bitcoin Tolls",
+                "Trump is giving data centers a pass to pollute",
+                "Bitcoin Holds, Wall Street Stalls as Oil Shock Revives Fear"):
+            self.assertTrue(self._is(title), title)
+
+    def test_bare_US_in_a_headline_counts(self):
+        """
+        "US" is the country and "us" is the commonest pronoun in English.
+        Case is the only thing that separates them, so the headline is read
+        before it is folded to lowercase -- without that, "Hot US Inflation
+        Data" looked foreign and was dropped.
+        """
+        self.assertTrue(self._is("Bitcoin Price Spikes, Shrugs off Hot US "
+                                 "Inflation Data"))
+        self.assertTrue(self._is("Bitcoin falls on US PPI overshoot"))
+        self.assertTrue(self._is("U.S. diesel prices hit record high"))
+
+    def test_the_pronoun_us_is_not_the_country(self):
+        self.assertFalse(self._is("What the halving means for us and for you"))
+        self.assertFalse(self._is("Tell us what you think about bus routes"))
+
+    # ── what should not ──────────────────────────────────────────
+
+    def test_another_country_in_the_headline_is_not_us_news(self):
+        """
+        A passing mention of America does not make a story American. "China's
+        Top Spy Chief Warns A.I. Is a Threat to Party Rule" mentions the
+        United States in its summary; it is news about China.
+        """
+        self.assertFalse(self._is(
+            "China's Top Spy Chief Warns A.I. Is a Threat to Party Rule",
+            summary="Officials compared the approach with the United States."))
+        self.assertFalse(self._is(
+            "At BRICS Summit, China and India Vie for Influence",
+            summary="The U.S. was not at the table."))
+
+    def test_pakistan_is_never_posted(self):
+        for title in ("How to file income tax returns online in Pakistan",
+                      "Freelancing from Pakistan: getting paid from abroad"):
+            self.assertFalse(self._is(title, category="Pakistan"))
+        # And by the words alone, even if the section were wrong.
+        self.assertFalse(self._is("What determines the cost of mobile data",
+                                  category="Pakistan"))
+
+    def test_an_evergreen_explainer_is_not_news_about_america(self):
+        """
+        STRICT ON PURPOSE. "What a recession is" names no country and is not
+        news about America. The site keeps it; the accounts stay on subject.
+        """
+        for title in ("What a recession is and how one is declared",
+                      "What an IPO is and who actually benefits",
+                      "How blockchain improves traceability in food supply",
+                      "What private equity does to a company"):
+            self.assertFalse(self._is(title), title)
+
+    def test_a_us_term_in_the_body_carries_a_neutral_headline(self):
+        # The headline named nowhere, so the story is allowed to speak.
+        self.assertTrue(self._is(
+            "Inside the suddenly explosive world of AI safety",
+            summary="The row has moved from California labs to Congress."))
+
+    # ── the reason is kept, not just the verdict ─────────────────
+
+    def test_it_says_why(self):
+        from modules.us_news import why
+        self.assertTrue(why({"title": "Fed raises rates"}).startswith("US:"))
+        self.assertIn("pakistan", why({"title": "T", "category": "Pakistan"}))
+        self.assertIn("no American subject", why({"title": "What an IPO is"}))
+
+    def test_nothing_at_all_is_not_us_news(self):
+        from modules.us_news import is_us_news
+        self.assertFalse(is_us_news({}))
+        self.assertFalse(is_us_news(None))
+
+    # ── and the syndicator actually obeys it ─────────────────────
+
+    def test_a_non_us_article_is_never_announced(self):
+        from modules.social_syndicator import SocialSyndicator
+        buf = MagicMock()
+        buf.ensure_channels = AsyncMock(
+            return_value=[{"id": "c1", "service": "facebook"}])
+        buf.send = AsyncMock(return_value=True)
+        buf.last_error = ""
+        syn = SocialSyndicator(buffer=buf, site_url="https://pressvane.com",
+                               services=["facebook"])
+        syn._slot_is_allowed = lambda *a: True
+
+        results = asyncio.run(syn.syndicate(
+            {"slug": "s", "title": "How to file tax returns in Pakistan",
+             "category": "Pakistan", "summary": "A guide."}))
+        self.assertEqual(results, {})
+        buf.send.assert_not_awaited()
+        self.assertIn("pakistan", syn.last_error)
+
+    def test_a_us_article_still_is(self):
+        from modules.social_syndicator import SocialSyndicator
+        buf = MagicMock()
+        buf.ensure_channels = AsyncMock(
+            return_value=[{"id": "c1", "service": "facebook"}])
+        buf.send = AsyncMock(return_value=True)
+        buf.last_error = ""
+        syn = SocialSyndicator(buffer=buf, site_url="https://pressvane.com",
+                               services=["facebook"])
+        syn._slot_is_allowed = lambda *a: True
+
+        results = asyncio.run(syn.syndicate(
+            {"slug": "s", "title": "Fed raises rates for the first time",
+             "summary": "A whole sentence about it."}))
+        self.assertTrue(results.get("facebook"))

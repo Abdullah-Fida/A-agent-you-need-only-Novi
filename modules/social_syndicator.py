@@ -78,6 +78,7 @@ import logging
 import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Dict, List, Optional
+from modules import us_news
 
 logger = logging.getLogger("OmniBot.Social")
 
@@ -133,7 +134,10 @@ class SocialSyndicator:
     # demote one whose link sits in the first comment. That is the whole
     # reason for the split: the reach lost by putting the URL in the body is
     # larger than anything else on this page.
-    FACEBOOK_LINK_IN_FIRST_COMMENT = True
+    # The first comment was where Facebook's link hid so the post itself
+    # was not penalised for carrying one. With no link to hide, there is
+    # nothing to put there.
+    FACEBOOK_LINK_IN_FIRST_COMMENT = False
 
     # WHICH POSTS CARRY A LINK.
     #
@@ -153,11 +157,19 @@ class SocialSyndicator:
     #     facebook  the link is in the first comment, so the post is unpenalised
     #   most   -- two posts in every three
     #     twitter, threads
+    # EVERY POST NOW GOES OUT BARE. The reasoning above is why the policy
+    # used to differ per platform; it is kept because the moment this is
+    # reversed, those are the rules to go back to.
+    #
+    # What changed is the goal. These four accounts are no longer a way of
+    # sending readers to the site -- they are the audience itself, and a
+    # feed of link cards is not an audience. Nothing here reaches the site
+    # any more, and that is the accepted price.
     LINK_POLICY = {
-        "bluesky": "always",
-        "facebook": "always",
-        "twitter": "most",
-        "threads": "most",
+        "bluesky": "never",
+        "facebook": "never",
+        "twitter": "never",
+        "threads": "never",
     }
     # One post in every LINK_CYCLE goes out bare on a "most" platform.
     LINK_CYCLE = 3
@@ -231,11 +243,7 @@ class SocialSyndicator:
         self._counter_day: Optional[date] = None
         self.last_error = ""
 
-        if not self.site_url:
-            logger.warning("SITE_URL is empty — social syndication is disabled. "
-                           "A post without a link back to the article is worse "
-                           "than no post at all.")
-        elif self.start_date is None:
+        if self.start_date is None:
             logger.info(f"Social syndication live at the full cap "
                         f"({self.caps}). Set SOCIAL_START_DATE to ramp a new "
                         f"account up gradually instead.")
@@ -506,7 +514,10 @@ class SocialSyndicator:
         tags = self.hashtags(article.get("seo_keywords"), 3)
 
         parts = [p for p in (title, body) if p]
-        if link_in_body:
+        # The LINK, not just the intent to carry one. With the policy set to
+        # "never" this label was still being written with nothing after it,
+        # so every Facebook post ended "Read the full story:" and stopped.
+        if link_in_body and link:
             parts.append(f"📖 Read the full story: {link}")
         if tags:
             parts.append(" ".join(tags))
@@ -641,6 +652,8 @@ class SocialSyndicator:
         each cycle goes out bare.
         """
         policy = self.LINK_POLICY.get(service, "always")
+        if policy == "never":
+            return False
         if policy == "always":
             return True
         sent = self.sent_today.get(service, 0)
@@ -686,7 +699,11 @@ class SocialSyndicator:
 
     @property
     def is_ready(self) -> bool:
-        return bool(self.buffers and self.site_url and self.services)
+        # SITE_URL is no longer part of this. Posts carry no link, so an
+        # unset site is not a reason to stay silent -- it used to be the
+        # opposite, and that guard would now switch the accounts off for a
+        # setting they do not use.
+        return bool(self.buffers and self.services)
 
     @property
     def is_on(self) -> bool:
@@ -719,11 +736,26 @@ class SocialSyndicator:
                         "but not announced.")
             return results
 
-        link = self.article_link(article.get("slug", ""))
-        if not link:
-            logger.warning("No article link could be built (SITE_URL unset?) — "
-                           "not posting. Every post has to carry the link.")
+        # US NEWS ONLY. The site publishes Pakistan explainers, world
+        # reporting and evergreen "what is an IPO" pieces; these four
+        # accounts are being grown for American readers, and a feed that
+        # mixes Karachi tax filing with the Federal Reserve reads to that
+        # audience as somebody else's newspaper.
+        #
+        # The reason is carried rather than logged bare, so a story that is
+        # held back can be argued with instead of quietly vanishing.
+        verdict = us_news.why(article)
+        if not verdict.startswith("US:"):
+            self.last_error = verdict
+            logger.info(f"Not announcing /{article.get('slug')} on social "
+                        f"({verdict}).")
             return results
+        logger.info(f"/{article.get('slug')} is US news ({verdict}).")
+
+        # May be "" now, and that is fine -- nothing carries it. Built
+        # anyway so the captions that still take a link argument are
+        # unchanged, and so turning the policy back on needs no other edit.
+        link = self.article_link(article.get("slug", ""))
 
         self._roll_day()
         image = article.get("main_image_url") or ""
