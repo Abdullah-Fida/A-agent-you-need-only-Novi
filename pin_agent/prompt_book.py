@@ -40,13 +40,22 @@ PINS_PER_DAY = 6          # one per board; the affiliate pin is separate
 # schedule was written.
 EPOCH = date(2026, 9, 21)
 
-# Searched in order. The file lives beside the project rather than inside
-# it, so it can be edited without touching the repo.
+# IN THE REPOSITORY, and first in this list.
+#
+# It began beside the project, on the grounds that a schedule is edited by
+# hand and does not belong in code. That was wrong for one blunt reason:
+# Render checks out the repository and nothing else, so a file outside it
+# is a file the running bot has never seen. The schedule would have loaded
+# on this laptop and been missing in production.
+#
+# One copy, therefore, and it is this one. The parent directory is still
+# searched afterwards so an old checkout keeps working, but a file found
+# there is a stale duplicate rather than the schedule.
 SEARCH = [
-    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__)))), "pin_prompts_28_days.txt"),
     os.path.join(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))), "pin_prompts_28_days.txt"),
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "pin_prompts_28_days.txt"),
     "pin_prompts_28_days.txt",
 ]
 
