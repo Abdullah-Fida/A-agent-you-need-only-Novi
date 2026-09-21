@@ -30,7 +30,10 @@ import asyncio
 import logging
 import os
 import time
+from collections import deque
 from typing import Optional, Tuple
+
+from pin_agent import photo_styles
 
 logger = logging.getLogger("PinAgent.GeminiImages")
 
@@ -68,6 +71,10 @@ class GeminiImageMaker:
         self._failures = 0
         self._resting_until = 0.0
         self._alerted = False
+        # How the last few pictures were framed, so the next one is not the
+        # same photograph of a different object. Small on purpose: this is
+        # meant to space repeats out, not to forbid them forever.
+        self._recent_framings = deque(maxlen=6)
         self.made = 0
         self.refused = 0
         self.last_error = ""
@@ -126,33 +133,26 @@ class GeminiImageMaker:
 
     # ── the prompt ───────────────────────────────────────────────
 
-    @staticmethod
-    def prompt_for(scene: str) -> str:
+    def prompt_for(self, scene: str, when=None) -> Tuple[str, str]:
         """
-        What to ask for, and what to forbid.
+        What to ask for, how it is framed, and what to forbid.
 
-        NO WORDS IN THE PICTURE is the rule that matters. The pin template
-        draws the title across the lower third itself, so a picture with
-        lettering of its own produces a pin that reads as two headlines
-        arguing, and generated lettering is usually misspelled as well.
+        The look turns over weekly and the framing moves within it -- see
+        photo_styles. Two rules never move: NO WORDS IN THE PICTURE,
+        because the template prints the title across the lower third itself
+        and generated lettering is misspelled besides; and vertical,
+        because the pin is 1000x1500 and a square crops to a keyhole.
 
-        Vertical, because the pin is 1000x1500 and a square crops to a
-        keyhole.
+        Returns the prompt and a fingerprint of the framing, so the caller
+        can keep the last few and stop two pins in a row being the same
+        photograph of different objects.
         """
-        return (
-            f"A photorealistic vertical interior photograph for a home "
-            f"organisation magazine: {scene}.\n\n"
-            f"Real photography, not an illustration or a render. Soft "
-            f"natural daylight from a window, shallow depth of field, shot "
-            f"on a 50mm lens. A real lived-in home, tidy but not sterile. "
-            f"Portrait orientation, 2:3.\n\n"
-            f"Absolutely no text, no words, no letters, no numbers, no "
-            f"labels, no logos and no watermarks anywhere in the image."
-        )
+        return photo_styles.compose(scene, when=when,
+                                    avoid=list(self._recent_framings))
 
     # ── making one ───────────────────────────────────────────────
 
-    async def make(self, scene: str) -> Optional[Tuple[str, str]]:
+    async def make(self, scene: str, when=None) -> Optional[Tuple[str, str]]:
         """
         Returns (local file path, what was asked for), or None.
 
@@ -178,10 +178,10 @@ class GeminiImageMaker:
             self._note_failure()
             return None
 
+        prompt, framing = self.prompt_for(scene, when=when)
         try:
             output = await asyncio.wait_for(
-                client.generate_content(self.prompt_for(scene)),
-                timeout=TIMEOUT)
+                client.generate_content(prompt), timeout=TIMEOUT)
         except asyncio.TimeoutError:
             self.last_error = "the web app did not answer in time"
             self._note_failure()
@@ -220,7 +220,9 @@ class GeminiImageMaker:
 
         self._failures = 0
         self.made += 1
-        logger.info(f"Generated a picture for '{scene[:44]}'.")
+        self._recent_framings.append(framing)
+        logger.info(f"Generated a picture for '{scene[:44]}' "
+                    f"({photo_styles.style_for()['name']}).")
         return path, scene
 
     # ── failure ──────────────────────────────────────────────────
@@ -280,6 +282,7 @@ class GeminiImageMaker:
     def status(self) -> dict:
         return {
             "ready": self.is_ready,
+            "style_this_week": photo_styles.style_for()["name"],
             "session": self._client is not None,
             "made": self.made,
             "refused": self.refused,

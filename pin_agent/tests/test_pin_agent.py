@@ -4227,19 +4227,108 @@ class TestAPictureMadeForTheTip(unittest.TestCase):
         a picture with lettering of its own reads as two headlines arguing
         -- and generated lettering is usually misspelled as well.
         """
-        from pin_agent.gemini_images import GeminiImageMaker
-        prompt = GeminiImageMaker.prompt_for("a tidy pantry shelf")
+        prompt, _ = self._maker().prompt_for("a tidy pantry shelf")
         low = prompt.lower()
-        for banned in ("no text", "no words", "no letters", "no watermark"):
+        for banned in ("no text", "no words", "no letters", "no watermark",
+                       "no logos"):
             self.assertIn(banned, low, banned)
+
+    def test_it_forbids_people_and_renders(self):
+        # A face turns a home photograph into a stock photograph, and a
+        # render is the one thing that reads as machine-made at a glance.
+        prompt, _ = self._maker().prompt_for("a tidy pantry shelf")
+        low = prompt.lower()
+        self.assertIn("no people", low)
+        self.assertIn("not a 3d render", low)
 
     def test_it_asks_for_a_tall_photograph(self):
         # The pin is 1000x1500; a square crops to a keyhole.
+        prompt, _ = self._maker().prompt_for("a tidy pantry shelf")
+        low = prompt.lower()
+        self.assertIn("vertical", low)
+        self.assertIn("photorealistic", low)
+        self.assertIn("a tidy pantry shelf", low)
+
+    # ── a different look every week ──────────────────────────────
+    #
+    # A board where every pin is lit the same, shot from the same height,
+    # in the same kitchen reads as a template within a fortnight -- and a
+    # template is the clearest possible signal that nobody is behind it.
+    #
+    # Seven pins hang together as a set, which is what makes a profile look
+    # considered, and the set changes before anyone tires of it.
+
+    def test_a_week_holds_one_look(self):
+        from datetime import date, timedelta
+        from pin_agent import photo_styles
+        monday = date(2026, 9, 21)
+        names = {photo_styles.style_for(monday + timedelta(days=d))["name"]
+                 for d in range(7)}
+        self.assertEqual(len(names), 1, "the look must not change mid-week")
+
+    def test_the_next_week_is_a_different_look(self):
+        from datetime import date, timedelta
+        from pin_agent import photo_styles
+        monday = date(2026, 9, 21)
+        self.assertNotEqual(photo_styles.style_for(monday)["name"],
+                            photo_styles.style_for(monday
+                                                   + timedelta(weeks=1))["name"])
+
+    def test_every_look_gets_a_turn_before_any_repeats(self):
+        from datetime import date, timedelta
+        from pin_agent import photo_styles
+        monday = date(2026, 9, 21)
+        seen = [photo_styles.style_for(monday + timedelta(weeks=w))["name"]
+                for w in range(len(photo_styles.STYLES))]
+        self.assertEqual(len(set(seen)), len(photo_styles.STYLES))
+
+    def test_each_look_names_its_own_palette_and_light(self):
+        # The model answers to the vocabulary of photography and design,
+        # not to adjectives, so every style has to say what things are made
+        # of and how they are lit.
+        from pin_agent import photo_styles
+        for style in photo_styles.STYLES:
+            for key in ("name", "look", "light", "finish"):
+                self.assertTrue(style.get(key), style.get("name"))
+
+    def test_the_framing_moves_within_a_week(self):
+        from datetime import date
+        from pin_agent import photo_styles
+        monday = date(2026, 9, 21)
+        framings, avoid = set(), []
+        for scene in ("spice jars in a drawer", "a shoe rack by a door",
+                      "rolled towels on a shelf", "pans stacked in a cupboard"):
+            _, f = photo_styles.compose(scene, when=monday, avoid=avoid)
+            framings.add(f)
+            avoid.append(f)
+        self.assertEqual(len(framings), 4,
+                         "four pins in a week must not share a framing")
+
+    def test_the_same_tip_asked_twice_gives_the_same_picture(self):
+        """
+        Deterministic on purpose. A retry after a crash must not quietly
+        change what is on the board.
+        """
+        from datetime import date
+        from pin_agent import photo_styles
+        monday = date(2026, 9, 21)
+        a, fa = photo_styles.compose("spice jars in a drawer", when=monday)
+        b, fb = photo_styles.compose("spice jars in a drawer", when=monday)
+        self.assertEqual(a, b)
+        self.assertEqual(fa, fb)
+
+    def test_there_are_plenty_of_framings(self):
+        from pin_agent import photo_styles
+        total = (len(photo_styles.HOURS) * len(photo_styles.CAMERA)
+                 * len(photo_styles.DISTANCE) * len(photo_styles.LIVED_IN))
+        self.assertGreaterEqual(total, 200,
+                                "too few combinations and a week repeats")
+
+    def test_the_maker_remembers_recent_framings(self):
         from pin_agent.gemini_images import GeminiImageMaker
-        prompt = GeminiImageMaker.prompt_for("a tidy pantry shelf").lower()
-        self.assertIn("vertical", prompt)
-        self.assertIn("photorealistic", prompt)
-        self.assertIn("a tidy pantry shelf", prompt)
+        maker = GeminiImageMaker(psid="x")
+        self.assertEqual(maker._recent_framings.maxlen, 6)
+        self.assertIn("style_this_week", maker.status)
 
     # ── it never costs a slot ────────────────────────────────────
 
