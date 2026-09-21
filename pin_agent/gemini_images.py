@@ -78,6 +78,8 @@ class GeminiImageMaker:
         self.made = 0
         self.refused = 0
         self.last_error = ""
+        # The model's own words the last time it answered without a picture.
+        self.last_reply = ""
 
         if not self.is_ready:
             logger.info("No Gemini cookie set — pins will use photographs "
@@ -212,9 +214,20 @@ class GeminiImageMaker:
             # A refusal is not a broken cookie -- some prompts simply come
             # back as words. Counted separately so one does not rest the
             # session.
+            #
+            # KEEP WHAT IT SAID. "No image came back" is true and useless:
+            # a quota notice, a policy refusal and a model that answered the
+            # prompt as a question all look identical from here, and they
+            # need three different fixes. The reply itself distinguishes
+            # them, and throwing it away meant a whole afternoon spent
+            # guessing which one it was.
+            said = " ".join((getattr(output, "text", "") or "").split())
             self.refused += 1
-            self.last_error = "no image came back"
-            logger.info(f"Gemini returned no image for '{scene[:44]}'.")
+            self.last_error = ("no image came back; it said: "
+                               + (said[:400] or "(nothing at all)"))
+            self.last_reply = said
+            logger.info(f"Gemini returned no image for '{scene[:44]}'. "
+                        f"It replied: {said[:200]}")
             return None
 
         name = "gen_%d.png" % int(time.time() * 1000)
@@ -294,6 +307,76 @@ class GeminiImageMaker:
             logger.warning(f"Could not send the cookie alert: "
                            f"{type(e).__name__}")
 
+    # ── finding out why, without spending a pin slot ─────────────
+
+    async def probe(self, prompt: str, model: str = "") -> dict:
+        """
+        Ask for one picture and report EXACTLY what came back.
+
+        The pipeline is built to swallow a failure here -- a refused prompt
+        must never cost a slot, so _make returns None and the caller quietly
+        publishes a photograph instead. That is right in production and
+        useless when the question is "why is there never an image", because
+        every cause produces the same silent None.
+
+        This is the same call with nothing swallowed: the reply text, the
+        model that answered, the models the account can reach. It publishes
+        nothing and counts towards nothing.
+        """
+        out = {"ok": False, "images": 0, "text": "", "error": "",
+               "model_asked": model or "(library default)",
+               "available": [], "saved": ""}
+        try:
+            client = await self._connect()
+        except Exception as e:
+            out["error"] = f"connect: {type(e).__name__}: {e}"
+            return out
+        if client is None:
+            out["error"] = f"no session: {self.last_error}"
+            return out
+
+        # What this ACCOUNT can reach, which is not what the library knows
+        # about -- the tiers depend on the subscription behind the cookie.
+        try:
+            models = getattr(client, "available_models", None) or []
+            out["available"] = [str(getattr(m, "name", m)) for m in models]
+        except Exception as e:
+            out["available"] = [f"(could not list: {type(e).__name__})"]
+
+        kwargs = {}
+        if model:
+            try:
+                from gemini_webapi.constants import Model
+                kwargs["model"] = Model[model]
+            except Exception:
+                kwargs["model"] = model
+
+        try:
+            output = await asyncio.wait_for(
+                client.generate_content(prompt, **kwargs), timeout=TIMEOUT)
+        except asyncio.TimeoutError:
+            out["error"] = "timed out"
+            return out
+        except Exception as e:
+            out["error"] = f"{type(e).__name__}: {e}"
+            return out
+
+        images = getattr(output, "images", None) or []
+        out["images"] = len(images)
+        out["text"] = " ".join((getattr(output, "text", "") or "").split())[:900]
+        out["kinds"] = [type(i).__name__ for i in images]
+        if images:
+            name = "probe_%d.png" % int(time.time() * 1000)
+            try:
+                os.makedirs(self.image_dir, exist_ok=True)
+                saved = await images[0].save(path=self.image_dir,
+                                             filename=name, verbose=False)
+                out["saved"] = str(saved or name)
+                out["ok"] = True
+            except Exception as e:
+                out["error"] = f"could not save: {type(e).__name__}: {e}"
+        return out
+
     @property
     def status(self) -> dict:
         return {
@@ -305,4 +388,5 @@ class GeminiImageMaker:
             "failures": self._failures,
             "resting": not self.awake,
             "last_error": self.last_error,
+            "last_reply": self.last_reply[:400],
         }

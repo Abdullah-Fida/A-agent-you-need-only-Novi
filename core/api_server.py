@@ -720,6 +720,56 @@ async def pins_run_now(request: Request):
                              f"pin published.")}
 
 
+@app.post("/api/pins/test_picture")
+async def pins_test_picture(request: Request):
+    """
+    Ask Gemini for ONE picture and report exactly what came back.
+
+    Publishes nothing and touches no slot. It exists because the pipeline
+    is deliberately silent about this failure -- a refused prompt falls
+    back to a photograph so a slot is never lost -- and that silence makes
+    the cause impossible to see from outside.
+
+    Body is optional: {"prompt": "...", "model": "BASIC_FLASH",
+                       "slot": 1, "lead": "..."}
+    With no body it sends today's first scheduled prompt, unchanged, which
+    is the one the bot itself would have sent.
+    """
+    agent = getattr(request.app.state, 'pin_agent', None)
+    if not agent or not getattr(agent, "image_maker", None):
+        raise HTTPException(status_code=500, detail="No image maker wired.")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+
+    prompt = (body.get("prompt") or "").strip()
+    scene = "the scheduled scene"
+    if not prompt:
+        book = getattr(agent, "book", None)
+        if not (book and book.is_ready):
+            raise HTTPException(status_code=400,
+                                detail="No schedule loaded and no prompt given.")
+        day = book.for_day()
+        slot = max(1, min(int(body.get("slot") or 1), len(day)))
+        entry = day[slot - 1]
+        prompt = book.prompt_for(entry)
+        scene = entry["scene"]
+
+    lead = (body.get("lead") or "").strip()
+    if lead:
+        prompt = lead + chr(10) * 2 + prompt
+
+    result = await agent.image_maker.probe(prompt, (body.get("model") or "").strip())
+    result["scene"] = scene[:160]
+    result["prompt_chars"] = len(prompt)
+    result["prompt_head"] = prompt[:180]
+    return result
+
+
 @app.post("/api/signal_copier/toggle")
 async def toggle_signal_copier(request: Request):
     """Toggles the Signal Copier (Whale Tracker VIP) ON or OFF."""
