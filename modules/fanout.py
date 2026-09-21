@@ -331,9 +331,21 @@ class Fanout:
         # Facebook and X are NOT here: they are announced by the syndicator
         # when the article itself publishes, so every one of their posts has
         # a live page to link to.
+        # X IS NOT HERE EITHER, and used to be despite the note above.
+        # _to_twitter drives a real Chromium through Playwright, which is a
+        # separate process of a few hundred megabytes against Render's 512
+        # -- launched once per article, which is the shape of the memory
+        # warning: quiet for hours, then a spike.
+        #
+        # It was also a second post: every article reached X once through
+        # Buffer and once through the browser. And the browser path knows
+        # nothing about the rules the syndicator now applies -- American
+        # stories only, and no link in the post.
+        #
+        # The broadcaster itself is left wired up for the dashboard; it is
+        # simply not called on every article any more.
         tasks = {
             "reddit": self._to_reddit(package),
-            "twitter": self._to_twitter(package),
         }
         gathered = await asyncio.gather(*tasks.values(), return_exceptions=True)
 

@@ -299,14 +299,37 @@ class TestArticleAgent(unittest.TestCase):
 class TestFanout(unittest.TestCase):
 
     def test_one_platform_failing_does_not_stop_others(self):
-        reddit = MagicMock(); reddit.post = AsyncMock(side_effect=Exception("reddit down"))
-        twitter = MagicMock(); twitter.post = AsyncMock(return_value=True)
+        """
+        Reddit raising must not take the rest of the fan-out down with it.
 
-        fo = Fanout(brain=make_brain(), reddit=reddit, twitter=twitter)
+        X used to be the other half of this test. It is no longer in the
+        fan-out at all -- see below.
+        """
+        reddit = MagicMock(); reddit.post = AsyncMock(side_effect=Exception("reddit down"))
+
+        fo = Fanout(brain=make_brain(), reddit=reddit)
         results = asyncio.run(fo.distribute({"telegram_text": "hi"}))
 
         self.assertFalse(results["reddit"])
-        self.assertTrue(results["twitter"])
+        self.assertIn("website", results, "the rest of the fan-out still ran")
+
+    def test_x_is_never_posted_by_the_browser_on_a_fan_out(self):
+        """
+        X reached the board TWICE: once through Buffer from the syndicator,
+        and once from here through a real Chromium.
+
+        Three reasons that had to stop. Chromium is a few hundred megabytes
+        against Render's 512, launched once per article -- the shape of the
+        memory warning. It was a duplicate post. And the browser path knows
+        nothing of the rules the syndicator applies: American stories only,
+        and no link in the post.
+        """
+        twitter = MagicMock(); twitter.post = AsyncMock(return_value=True)
+        fo = Fanout(brain=make_brain(), twitter=twitter)
+        results = asyncio.run(fo.distribute({"telegram_text": "hi"}))
+
+        twitter.post.assert_not_awaited()
+        self.assertNotIn("twitter", results)
 
     def test_telegram_fanout_never_touches_facebook_or_x(self):
         """
@@ -320,6 +343,7 @@ class TestFanout(unittest.TestCase):
         results = asyncio.run(fo.distribute({"telegram_text": "hi"}))
 
         self.assertNotIn("facebook", results)
+        self.assertNotIn("twitter", results)
         syn.syndicate.assert_not_awaited()
 
     def test_reddit_daily_limit_respected(self):
