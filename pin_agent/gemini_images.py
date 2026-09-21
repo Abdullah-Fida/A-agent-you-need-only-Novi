@@ -56,6 +56,36 @@ FAILURES_BEFORE_RESTING = 3
 REST_SECONDS = 3600.0
 
 
+# HOW A DEAD COOKIE ANNOUNCES ITSELF.
+#
+# Not as an error. The web app answers a signed-out caller in conversational
+# English -- "Are you signed in?", "I can search for images, but can't create
+# any" -- with HTTP 200 and no image attached. That is indistinguishable from
+# a prompt it declined on policy grounds, and the two need opposite responses:
+# a declined prompt should be shrugged off and the next one tried, a dead
+# cookie should stop the attempts and fetch somebody.
+#
+# Reading the reply is the only way to tell them apart, and getting this
+# wrong cost a day: every slot recorded "refused", the failure counter never
+# moved, so the session never rested and the alert never went out. The board
+# published photographs for a day while the status page said the picture
+# maker was ready.
+SIGNED_OUT = (
+    "are you signed in",
+    "you might be signed out",
+    "unauthenticated",
+    "cookies are invalid",
+    "can't create any",
+    "cannot create any",
+    "can't seem to create",
+)
+
+
+def looks_signed_out(text: str) -> bool:
+    low = (text or "").lower()
+    return any(mark in low for mark in SIGNED_OUT)
+
+
 class GeminiImageMaker:
     """Makes one photograph-like image for a tip, or returns None."""
 
@@ -80,6 +110,8 @@ class GeminiImageMaker:
         self.last_error = ""
         # The model's own words the last time it answered without a picture.
         self.last_reply = ""
+        # Set once the replies show the cookie is no longer signed in.
+        self.signed_out = False
 
         if not self.is_ready:
             logger.info("No Gemini cookie set — pins will use photographs "
@@ -222,10 +254,23 @@ class GeminiImageMaker:
             # them, and throwing it away meant a whole afternoon spent
             # guessing which one it was.
             said = " ".join((getattr(output, "text", "") or "").split())
+            self.last_reply = said
+
+            if looks_signed_out(said):
+                # The cookie, not the prompt. Counted as a failure so the
+                # session rests instead of paying the timeout on every
+                # remaining slot, and so somebody is actually told.
+                self.signed_out = True
+                self.last_error = ("the cookie is not signed in; it said: "
+                                   + said[:300])
+                logger.warning("Gemini is answering as a signed-out user -- "
+                               "the cookie needs replacing.")
+                self._note_failure()
+                return None
+
             self.refused += 1
             self.last_error = ("no image came back; it said: "
                                + (said[:400] or "(nothing at all)"))
-            self.last_reply = said
             logger.info(f"Gemini returned no image for '{scene[:44]}'. "
                         f"It replied: {said[:200]}")
             return None
@@ -382,7 +427,12 @@ class GeminiImageMaker:
         return {
             "ready": self.is_ready,
             "style_this_week": photo_styles.style_for()["name"],
-            "session": self._client is not None,
+            # A STARTED SESSION IS NOT A SIGNED-IN ONE. init() succeeds on a
+            # dead cookie -- it gets the signed-out web app, which talks back
+            # happily and generates nothing. Reporting that as "session: true"
+            # is how a dead cookie passed for a working one.
+            "session": self._client is not None and not self.signed_out,
+            "signed_out": self.signed_out,
             "made": self.made,
             "refused": self.refused,
             "failures": self._failures,
