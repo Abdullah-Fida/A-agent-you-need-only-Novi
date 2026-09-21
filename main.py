@@ -376,6 +376,21 @@ async def main():
             # its picture is hosted somewhere public.
             return await pin_db.upload_image(path, bucket="pin-images")
 
+        # A picture drawn FOR the tip, which is the only way the two can
+        # never disagree -- every mismatch this board has published came
+        # from pairing a sentence with somebody else's photograph. Off
+        # unless GEMINI_WEB_PSID is set, and it never blocks a slot: the
+        # photo libraries sit behind it exactly as before.
+        from pin_agent.gemini_images import GeminiImageMaker
+        pin_image_maker = GeminiImageMaker(
+            psid=os.getenv("GEMINI_WEB_PSID", ""),
+            psidts=os.getenv("GEMINI_WEB_PSIDTS", ""),
+            proxy=os.getenv("GEMINI_WEB_PROXY", ""),
+            nm=notification_manager,
+            image_dir=os.path.join(os.path.dirname(__file__),
+                                   "assets", "pins"),
+        )
+
         pin_agent = PinAgent(
             config=pin_config,
             ai_engine=pin_ai,
@@ -388,6 +403,10 @@ async def main():
             # one finder means one rate limit and one place that knows
             # Openverse is resting.
             photos=stock_photos,
+            # And, when it is set up, a picture drawn for the tip itself.
+            # Tried first; the libraries above are its safety net, so an
+            # expired session costs a slower slot and nothing else.
+            image_maker=pin_image_maker,
         )
         if pin_config.buffer_token:
             await pin_agent.connect()

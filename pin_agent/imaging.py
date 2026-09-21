@@ -88,9 +88,31 @@ class PinImageBuilder:
     # ── product photo ────────────────────────────────────────────
 
     async def fetch_photo(self, url: str) -> Optional[Image.Image]:
-        """Downloads a product photo. Returns None rather than raising."""
-        if not url or not url.startswith("http"):
+        """
+        The photo for a pin, from the web or from disk.
+
+        A GENERATED picture arrives as a file rather than a URL -- it was
+        never on the internet -- so this accepts a path too. Everything
+        after the load is identical, including the too-small check.
+        """
+        if not url:
             return None
+
+        if not url.startswith("http"):
+            if not os.path.exists(url):
+                return None
+            try:
+                image = Image.open(url)
+                image.load()
+                if image.width < 300 or image.height < 300:
+                    logger.warning(f"Generated picture too small: "
+                                   f"{image.size}.")
+                    return None
+                return image.convert("RGB")
+            except Exception as e:
+                logger.warning(f"Generated picture unusable: "
+                               f"{type(e).__name__}: {e}")
+                return None
         try:
             async with httpx.AsyncClient(timeout=self.DOWNLOAD_TIMEOUT,
                                          follow_redirects=True) as client:

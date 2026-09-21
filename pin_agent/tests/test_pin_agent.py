@@ -1712,6 +1712,7 @@ class TestBuildingAnAdvicePin(unittest.TestCase):
         agent.writer = None
         agent.photos = None
         agent.verifier = None
+        agent.image_maker = None
         test = self
 
         async def build(product, title, eyebrow="", require_photo=False):
@@ -2221,6 +2222,7 @@ class TestASlotIsNotLostToAStrictVerifier(unittest.TestCase):
         agent = PinAgent.__new__(PinAgent)
         agent.recent_tips = []
         agent.recent_types = []
+        agent.image_maker = None
         agent.writer = object()          # present, so only prefer_bank skips
         called = []
 
@@ -4180,3 +4182,155 @@ class TestTheSubjectItselfHasToBeInThePicture(unittest.TestCase):
         src = inspect.getsource(TipWriter.write_for_photo)
         self.assertIn("anchored(", src)
         self.assertNotIn("product_types", src)
+
+
+
+class TestAPictureMadeForTheTip(unittest.TestCase):
+    """
+    Every mismatch this board has published came from pairing a sentence
+    with somebody else's photograph: a cutlery drawer under a tip about
+    stacking pans, a bowl of fruit under one about appliances, a front door
+    under one about shoes. Searching cannot fix that -- the open libraries
+    hold no picture of most specific ideas.
+
+    A picture made FOR the sentence cannot disagree with it.
+
+    What it must never do is cost a slot. It runs on a session that expires,
+    and the photograph search that worked before sits behind every path it
+    feeds.
+    """
+
+    def _maker(self, **kw):
+        from pin_agent.gemini_images import GeminiImageMaker
+        kw.setdefault("psid", "x")
+        return GeminiImageMaker(**kw)
+
+    # ── it is off unless set up ──────────────────────────────────
+
+    def test_off_without_a_session(self):
+        from pin_agent.gemini_images import GeminiImageMaker
+        maker = GeminiImageMaker()
+        self.assertFalse(maker.is_ready)
+        self.assertIsNone(asyncio.run(maker.make("a tidy pantry")))
+
+    def test_on_with_one(self):
+        self.assertTrue(self._maker().is_ready)
+
+    def test_an_empty_scene_asks_for_nothing(self):
+        self.assertIsNone(asyncio.run(self._maker().make("   ")))
+
+    # ── the prompt ───────────────────────────────────────────────
+
+    def test_it_forbids_words_in_the_picture(self):
+        """
+        The pin template draws the title across the lower third itself, so
+        a picture with lettering of its own reads as two headlines arguing
+        -- and generated lettering is usually misspelled as well.
+        """
+        from pin_agent.gemini_images import GeminiImageMaker
+        prompt = GeminiImageMaker.prompt_for("a tidy pantry shelf")
+        low = prompt.lower()
+        for banned in ("no text", "no words", "no letters", "no watermark"):
+            self.assertIn(banned, low, banned)
+
+    def test_it_asks_for_a_tall_photograph(self):
+        # The pin is 1000x1500; a square crops to a keyhole.
+        from pin_agent.gemini_images import GeminiImageMaker
+        prompt = GeminiImageMaker.prompt_for("a tidy pantry shelf").lower()
+        self.assertIn("vertical", prompt)
+        self.assertIn("photorealistic", prompt)
+        self.assertIn("a tidy pantry shelf", prompt)
+
+    # ── it never costs a slot ────────────────────────────────────
+
+    def test_a_dead_session_returns_nothing_rather_than_raising(self):
+        maker = self._maker()
+
+        async def boom():
+            raise RuntimeError("cookie expired")
+
+        maker._connect = boom
+        self.assertIsNone(asyncio.run(maker.make("a tidy pantry")))
+
+    def test_three_failures_and_it_rests(self):
+        """
+        A dead session is dead for everyone. Without this every slot pays
+        the full timeout to learn the same thing.
+        """
+        from pin_agent.gemini_images import FAILURES_BEFORE_RESTING
+        maker = self._maker()
+        self.assertTrue(maker.awake)
+        for _ in range(FAILURES_BEFORE_RESTING):
+            maker._note_failure()
+        self.assertFalse(maker.awake)
+        self.assertIsNone(asyncio.run(maker.make("a tidy pantry")))
+
+    def test_a_refusal_is_not_a_dead_session(self):
+        # Some prompts come back as words. That is one lost picture, not a
+        # reason to stop trying for an hour.
+        maker = self._maker()
+        maker.refused += 1
+        self.assertTrue(maker.awake)
+
+    def test_the_agent_falls_through_when_nothing_is_made(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent._write_with_a_made_picture)
+        self.assertIn("return None", src)
+        self.assertIn("falling back to a photograph", src)
+
+    def test_the_agent_works_with_no_maker_at_all(self):
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent._next_tip)
+        self.assertIn("if self.image_maker and not prefer_bank", src,
+                      "no maker configured must skip the tier entirely")
+
+    def test_it_is_tried_before_the_search(self):
+        # The order is the point: made, then searched, then cached, then
+        # the fixed set.
+        import inspect
+        from pin_agent.pin_bot import PinAgent
+        src = inspect.getsource(PinAgent._next_tip)
+        made = src.index("_write_with_a_made_picture")
+        searched = src.index("_write_from_a_photograph")
+        self.assertLess(made, searched)
+
+    # ── the picture reaches the renderer ─────────────────────────
+
+    def test_the_renderer_takes_a_file_as_well_as_a_url(self):
+        """
+        A made picture was never on the internet, so it arrives as a path.
+        """
+        import inspect
+        from pin_agent.imaging import PinImageBuilder
+        src = inspect.getsource(PinImageBuilder.fetch_photo)
+        self.assertIn("os.path.exists", src)
+
+    def test_a_missing_file_is_not_a_crash(self):
+        from pin_agent.imaging import PinImageBuilder
+        builder = PinImageBuilder(output_dir=".", brand="Tidy Nook")
+        self.assertIsNone(asyncio.run(
+            builder.fetch_photo("/nowhere/at/all.png")))
+        self.assertIsNone(asyncio.run(builder.fetch_photo("")))
+
+    # ── and it says when it needs attention ──────────────────────
+
+    def test_it_asks_for_a_new_session_once(self):
+        """
+        The Bing image cookie taught this: it stopped working, the pictures
+        quietly stopped, and nothing said so for days.
+        """
+        import inspect
+        from pin_agent.gemini_images import GeminiImageMaker
+        src = inspect.getsource(GeminiImageMaker._tell_someone)
+        self.assertIn("self._alerted", src)
+        self.assertIn("Nothing is broken meanwhile", src,
+                      "the email must say nothing is broken")
+        self.assertIn("GEMINI_WEB_PSID", src,
+                      "and it must name the setting the code actually reads")
+
+    def test_status_is_reportable(self):
+        s = self._maker().status
+        for key in ("ready", "made", "refused", "resting", "last_error"):
+            self.assertIn(key, s)

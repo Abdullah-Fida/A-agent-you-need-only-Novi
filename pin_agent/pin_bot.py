@@ -53,7 +53,7 @@ class PinAgent:
 
     def __init__(self, config, ai_engine, supabase_client=None,
                  notification_manager=None, image_dir: str = "assets/pins",
-                 upload_image=None, photos=None):
+                 upload_image=None, photos=None, image_maker=None):
         self.config = config
         self.nm = notification_manager
         # Uploads a local file and returns a public URL. Buffer fetches the
@@ -107,6 +107,10 @@ class PinAgent:
         self.recent_boards: List[str] = []
         # Photo subjects used lately, so a board's six do not collapse into
         # one, and photographs already used, so none appears twice.
+        # Makes a picture for a tip when one is configured. Nothing in the
+        # pipeline depends on it: every path it feeds has the photograph
+        # search behind it, which is what ran before.
+        self.image_maker = image_maker
         self.recent_subjects: List[str] = []
         self.recent_photos: List[str] = []
         # Photographs the vision check approved on earlier runs, with the
@@ -139,6 +143,8 @@ class PinAgent:
             "affiliate_pins_per_day": self.product_quota(),
             "tips_written": (self.writer.status if self.writer else {}),
             "photo_checks": self.verifier.status,
+            "made_pictures": (self.image_maker.status
+                              if self.image_maker else {"ready": False}),
             "verified_photos_cached": len(self.photo_pool),
             "tips_in_bank": len(tip_bank.TIP_BANK),
             "subject_cooldown_days": product_types.COOLDOWN_DAYS,
@@ -810,6 +816,14 @@ class PinAgent:
         seen = self.recent_tips + tried
         blocked = self.subject_window(include_advice=True)
 
+        # MADE FIRST, when one is configured. A picture drawn for the tip
+        # cannot disagree with it, which is the fault every mismatch on
+        # this board has had. Everything below is its safety net.
+        if self.image_maker and not prefer_bank:
+            tip = await self._write_with_a_made_picture(seen, blocked)
+            if tip and not self._tip_already_used(tip["title"], seen):
+                return tip
+
         if self.writer and not prefer_bank:
             tip = await self._write_from_a_photograph(seen, blocked)
             if tip:
@@ -934,6 +948,56 @@ class PinAgent:
 
         logger.info(f"No usable photograph for '{subject}'.")
         return await self._write_from_a_cached_photograph(seen, blocked)
+
+    async def _write_with_a_made_picture(
+            self, seen: List[str],
+            blocked: Optional[set] = None) -> Optional[Dict]:
+        """
+        A tip, and a picture made to illustrate that exact tip.
+
+        THE RIGHT WAY ROUND, and the opposite of what searching needed.
+        Searching has to start FROM the photograph, because the open
+        libraries hold no picture of most specific ideas -- there is no
+        photograph of a tension rod holding spray bottles under a sink, so
+        the query broadens and the match becomes luck. Every mismatch this
+        board has published came from that.
+
+        Making the picture removes the limit. It is drawn for the sentence,
+        so the sentence can lead and the two cannot disagree.
+
+        Returns None on anything at all going wrong, and the caller falls
+        through to the photograph search exactly as before.
+        """
+        if not (self.writer and self.image_maker
+                and self.image_maker.is_ready and self.image_maker.awake):
+            return None
+
+        board = self.writer.pick_board(self.recent_boards)
+        tip = await self.writer.write(
+            board, avoid=seen,
+            avoid_subjects=sorted(product_types.describe(b)
+                                  for b in (blocked or ())))
+        if not tip:
+            return None
+
+        # Asked for in the tip's OWN words, which is the whole point --
+        # there is nothing left to match afterwards.
+        scene = tip.get("photo") or tip["title"]
+        made = await self.image_maker.make(scene)
+        if not made:
+            logger.info(f"No picture could be made for '{scene[:40]}'; "
+                        f"falling back to a photograph.")
+            return None
+
+        path, asked = made
+        tip["image"] = path
+        tip["photo"] = scene
+        tip["credit"] = ""
+        # Recorded so the duplicate guard treats it like any other picture.
+        # It is a local file, unique per pin, so it can never repeat.
+        tip["photo_note"] = f"A made picture of {asked}"
+        tip["generated"] = True
+        return tip
 
     async def _write_from_a_cached_photograph(
             self, seen: List[str],
