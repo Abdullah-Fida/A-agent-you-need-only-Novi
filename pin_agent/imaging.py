@@ -207,25 +207,42 @@ class PinImageBuilder:
         margin = 70
         y = photo_h + 46
 
+        # THE WORDMARK SITS AT THE TOP OF THE BAND, not the bottom.
+        #
+        # Pinterest draws its own controls under the creative -- the Direct
+        # Links call-to-action button lives there -- and its guidance is to
+        # keep text and logos a clear margin from the edges so nothing is
+        # trimmed or crowded. The brand line used to sit 46px from the
+        # bottom, inside that strip.
+        #
+        # It could not simply move up: a three-line title already reaches
+        # within a hundred pixels of where it was. So it moved to the far
+        # end of the eyebrow row instead, which was empty, and the whole
+        # bottom of the pin is now clear.
+        font_brand = self._font(30, bold=True)
+        brand_w = draw.textlength(self.brand, font=font_brand)
+        brand_x = PIN_WIDTH - margin - brand_w
+        draw.ellipse([(brand_x - 26, y + 9), (brand_x - 10, y + 25)],
+                     fill=PALETTE["accent"])
+        draw.text((brand_x, y), self.brand, font=font_brand,
+                  fill=PALETTE["muted"])
+
         if eyebrow:
             font_eyebrow = self._font(30, bold=True)
-            draw.text((margin, y), eyebrow.upper()[:34],
+            # Trimmed so a long board name cannot run into the wordmark.
+            room = PIN_WIDTH - margin * 2 - brand_w - 60
+            label = eyebrow.upper()[:34]
+            while label and draw.textlength(label, font=font_eyebrow) > room:
+                label = label[:-1]
+            draw.text((margin, y), label.rstrip(),
                       font=font_eyebrow, fill=PALETTE["accent"])
-            y += 56
+        y += 56
 
         font_title = self._font(56, bold=True)
         lines = self._wrap(draw, title, font_title, PIN_WIDTH - margin * 2, 3)
         for line in lines:
             draw.text((margin, y), line, font=font_title, fill=PALETTE["ink"])
             y += 68
-
-        # Wordmark, bottom left; a dot in the accent colour, then the brand.
-        font_brand = self._font(32, bold=True)
-        brand_y = PIN_HEIGHT - 78
-        draw.ellipse([(margin, brand_y + 10), (margin + 16, brand_y + 26)],
-                     fill=PALETTE["accent"])
-        draw.text((margin + 30, brand_y), self.brand, font=font_brand,
-                  fill=PALETTE["muted"])
 
         return canvas
 

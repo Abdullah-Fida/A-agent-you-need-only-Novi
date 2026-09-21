@@ -148,8 +148,19 @@ FORBID = (
     "hands, no faces. Not an illustration, not a 3D render, not a collage."
 )
 
-SHAPE = ("Vertical portrait orientation, 2:3, composed so the lower third "
-         "is calm and uncluttered.")
+# WHAT ACTUALLY SURVIVES IS THE MIDDLE. The template gives the photograph
+# the top 1000x1080 of a 1000x1500 pin and prints the title in a band
+# underneath, and a tall picture is scaled to fill that box and centre-
+# cropped -- so roughly the top and bottom sixth of what the model draws is
+# thrown away, and what is left is close to square.
+#
+# The first version of this asked for a calm, uncluttered lower third so
+# text could sit there. That was wrong twice over: the text is not on the
+# photograph at all, and the third being kept clear was the third being
+# cropped off. It was asking for a sixth of the picture to be wasted.
+SHAPE = ("Vertical portrait orientation, 2:3. Compose the subject in the "
+         "CENTRE of the frame and fill it -- the very top and bottom edges "
+         "will be cropped away, so nothing important belongs there.")
 
 
 def style_for(when: Optional[date] = None) -> Dict[str, str]:

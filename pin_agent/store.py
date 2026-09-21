@@ -293,6 +293,12 @@ class PinStore:
         del memory["used"][self.USED_LIMIT:]
 
         note = (note or "").strip()
+        # A MADE picture is a local file, not a URL. It is remembered as
+        # used -- it must never publish twice -- but it does not belong in
+        # the reusable pool: the path is gone after the next deploy, and a
+        # slot that picked it would spend a search failing to open it.
+        if note and not url.lower().startswith("http"):
+            note = ""
         if note:
             memory["pool"] = ([{"photo_url": url, "photo_note": note}]
                               + [p for p in memory["pool"]

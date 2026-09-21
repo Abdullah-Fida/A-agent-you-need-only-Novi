@@ -1125,6 +1125,51 @@ class PinAgent:
                 return room
         return words[-1] if len(words) > 1 else ""
 
+    # Pins to keep on disk. Every one has already been uploaded and is
+    # served from the bucket, so these are only useful for looking at
+    # afterwards. Eight days at the current cap.
+    KEEP_IMAGES = 40
+
+    def _tidy_image_dir(self) -> None:
+        """
+        Deletes old pin files. Nothing has ever done this.
+
+        Every pin ever built is still on disk, and a made picture writes
+        TWO files rather than one -- the generated source at about 700KB
+        and the finished pin at about 220KB. At five pins a day that is
+        roughly 4.6MB a day accumulating on a box that has already warned
+        about resources once.
+
+        Safe because the finished pin is uploaded to the bucket before this
+        runs and is served from there; the file is only a local copy. A pin
+        still waiting to be reviewed is skipped, because that one has not
+        been sent anywhere yet.
+        """
+        try:
+            keep = {p.get("image_path") for p in self.pending_review}
+            files = []
+            for name in os.listdir(self.image_dir):
+                path = os.path.join(self.image_dir, name)
+                if path in keep or not os.path.isfile(path):
+                    continue
+                if not name.lower().endswith((".jpg", ".jpeg", ".png")):
+                    continue
+                files.append((os.path.getmtime(path), path))
+
+            files.sort(reverse=True)
+            freed = 0
+            for _, path in files[self.KEEP_IMAGES:]:
+                try:
+                    freed += os.path.getsize(path)
+                    os.remove(path)
+                except OSError:
+                    pass
+            if freed:
+                logger.info(f"Tidied {freed // 1024} KB of old pin files.")
+        except Exception as e:
+            # Housekeeping must never cost a pin.
+            logger.info(f"Could not tidy the pin folder: {type(e).__name__}")
+
     async def _picture_suits(self, tip: Dict, photo_url: str) -> bool:
         """
         Does an already-chosen picture actually suit the tip's words?
@@ -1569,6 +1614,7 @@ class PinAgent:
             if pin.get("photo_url"):
                 await self.store.remember_photo(pin["photo_url"],
                                                 pin.get("photo_note", ""))
+            self._tidy_image_dir()
             logger.info(f"Pin published ({self.published_today}/"
                         f"{self.daily_cap()} today, "
                         f"{self.gate.kind_of(pin)}).")
