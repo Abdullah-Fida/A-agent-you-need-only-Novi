@@ -181,70 +181,37 @@ class PinImageBuilder:
     def compose(self, photo: Optional[Image.Image], title: str,
                 eyebrow: str = "") -> Image.Image:
         """
-        Builds the pin.
+        The pin: the picture, full bleed, and nothing else.
 
-        Layout is photo on top, text on a light band beneath. A caption band
-        rather than text over the photo, because product photos are busy and
-        overlaid text on them is unreadable at feed size.
+        NOTHING IS DRAWN ON IT ANY MORE. There used to be a band beneath the
+        photograph carrying the title, the board name and a wordmark, and it
+        cost the bottom quarter of every pin -- on a surface where the image
+        is the entire pitch, and where Pinterest already shows the title and
+        the description beside the pin in its own type.
+
+        A brand mark earned nothing either. Nobody follows a board because a
+        caption said who made it; they follow because the pictures are good.
+
+        WHERE WORDS GO WHEN A PIN NEEDS THEM. Not here. The picture is
+        generated, so two or three words can be drawn INTO it as part of the
+        photograph -- painted on a jar, chalked on a board -- which reads as
+        something in the room rather than a caption stuck on top. See the
+        prompt book's Overlay line.
+
+        `title` and `eyebrow` are still taken so every caller is unchanged.
+        They are used for the Pinterest fields, not for the pixels.
         """
-        canvas = Image.new("RGB", (PIN_WIDTH, PIN_HEIGHT), PALETTE["paper"])
-        draw = ImageDraw.Draw(canvas)
-
-        # The photo carries the pin in a visual feed, so it takes most of the
-        # height; the band below is sized to the copy rather than left as a
-        # fixed slab with dead space under the title.
-        photo_h = 1080
-        if photo is not None:
-            canvas.paste(self._cover(photo, (PIN_WIDTH, photo_h)), (0, 0))
-        else:
-            # No photo: a soft wash so the pin is still a finished object.
-            wash = Image.new("RGB", (PIN_WIDTH, photo_h), PALETTE["accent"])
+        if photo is None:
+            # No photograph, no pin. The caller decides whether that is
+            # fatal; build() refuses outright when require_photo is set.
+            canvas = Image.new("RGB", (PIN_WIDTH, PIN_HEIGHT),
+                               PALETTE["paper"])
+            wash = Image.new("RGB", (PIN_WIDTH, PIN_HEIGHT),
+                             PALETTE["accent"])
             canvas.paste(wash.filter(ImageFilter.GaussianBlur(2)), (0, 0))
+            return canvas
 
-        # Thin accent rule separating image from copy
-        draw.rectangle([(0, photo_h), (PIN_WIDTH, photo_h + 8)], fill=PALETTE["accent"])
-
-        margin = 70
-        y = photo_h + 46
-
-        # THE WORDMARK SITS AT THE TOP OF THE BAND, not the bottom.
-        #
-        # Pinterest draws its own controls under the creative -- the Direct
-        # Links call-to-action button lives there -- and its guidance is to
-        # keep text and logos a clear margin from the edges so nothing is
-        # trimmed or crowded. The brand line used to sit 46px from the
-        # bottom, inside that strip.
-        #
-        # It could not simply move up: a three-line title already reaches
-        # within a hundred pixels of where it was. So it moved to the far
-        # end of the eyebrow row instead, which was empty, and the whole
-        # bottom of the pin is now clear.
-        font_brand = self._font(30, bold=True)
-        brand_w = draw.textlength(self.brand, font=font_brand)
-        brand_x = PIN_WIDTH - margin - brand_w
-        draw.ellipse([(brand_x - 26, y + 9), (brand_x - 10, y + 25)],
-                     fill=PALETTE["accent"])
-        draw.text((brand_x, y), self.brand, font=font_brand,
-                  fill=PALETTE["muted"])
-
-        if eyebrow:
-            font_eyebrow = self._font(30, bold=True)
-            # Trimmed so a long board name cannot run into the wordmark.
-            room = PIN_WIDTH - margin * 2 - brand_w - 60
-            label = eyebrow.upper()[:34]
-            while label and draw.textlength(label, font=font_eyebrow) > room:
-                label = label[:-1]
-            draw.text((margin, y), label.rstrip(),
-                      font=font_eyebrow, fill=PALETTE["accent"])
-        y += 56
-
-        font_title = self._font(56, bold=True)
-        lines = self._wrap(draw, title, font_title, PIN_WIDTH - margin * 2, 3)
-        for line in lines:
-            draw.text((margin, y), line, font=font_title, fill=PALETTE["ink"])
-            y += 68
-
-        return canvas
+        return self._cover(photo, (PIN_WIDTH, PIN_HEIGHT))
 
     async def build(self, product: dict, title: str, eyebrow: str = "",
                     require_photo: bool = False) -> Tuple[Optional[str], bytes]:

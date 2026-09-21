@@ -243,9 +243,16 @@ class PhotoVerifier:
         elif api_keys:
             keys = list(api_keys)
         else:
-            keys = [os.getenv("GEMINI_API_KEY", ""),
-                    os.getenv("GEMINI_API_KEY_2", ""),
-                    os.getenv("GEMINI_API_KEY_3", "")]
+            # EVERY SPELLING, because the quota is per project and a key
+            # that is set under a name nothing reads is a key that does
+            # not exist. Render was carrying GEMINI_API_KEY_1 and _3 while
+            # this looked for GEMINI_API_KEY and _2 -- so one of the two
+            # projects was silently doing nothing and the daily allowance
+            # was half what it looked like.
+            keys = [os.getenv(name, "") for name in
+                    ("GEMINI_API_KEY", "GEMINI_API_KEY_1",
+                     "GEMINI_API_KEY_2", "GEMINI_API_KEY_3",
+                     "GEMINI_API_KEY_4")]
         self.api_keys = [k.strip() for k in keys if k and k.strip()]
         self.models = tuple(models or MODELS)
         self.checked = 0

@@ -53,7 +53,31 @@ SEARCH = [
 _ENTRY = re.compile(
     r"^(?P<day>\d+)\.(?P<slot>\d)\s+(?P<board>[A-Z][A-Z ]+?)\s*\n"
     r"\s+Title:\s+(?P<title>.+?)\s*\n"
+    r"(?:\s+Overlay:\s+(?P<overlay>.+?)\s*\n)?"
     r"\s+Scene:\s+(?P<scene>.*?)(?=\n\s*\n)", re.M | re.S)
+
+# WORDS IN THE PICTURE, when a pin actually needs them.
+#
+# Almost none do. The pin is a photograph now -- nothing is drawn over it --
+# and Pinterest shows the title beside it in its own type, so a caption
+# burned into the image is a second headline arguing with the first.
+#
+# When a pin does need a word or two, the model paints them INTO the scene:
+# chalked on a board, printed on a jar label. That reads as something in the
+# room rather than a caption stuck on top, and it is the only kind of text
+# worth having on a photograph.
+#
+# Add an "Overlay:" line to an entry in the file to turn it on. Two or three
+# words. Longer than that and it is a caption again.
+OVERLAY_WORDS = 3
+
+_ASK_FOR_WORDS = (
+    "One exception to the rule above: the words \"{words}\" SHOULD appear in "
+    "the image, and nothing else may. Paint them into the scene as part of "
+    "it -- chalked on a small board, printed on a label, lettered on a jar -- "
+    "so they belong to the room rather than sitting on top of the "
+    "photograph. Spell them exactly as written, in a clean simple hand."
+)
 
 _STYLE = re.compile(r"STYLE BLOCK \(weeks? \d[^)]*\)\s*\n\s*\n(.*?)\n\s*\n-{5}",
                     re.S)
@@ -95,7 +119,8 @@ class PromptBook:
 
     def _load(self) -> None:
         try:
-            text = open(self.path, encoding="utf-8").read()
+            with open(self.path, encoding="utf-8") as fh:
+                text = fh.read()
         except OSError as e:
             self.error = f"could not read {self.path}: {e}"
             logger.error(self.error)
@@ -116,12 +141,20 @@ class PromptBook:
             if not board:
                 continue
             day = int(m.group("day"))
+            overlay = " ".join((m.group("overlay") or "").split())
+            if overlay and len(overlay.split()) > OVERLAY_WORDS:
+                # Longer than a few words is a caption, and a caption on a
+                # photograph is the thing this was built to stop.
+                logger.warning(f"Overlay on day {day} is too long, ignoring: "
+                               f"{overlay!r}")
+                overlay = ""
             self.days.setdefault(day, []).append({
                 "day": day,
                 "slot": int(m.group("slot")),
                 "board": board,
                 "title": m.group("title").strip(),
                 "scene": " ".join(m.group("scene").split()),
+                "overlay": overlay,
             })
 
         for day in self.days:
@@ -167,9 +200,17 @@ class PromptBook:
         Exactly the three pieces the file says to paste together, in that
         order, so what ships is what was written and reviewed.
         """
-        return "\n\n".join(p for p in (self.week_style(when),
-                                       entry.get("scene", ""),
-                                       self.tail) if p)
+        parts = [self.week_style(when), entry.get("scene", ""), self.tail]
+
+        # The tail forbids text outright, which is right for almost every
+        # pin. When an entry asks for a word or two, the exception is added
+        # AFTER it so the model reads the rule and then the one carve-out,
+        # rather than a contradiction it has to guess its way through.
+        overlay = (entry.get("overlay") or "").strip()
+        if overlay:
+            parts.append(_ASK_FOR_WORDS.format(words=overlay))
+
+        return "\n\n".join(p for p in parts if p)
 
     @property
     def status(self) -> Dict:

@@ -4436,3 +4436,135 @@ class TestAPictureMadeForTheTip(unittest.TestCase):
         s = self._maker().status
         for key in ("ready", "made", "refused", "resting", "last_error"):
             self.assertIn(key, s)
+
+
+
+class TestThePinIsThePictureAndNothingElse(unittest.TestCase):
+    """
+    There used to be a band beneath the photograph carrying the title, the
+    board name and a wordmark, and it cost the bottom quarter of every pin
+    -- on a surface where the image is the entire pitch, and where Pinterest
+    already shows the title and the description beside the pin in its own
+    type. A caption burned into the image was a second headline arguing with
+    the first.
+    """
+
+    def _photo(self, w=900, h=1400, colour=(120, 90, 60)):
+        from PIL import Image
+        return Image.new("RGB", (w, h), colour)
+
+    def _builder(self):
+        from pin_agent.imaging import PinImageBuilder
+        return PinImageBuilder(output_dir=".", brand="Tidy Nook")
+
+    def test_the_pin_is_all_picture(self):
+        from pin_agent.imaging import PIN_WIDTH, PIN_HEIGHT
+        pin = self._builder().compose(self._photo(), "A title", "AN EYEBROW")
+        self.assertEqual(pin.size, (PIN_WIDTH, PIN_HEIGHT))
+
+    def test_nothing_is_drawn_over_it(self):
+        """
+        The band was a flat near-white slab. If any of it survived, the
+        bottom rows would be that colour rather than the photograph.
+        """
+        from pin_agent.imaging import PIN_HEIGHT
+        colour = (120, 90, 60)
+        pin = self._builder().compose(self._photo(colour=colour),
+                                      "A title", "AN EYEBROW")
+        for y in (PIN_HEIGHT - 1, PIN_HEIGHT - 60, PIN_HEIGHT - 300):
+            self.assertEqual(pin.getpixel((500, y)), colour,
+                             f"something is still drawn at y={y}")
+
+    def test_the_title_is_still_accepted(self):
+        # Every caller passes it; it goes to Pinterest's own title field.
+        pin = self._builder().compose(self._photo(), "A title", "EYEBROW")
+        self.assertIsNotNone(pin)
+
+    def test_no_photograph_is_still_no_pin(self):
+        import inspect
+        from pin_agent.imaging import PinImageBuilder
+        src = inspect.getsource(PinImageBuilder.build)
+        self.assertIn("require_photo", src)
+
+
+class TestWordsInThePictureAreRareAndDeliberate(unittest.TestCase):
+    """
+    Almost no pin needs text. When one does, the model paints two or three
+    words INTO the scene rather than a caption being stuck over it.
+    """
+
+    def _entry(self, **kw):
+        e = {"day": 1, "slot": 1, "board": "Bathroom Storage Ideas",
+             "title": "A title that is long enough to pass",
+             "scene": "a tidy shelf", "overlay": ""}
+        e.update(kw)
+        return e
+
+    def test_by_default_the_prompt_forbids_all_text(self):
+        from pin_agent.prompt_book import PromptBook
+        book = PromptBook()
+        prompt = book.prompt_for(self._entry()).lower()
+        self.assertIn("no text", prompt)
+        self.assertNotIn("should appear in the image", prompt)
+
+    def test_an_overlay_asks_for_those_words(self):
+        from pin_agent.prompt_book import PromptBook
+        book = PromptBook()
+        prompt = book.prompt_for(self._entry(overlay="This week only"))
+        self.assertIn("This week only", prompt)
+        self.assertIn("SHOULD appear in the image", prompt)
+        # The carve-out must come AFTER the blanket rule, or the model
+        # reads a contradiction and guesses.
+        self.assertGreater(prompt.index("SHOULD appear"),
+                           prompt.lower().index("no text"))
+
+    def test_the_words_are_painted_into_the_scene(self):
+        from pin_agent.prompt_book import PromptBook
+        prompt = PromptBook().prompt_for(self._entry(overlay="Rolled not folded"))
+        low = prompt.lower()
+        for cue in ("chalked", "label", "belong to the room"):
+            self.assertIn(cue, low, cue)
+
+    def test_a_caption_length_overlay_is_refused(self):
+        """Longer than a few words is a caption, which is the thing this
+        exists to stop."""
+        from pin_agent import prompt_book
+        self.assertLessEqual(prompt_book.OVERLAY_WORDS, 3)
+
+    def test_the_book_drops_an_over_long_overlay(self):
+        """A caption pretending to be an overlay is refused on load."""
+        import os
+        import tempfile
+        from pin_agent.prompt_book import PromptBook
+
+        lines = [
+            "FIXED TAIL", "-" * 12, "No text anywhere.", "=" * 12, "",
+            "STYLE BLOCK (week 1 only)", "", "    A style.", "", "-" * 12, "",
+            "1.1  BATHROOM STORAGE IDEAS",
+            "     Title:   A title long enough to be accepted here",
+            "     Overlay: far too many words to be an overlay line at all",
+            "     Scene:   a tidy shelf with towels on it",
+            "", "",
+        ]
+        handle, path = tempfile.mkstemp(suffix=".txt")
+        os.close(handle)
+        try:
+            io_open = open(path, "w", encoding="utf-8")
+            io_open.write(chr(10).join(lines))
+            io_open.close()
+            book = PromptBook(path=path)
+            entry = book.days[1][0]
+            self.assertEqual(entry["overlay"], "",
+                             "an overlay of six words is a caption")
+            self.assertEqual(entry["title"],
+                             "A title long enough to be accepted here")
+        finally:
+            os.remove(path)
+
+    def test_the_real_book_has_no_overlays_yet(self):
+        # The default is a clean picture; overlays are added by hand.
+        from pin_agent.prompt_book import PromptBook
+        book = PromptBook()
+        with_words = [e for day in book.days.values() for e in day
+                      if e.get("overlay")]
+        self.assertEqual(with_words, [])
