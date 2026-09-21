@@ -18,6 +18,10 @@ deprecation==2.1.0
 distro==1.9.0
 fastapi==0.140.13
 frozenlist==1.8.0
+# gemini_webapi pins pydantic~=2.12.5, so pydantic and
+# pydantic_core are held one minor behind. fastapi only asks for
+# >=2.9.0, so nothing else is affected. Both have cp314 wheels,
+# which is what Render builds against.
 gemini_webapi==2.1.1
 greenlet==3.5.4
 h11==0.16.0
@@ -41,8 +45,8 @@ propcache==0.5.2
 pyaes==1.6.1
 pyasn1==0.6.4
 pycparser==3.0
-pydantic==2.13.4
-pydantic_core==2.46.4
+pydantic==2.12.5           # held back for gemini_webapi, see below
+pydantic_core==2.41.5      # the pair pydantic 2.12.5 requires
 pyee==13.0.1
 PyJWT==2.13.0
 pyparsing==3.3.2
