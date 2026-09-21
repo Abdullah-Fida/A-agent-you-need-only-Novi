@@ -398,18 +398,27 @@ class TipWriter:
         return text
 
     async def write(self, board: str,
-                    avoid: Optional[List[str]] = None) -> Optional[Dict]:
+                    avoid: Optional[List[str]] = None,
+                    avoid_subjects: Optional[List[str]] = None
+                    ) -> Optional[Dict]:
         """
         One fresh tip for this board, or None.
 
         None means nothing publishable came back. The caller falls through to
         the hand-written bank rather than publishing something weaker -- an
         advice pin's whole job is being worth saving.
+
+        `avoid_subjects` names things already covered -- a subject on
+        cooldown, another board's pin from this morning -- and is folded in
+        beside the objects read out of `avoid`. It was missing here while
+        write_for_photo took it, so the caller that passed it crashed
+        outright rather than degrading.
         """
+        taken = list(avoid_subjects or [])
         raw = await self.ai.generate(
             task="social_caption",
             system_prompt=SYSTEM,
-            user_prompt=self._user_prompt(board, avoid or []),
+            user_prompt=self._user_prompt(board, list(avoid or []) + taken),
             max_tokens=500,
             # High, deliberately. These pins run for months and the fastest
             # way to look automated is forty variations of one sentence.

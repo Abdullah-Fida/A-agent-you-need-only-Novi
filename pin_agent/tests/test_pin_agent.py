@@ -4568,3 +4568,75 @@ class TestWordsInThePictureAreRareAndDeliberate(unittest.TestCase):
         with_words = [e for day in book.days.values() for e in day
                       if e.get("overlay")]
         self.assertEqual(with_words, [])
+
+
+
+class TestEveryWriterCallSiteMatchesItsSignature(unittest.TestCase):
+    """
+    _write_with_a_made_picture called write(board, avoid=, avoid_subjects=)
+    and write() took only the first two. It crashed with a TypeError the
+    first time a live run reached that path -- which is a fallback, so it
+    sat there unnoticed until the tier above it failed.
+
+    A unit test cannot catch an argument a mock accepts. Reading the real
+    signature can.
+    """
+
+    def _accepts(self, func, names):
+        import inspect
+        params = inspect.signature(func).parameters
+        return all(n in params for n in names)
+
+    def test_write_takes_what_the_agent_passes(self):
+        from pin_agent.tip_writer import TipWriter
+        self.assertTrue(self._accepts(TipWriter.write,
+                                      ("board", "avoid", "avoid_subjects")))
+
+    def test_write_for_photo_takes_what_the_agent_passes(self):
+        from pin_agent.tip_writer import TipWriter
+        self.assertTrue(self._accepts(TipWriter.write_for_photo,
+                                      ("board", "description", "avoid",
+                                       "avoid_subjects")))
+
+    def test_describe_takes_what_the_agent_passes(self):
+        from pin_agent.tip_writer import TipWriter
+        self.assertTrue(self._accepts(TipWriter.describe,
+                                      ("title", "board", "scene")))
+
+    def test_the_maker_takes_what_the_agent_passes(self):
+        from pin_agent.gemini_images import GeminiImageMaker
+        self.assertTrue(self._accepts(GeminiImageMaker.make,
+                                      ("scene", "when")))
+        self.assertTrue(self._accepts(GeminiImageMaker.make_from,
+                                      ("prompt", "scene")))
+
+    def test_every_writer_call_in_the_agent_would_bind(self):
+        """
+        Walks the agent's source for writer calls and checks each keyword
+        against the real signature, so a new call site cannot reintroduce
+        this without the suite going red.
+        """
+        import ast
+        import inspect
+        from pin_agent import pin_bot
+        from pin_agent.tip_writer import TipWriter
+
+        tree = ast.parse(inspect.getsource(pin_bot))
+        problems = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not (isinstance(func, ast.Attribute)
+                    and isinstance(func.value, ast.Attribute)
+                    and func.value.attr == "writer"):
+                continue
+            target = getattr(TipWriter, func.attr, None)
+            if target is None:
+                problems.append(f"writer has no {func.attr}()")
+                continue
+            allowed = set(inspect.signature(target).parameters)
+            for kw in node.keywords:
+                if kw.arg and kw.arg not in allowed:
+                    problems.append(f"{func.attr}() got {kw.arg}")
+        self.assertEqual(problems, [])
