@@ -32,6 +32,22 @@ from pin_agent.store import PinStore
 logger = logging.getLogger("PinAgent")
 
 
+# Words that place a photograph without saying what is IN it. Two texts
+# sharing only these have not agreed on anything: a front door satisfies
+# every tip that mentions a door, which is how "Keep only this week's shoes
+# by the front door" published over a door with no shoes.
+#
+# Deliberately short. Anything that could BE the subject of a tip -- shelf,
+# rack, basket, jar, hook -- is not in here.
+VAGUE = {
+    "door", "wall", "floor", "ceiling", "window", "corner", "space",
+    "room", "kitchen", "bathroom", "bedroom", "hallway", "closet",
+    "pantry", "cabinet", "cupboard", "drawer", "counter", "countertop",
+    "worktop", "surface", "home", "house", "flat", "apartment", "studio",
+    "interior", "indoors", "area", "place", "spot", "side", "thing",
+    "things", "item", "items", "stuff",
+}
+
 class PinAgent:
     """AliExpress to Pinterest, end to end."""
 
@@ -1091,10 +1107,45 @@ class PinAgent:
         # "cabinet", "kitchen" -- that anchored every one of the three
         # known-bad pictures and let them straight through. What a viewer
         # compares against the photograph is the sentence across it.
-        if tip_writer.anchored(tip["title"], note):
+        if not tip_writer.anchored(tip["title"], note):
+            logger.info(f"'{tip['title'][:40]}' does not match its picture "
+                        f"({note[:52]}).")
+            return False
+
+        # AND THE SUBJECT ITSELF HAS TO BE IN THERE. One word in common is
+        # the right rule for a freshly written tip -- it was written to suit
+        # the photograph and should say more than it does. It is too loose
+        # here, where the pair was made by a search term long ago: "Keep
+        # only this week's shoes by the front door" published over a front
+        # door with no shoes, anchored on the word "door".
+        #
+        # The classifier already names the subject, and describe() turns it
+        # into words to look for. The catch-all is exempt, because "general
+        # organizer" names nothing a photograph could show and refusing on
+        # it would be punishing a classifier shrug.
+        # ANYTHING SPECIFIC IN COMMON IS ENOUGH. Demanding the classifier's
+        # own word for the subject was too strict: it refused a photograph
+        # described as "Stacked pans and lids in a cabinet" under "Stack
+        # pans with the lids stored separately", because the classifier
+        # calls that "pot rack" and the model said "pans". Two right
+        # answers that failed to meet.
+        shared = tip_writer.shared_things(tip["title"], note)
+        if shared - VAGUE:
             return True
-        logger.info(f"'{tip['title'][:40]}' does not match its picture "
-                    f"({note[:52]}).")
+
+        # All they share is rooms and furniture, which agrees on nothing --
+        # a front door satisfies any tip that mentions a door. So the
+        # subject itself has to be in the picture.
+        subject = product_types.classify(tip["title"])
+        if subject == product_types.FALLBACK:
+            # The catch-all names nothing a photograph could show; refusing
+            # on it would punish a classifier shrug rather than a picture.
+            return True
+        if tip_writer.anchored(product_types.describe(subject), note):
+            return True
+        logger.info(f"'{tip['title'][:40]}' is about "
+                    f"{product_types.describe(subject)}, and the picture "
+                    f"only shares {sorted(shared)} with it: {note[:40]}.")
         return False
 
     async def build_value_pin(self) -> Optional[Dict]:

@@ -4046,3 +4046,137 @@ class TestAFixedTipsPictureMustSuitItsTitle(unittest.TestCase):
         agent.TIPS = self.TIPS
         pin = asyncio.run(agent.build_value_pin())
         self.assertIsNotNone(pin, "publishing nothing is the worse failure")
+
+
+
+class TestTheSubjectItselfHasToBeInThePicture(unittest.TestCase):
+    """
+    "Keep only this week's shoes by the front door" published over a
+    photograph of a front door with no shoes in it. The earlier gate allowed
+    it, because one word in common is the rule and the word it matched was
+    "door" -- the generic half of the sentence.
+
+    One word in common is right for a FRESHLY WRITTEN tip: that tip was
+    written to suit the photograph and should say more than it does. It is
+    too loose for the fixed set, where the pair was made by a search term
+    long ago. So the subject the classifier names has to be in there too.
+    """
+
+    def _agent(self, description):
+        from unittest.mock import MagicMock
+        from pin_agent.pin_bot import PinAgent
+        a = PinAgent.__new__(PinAgent)
+
+        class Verifier:
+            is_ready = True
+            last_description = description
+
+            async def verify_url(self, url, subject, caption=""):
+                return True
+
+        a.verifier = Verifier()
+        return a
+
+    def _suits(self, title, description):
+        agent = self._agent(description)
+        tip = {"title": title, "body": "", "photo": ""}
+        return asyncio.run(agent._picture_suits(tip, "https://a/p.jpg"))
+
+    def test_the_pin_that_was_still_wrong(self):
+        self.assertFalse(self._suits(
+            "Keep only this week's shoes by the front door",
+            "A wooden door and shelving unit in a modern home interior."),
+            "the subject is shoes, and there are none in the picture")
+
+    def test_a_generic_word_is_no_longer_enough(self):
+        # "door" is in both, and that used to be the whole test.
+        self.assertFalse(self._suits(
+            "One hook per person beats one rail for everyone",
+            "A mother dries her young son with a towel in a bathroom."))
+
+    def test_the_ones_that_were_right_still_pass(self):
+        for title, note in (
+                ("A sharp kitchen knife is safer than a blunt one",
+                 "A kitchen knife on a white background."),
+                ("Store spices away from the cooker, not above it",
+                 "Magnetic spice jars attached to a refrigerator."),
+                ("Keep a bucket you can carry, not one you fill",
+                 "Cleaning supplies in a bucket against a white wall."),
+                ("Give your toothbrush somewhere with air to dry",
+                 "A toothbrush with blue toothpaste on a white background."),
+                ("Keep eggs in their carton, pointed end down",
+                 "Brown eggs in a green cardboard carton.")):
+            self.assertTrue(self._suits(title, note), title)
+
+    def test_a_classifier_shrug_is_not_a_refusal(self):
+        """
+        The catch-all names nothing a photograph could show, so refusing on
+        it would punish the classifier rather than the picture. Those fall
+        back to the looser rule.
+        """
+        from pin_agent import product_types
+        title = "In a small flat, storage goes up the wall"
+        self.assertEqual(product_types.classify(title), product_types.FALLBACK)
+        # "storage" and "wall" are both in the picture, so the title rule is
+        # satisfied. There is no subject to demand beyond that.
+        self.assertTrue(self._suits(
+            title, "Wall storage shelves in a small studio flat. BRIGHT."))
+
+    def test_the_title_rule_still_applies_to_a_shrug(self):
+        # The catch-all is exempt from the SUBJECT rule, not from matching
+        # the picture at all.
+        self.assertFalse(self._suits(
+            "Put things away where you first use them",
+            "A mother dries her young son with a towel. BRIGHT."))
+
+    def test_a_shared_room_is_not_a_shared_subject(self):
+        """
+        Demanding the classifier's own word was too strict: it refused a
+        photograph described as "Stacked pans and lids in a cabinet" under
+        "Stack pans with the lids stored separately", because the
+        classifier calls that "pot rack" and the model said "pans". Two
+        right answers that failed to meet.
+
+        So anything SPECIFIC in common is enough, and the subject is only
+        demanded when all they share is rooms and fixtures.
+        """
+        self.assertTrue(self._suits(
+            "Stack pans with the lids stored separately",
+            "Stacked pans and lids in a cabinet. BRIGHT."))
+        self.assertFalse(self._suits(
+            "Stack pans with the lids stored separately",
+            "Cutlery in a wooden drawer organizer in a kitchen. BRIGHT."))
+
+    def test_hanging_meets_hang(self):
+        # A photograph of clothes hanging in a closet illustrates a tip
+        # about hanging them; the stemmer has to let the two meet.
+        self.assertTrue(self._suits(
+            "Hang what creases and fold the rest to save space",
+            "Clothes are organized on shelves and hanging in a closet."))
+
+    def test_the_vague_list_holds_no_subjects(self):
+        # A shelf, a rack, a basket or a jar can BE the subject of a tip, so
+        # none of them may be treated as scene-setting.
+        from pin_agent.pin_bot import VAGUE
+        for word in ("shelf", "rack", "basket", "jar", "hook", "bin",
+                     "tray", "bottle", "towel", "knife", "shoe"):
+            self.assertNotIn(word, VAGUE)
+
+    def test_no_description_means_yes(self):
+        # A vision check that cannot answer must not silence the slot.
+        agent = self._agent("")
+        tip = {"title": "Keep eggs in their carton", "body": "", "photo": ""}
+        self.assertTrue(asyncio.run(
+            agent._picture_suits(tip, "https://a/p.jpg")))
+
+    def test_a_written_tip_is_not_held_to_this(self):
+        """
+        The written path pairs the two the other way round -- the tip is
+        written FOR the photograph -- so it keeps the looser rule, which is
+        measured at refusing nothing.
+        """
+        import inspect
+        from pin_agent.tip_writer import TipWriter
+        src = inspect.getsource(TipWriter.write_for_photo)
+        self.assertIn("anchored(", src)
+        self.assertNotIn("product_types", src)

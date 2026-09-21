@@ -144,7 +144,20 @@ def _things(text: str) -> set:
             out.add(w[:-1])
         elif w.endswith("s") and len(w) > 3:
             out.add(w[:-1])
+        elif w.endswith("ing") and len(w) > 5:
+            # "hanging" has to meet "hang", or a photograph of clothes
+            # hanging in a closet fails to match a tip about hanging them.
+            # Both forms, because "storing" wants "store" and "hanging"
+            # wants "hang"; the length guard keeps "ring" out of it.
+            out.add(w[:-3])
+            out.add(w[:-3] + "e")
     return out
+
+
+
+def shared_things(a: str, b: str) -> set:
+    """The naming words two pieces of text have in common."""
+    return _things(a) & _things(b)
 
 
 def anchored(tip_text: str, description: str) -> bool:
