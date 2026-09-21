@@ -322,6 +322,81 @@ class TipWriter:
 
     # ── writing ──────────────────────────────────────────────────
 
+    # A description is two or three sentences. Pinterest shows the first
+    # ~50 characters under the pin and the rest on the pin page, so it has
+    # to say something in the opening line and still be worth opening.
+    BODY_FOR_TITLE_MIN = 110
+    BODY_FOR_TITLE_MAX = 320
+
+    async def describe(self, title: str, board: str,
+                       scene: str = "") -> Optional[str]:
+        """
+        The description for a pin whose TITLE is already decided.
+
+        The schedule fixes the title and the picture; only this is written.
+        That is the right split -- a model is good at explaining a specific
+        instruction and bad at not repeating itself across a fortnight, and
+        the schedule takes the second problem away from it entirely.
+
+        Told what the picture shows as well as what the title says, so the
+        description cannot describe something that is not there.
+
+        Returns None if nothing usable came back. The caller falls back to
+        a plain description built from the title, because a pin with a dull
+        description still publishes and a missing one does not.
+        """
+        # Two engines land here: the standalone's AIClient has is_ready, the
+        # shared AIEngine does not. Absent means present, the way every
+        # other method in this class treats it.
+        if not (self.ai and title.strip()
+                and getattr(self.ai, "is_ready", True)):
+            return None
+
+        rules = (
+            f"A Pinterest pin on the board \"{board}\" carries this exact "
+            f"title:\n\n    {title}\n\n"
+            + (f"The photograph on it shows: {scene}\n\n" if scene else "")
+            + f"Write the DESCRIPTION that sits under it. Explain why the "
+              f"tip works and how to do it, in {self.BODY_FOR_TITLE_MIN}-"
+              f"{self.BODY_FOR_TITLE_MAX} characters.\n\n"
+              f"Rules:\n"
+              f"- Do NOT repeat the title back. It is already on the image.\n"
+              f"- Two or three plain sentences. No list, no bullet points.\n"
+              f"- Say something the title does not: the reason, or the "
+              f"practical detail that makes it work.\n"
+              f"- No hashtags, no emoji, no exclamation marks, no prices, "
+              f"no brand names, no dates.\n"
+              f"- British English. Write to one person, as advice.\n\n"
+              f"Reply with the description only, no preamble, no quotes."
+        )
+
+        def usable(text: str) -> bool:
+            text = (text or "").strip().strip('"')
+            if not (self.BODY_FOR_TITLE_MIN <= len(text)
+                    <= self.BODY_FOR_TITLE_MAX):
+                return False
+            if "#" in text or "!" in text:
+                return False
+            # A description that opens by restating the title wastes the
+            # only line Pinterest shows under the pin.
+            return not text.lower().startswith(title.lower()[:24])
+
+        raw = await self.ai.generate(
+            task="social_caption", system_prompt=SYSTEM, user_prompt=rules,
+            max_tokens=400, temperature=0.7, validator=usable,
+            min_attempts=3)
+        if not raw:
+            self.last_error = "no description came back"
+            logger.info(f"No description written for '{title[:44]}'.")
+            return None
+
+        text = fold_typographic(raw.strip().strip('"')).strip()
+        if not usable(text):
+            self.last_error = "the description failed its own check"
+            return None
+        logger.info(f"Description written for '{title[:40]}'.")
+        return text
+
     async def write(self, board: str,
                     avoid: Optional[List[str]] = None) -> Optional[Dict]:
         """

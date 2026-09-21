@@ -17,6 +17,7 @@ from typing import Dict, List, Optional
 
 from pin_agent import boards as board_routing
 from pin_agent import product_types
+from pin_agent import prompt_book
 from pin_agent import tips as tip_bank
 from pin_agent import tip_writer
 from pin_agent.tip_writer import TipWriter
@@ -111,6 +112,9 @@ class PinAgent:
         # pipeline depends on it: every path it feeds has the photograph
         # search behind it, which is what ran before.
         self.image_maker = image_maker
+        # The 28-day schedule. Loaded from the text file beside the project
+        # so the file is the schedule rather than a document about it.
+        self.book = prompt_book.PromptBook()
         self.recent_subjects: List[str] = []
         self.recent_photos: List[str] = []
         # Photographs the vision check approved on earlier runs, with the
@@ -145,6 +149,7 @@ class PinAgent:
             "photo_checks": self.verifier.status,
             "made_pictures": (self.image_maker.status
                               if self.image_maker else {"ready": False}),
+            "schedule": self.book.status if self.book else {"ready": False},
             "verified_photos_cached": len(self.photo_pool),
             "tips_in_bank": len(tip_bank.TIP_BANK),
             "subject_cooldown_days": product_types.COOLDOWN_DAYS,
@@ -257,8 +262,18 @@ class PinAgent:
     #
     # Five also divides cleanly into the affiliate ratio: one pin that sells,
     # four that do not.
-    RAMP = ((10, 4), (20, 5), (30, 5), (45, 6))
-    RAMP_CEILING = 8
+    # SEVEN A DAY: one pin per board, plus the one that earns.
+    #
+    # The ramp still protects a young account -- it climbs rather than
+    # starting at seven -- but the ceiling is now the number the schedule
+    # is built for. Six advice pins fill the six boards exactly once each,
+    # which is why the board count and the daily volume are the same
+    # number and why neither should be changed alone.
+    #
+    # Seven is inside Pinterest's own guidance and well under the fifteen
+    # the config refuses to exceed.
+    RAMP = ((10, 4), (20, 5), (30, 6), (45, 7))
+    RAMP_CEILING = 7
 
     def daily_cap(self) -> int:
         """
@@ -682,7 +697,9 @@ class PinAgent:
     # than by a random draw, because a draw can hand you five affiliate pins
     # in a row and the account only gets one first impression.
 
-    # One in five carries a link.
+    # One pin a day carries a link. At a cap of seven this divides to one,
+    # which is 14% -- comfortably inside the 20% the research warns not to
+    # exceed, and the six advice pins fill the six boards exactly once.
     PRODUCT_SHARE = 5
 
     # HOW MUCH PRODUCT SUPPLY EACH SLOT SEES.
@@ -816,9 +833,17 @@ class PinAgent:
         seen = self.recent_tips + tried
         blocked = self.subject_window(include_advice=True)
 
-        # MADE FIRST, when one is configured. A picture drawn for the tip
-        # cannot disagree with it, which is the fault every mismatch on
-        # this board has had. Everything below is its safety net.
+        # THE SCHEDULE FIRST. Title, board and scene were all decided
+        # weeks ago, so nothing here can choose the same subject twice --
+        # which is where every repeat on this board came from. Everything
+        # below it is a fallback for the day the schedule cannot run.
+        if not prefer_bank:
+            tip = await self._from_the_schedule(seen)
+            if tip:
+                return tip
+
+        # Made, but composed here rather than scheduled. Reached when the
+        # book is missing or its six are used up.
         if self.image_maker and not prefer_bank:
             tip = await self._write_with_a_made_picture(seen, blocked)
             if tip and not self._tip_already_used(tip["title"], seen):
@@ -948,6 +973,69 @@ class PinAgent:
 
         logger.info(f"No usable photograph for '{subject}'.")
         return await self._write_from_a_cached_photograph(seen, blocked)
+
+    async def _from_the_schedule(self, seen: List[str]) -> Optional[Dict]:
+        """
+        Today's next scheduled pin: a fixed title, a made picture, a written
+        description.
+
+        THE WHOLE PIPELINE IN ONE PLACE, and the order matters.
+
+            the book says what          -> title, board, scene, all fixed
+            the picture is made for it  -> so the two cannot disagree
+            the description is written  -> from the title and the scene
+
+        Only two things are left to a model, and neither can repeat itself:
+        the picture, which is drawn to order, and the description, which is
+        written against a title that was decided four weeks ago.
+
+        That is the opposite of how this started. Choosing the subject was
+        the model's job, and a model with no memory chose the same subject
+        on Tuesday that it chose on Sunday -- which is where every repeat on
+        this board came from. A schedule cannot do that.
+
+        Returns None if the day's six are all used or anything fails, and
+        the caller falls through to the paths that were here before.
+        """
+        if not (self.book and self.book.is_ready and self.image_maker
+                and self.image_maker.is_ready and self.image_maker.awake):
+            return None
+
+        used = {t.strip().lower() for t in (self.recent_tips + seen) if t}
+        entry = next((e for e in self.book.for_day()
+                      if e["title"].strip().lower() not in used), None)
+        if not entry:
+            logger.info("Every scheduled pin for today has gone out.")
+            return None
+
+        made = await self.image_maker.make_from(
+            self.book.prompt_for(entry), entry["scene"])
+        if not made:
+            logger.info(f"No picture for the scheduled pin "
+                        f"'{entry['title'][:40]}'; falling back.")
+            return None
+        path, _ = made
+
+        body = ""
+        if self.writer:
+            body = await self.writer.describe(
+                entry["title"], entry["board"], entry["scene"]) or ""
+        if not body:
+            # A dull description still publishes; a missing one does not.
+            body = entry["scene"].rstrip(".") + "."
+            logger.info("Using the scene as the description.")
+
+        return {
+            "title": entry["title"],
+            "board": entry["board"],
+            "body": body,
+            "photo": entry["scene"],
+            "image": path,
+            "credit": "",
+            "photo_note": f"A made picture of {entry['scene']}",
+            "generated": True,
+            "scheduled": True,
+        }
 
     async def _write_with_a_made_picture(
             self, seen: List[str],

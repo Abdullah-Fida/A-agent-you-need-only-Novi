@@ -718,14 +718,25 @@ class TestVolumeRamp(unittest.TestCase):
     def test_the_ramp_climbs_on_schedule(self):
         # Lowered from 4/6/8/11/15 after reading what Pinterest rewards: the
         # safe range for a young account is 1-5 fresh pins a day, and pace
-        # beats volume.
-        for day, expected in ((10, 4), (11, 5), (20, 5), (21, 5),
-                              (30, 5), (31, 6), (45, 6), (46, 8)):
+        # beats volume. It now tops out at SEVEN, which is one pin per board
+        # plus the one that earns.
+        for day, expected in ((10, 4), (11, 5), (20, 5), (21, 6),
+                              (30, 6), (31, 7), (45, 7), (46, 7)):
             self.assertEqual(self._cap_on_day(day), expected, f"day {day}")
 
     def test_it_never_climbs_past_the_ceiling(self):
         for day in (60, 120, 400):
-            self.assertEqual(self._cap_on_day(day), 8, f"day {day}")
+            self.assertEqual(self._cap_on_day(day), 7, f"day {day}")
+
+    def test_the_ceiling_is_one_pin_per_board_plus_the_earner(self):
+        """
+        Six boards, six advice pins, one affiliate pin. The board count and
+        the daily volume are the same number on purpose -- changing either
+        alone leaves a board without a pin or a pin without a board.
+        """
+        from pin_agent import boards
+        from pin_agent.pin_bot import PinAgent
+        self.assertEqual(PinAgent.RAMP_CEILING, len(boards.ALL_BOARDS) + 1)
 
     def test_the_configured_maximum_still_wins(self):
         # The ramp raises the floor over time; it must never post more than
@@ -1713,6 +1724,7 @@ class TestBuildingAnAdvicePin(unittest.TestCase):
         agent.photos = None
         agent.verifier = None
         agent.image_maker = None
+        agent.book = None
         test = self
 
         async def build(product, title, eyebrow="", require_photo=False):
@@ -2223,6 +2235,7 @@ class TestASlotIsNotLostToAStrictVerifier(unittest.TestCase):
         agent.recent_tips = []
         agent.recent_types = []
         agent.image_maker = None
+        agent.book = None
         agent.writer = object()          # present, so only prefer_bank skips
         called = []
 

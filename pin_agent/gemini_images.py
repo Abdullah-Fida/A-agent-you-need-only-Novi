@@ -152,6 +152,17 @@ class GeminiImageMaker:
 
     # ── making one ───────────────────────────────────────────────
 
+    async def make_from(self, prompt: str,
+                        scene: str) -> Optional[Tuple[str, str]]:
+        """
+        Make a picture from a prompt written by hand, not composed here.
+
+        The scheduled pins carry their own prompt out of the prompt book --
+        a style block, a scene and a tail that somebody wrote and read. This
+        sends exactly that, so what ships is what was reviewed.
+        """
+        return await self._make(prompt, scene, framing="scheduled")
+
     async def make(self, scene: str, when=None) -> Optional[Tuple[str, str]]:
         """
         Returns (local file path, what was asked for), or None.
@@ -159,9 +170,15 @@ class GeminiImageMaker:
         None is not an error worth stopping for: the caller falls back to a
         real photograph, which is what it did before this existed.
         """
-        if not (self.is_ready and scene.strip()):
+        if not (self.is_ready and scene.strip() and self.awake):
             return None
-        if not self.awake:
+        prompt, framing = self.prompt_for(scene, when=when)
+        return await self._make(prompt, scene, framing)
+
+    async def _make(self, prompt: str, scene: str,
+                    framing: str) -> Optional[Tuple[str, str]]:
+        """The part both paths share: ask, save, count, rest on failure."""
+        if not (self.is_ready and prompt.strip() and self.awake):
             return None
 
         # _connect swallows its own failures and answers None, but this is
@@ -178,7 +195,6 @@ class GeminiImageMaker:
             self._note_failure()
             return None
 
-        prompt, framing = self.prompt_for(scene, when=when)
         try:
             output = await asyncio.wait_for(
                 client.generate_content(prompt), timeout=TIMEOUT)
