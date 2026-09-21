@@ -23,6 +23,7 @@ from pin_agent import tip_writer
 from pin_agent.tip_writer import TipWriter
 from pin_agent.compliance import ComplianceGate
 from pin_agent.photo_check import PhotoVerifier
+from pin_agent.picture_library import PictureLibrary
 from pin_agent.content import PinCopywriter
 from pin_agent.imaging import PinImageBuilder
 from pin_agent.publisher import PinterestPublisher
@@ -115,6 +116,11 @@ class PinAgent:
         # The 28-day schedule. Loaded from the text file beside the project
         # so the file is the schedule rather than a document about it.
         self.book = prompt_book.PromptBook()
+        # The pictures for that schedule, made in advance and kept in
+        # Supabase. This is what takes the Gemini cookie off the critical
+        # path: a scheduled pin needs a URL out of this bucket, not a live
+        # session, so the cookie only has to be alive while the batch runs.
+        self.library = PictureLibrary(supabase_client)
         self.recent_subjects: List[str] = []
         self.recent_photos: List[str] = []
         # Photographs the vision check approved on earlier runs, with the
@@ -150,6 +156,11 @@ class PinAgent:
             "made_pictures": (self.image_maker.status
                               if self.image_maker else {"ready": False}),
             "schedule": self.book.status if self.book else {"ready": False},
+            # How many of the 168 are made. This is the number to watch:
+            # while it is short, scheduled pins fall back to photographs.
+            "picture_library": (self.library.status(self.book)
+                                if getattr(self, "library", None)
+                                else {"ready": False}),
             "verified_photos_cached": len(self.photo_pool),
             "tips_in_bank": len(tip_bank.TIP_BANK),
             "subject_cooldown_days": product_types.COOLDOWN_DAYS,
@@ -458,6 +469,14 @@ class PinAgent:
         memory = await self.store.photo_memory()
         self.recent_photos = list(memory["used"])
         self.photo_pool = list(memory["pool"])
+
+        # WHICH SCHEDULED PICTURES EXIST. One listing, in a thread because
+        # the storage client is synchronous, so every slot afterwards is a
+        # dictionary lookup rather than a network call.
+        library = getattr(self, "library", None)
+        if library is not None and library.is_ready:
+            await asyncio.to_thread(library.refresh)
+            logger.info("Picture library: %s" % library.status(self.book))
 
         # The database columns say the same thing, and are authoritative
         # once the migration has been run. Merged rather than replaced, so
@@ -997,8 +1016,7 @@ class PinAgent:
         Returns None if the day's six are all used or anything fails, and
         the caller falls through to the paths that were here before.
         """
-        if not (self.book and self.book.is_ready and self.image_maker
-                and self.image_maker.is_ready and self.image_maker.awake):
+        if not (self.book and self.book.is_ready):
             return None
 
         used = {t.strip().lower() for t in (self.recent_tips + seen) if t}
@@ -1008,13 +1026,38 @@ class PinAgent:
             logger.info("Every scheduled pin for today has gone out.")
             return None
 
-        made = await self.image_maker.make_from(
-            self.book.prompt_for(entry), entry["scene"])
-        if not made:
-            logger.info(f"No picture for the scheduled pin "
-                        f"'{entry['title'][:40]}'; falling back.")
-            return None
-        path, _ = made
+        # THE LIBRARY FIRST, and on a good day that is the whole story.
+        # The picture was made for this exact scene weeks ago and has been
+        # sitting in Supabase since, so publishing it needs no cookie, no
+        # model and no waiting -- which is the entire point of making them
+        # in a batch. A pin that reaches this line has already stopped
+        # depending on the least reliable thing in the system.
+        library = getattr(self, "library", None)
+        path = library.url_for(entry["day"], entry["slot"]) if library else ""
+        if not path and library is not None and library.is_ready:
+            # Possibly asking a minute before the batch got here. Re-list
+            # once -- rate-limited inside -- rather than making somebody
+            # restart the bot to pick up pictures made while it ran.
+            await asyncio.to_thread(library.refresh_if_stale)
+            path = library.url_for(entry["day"], entry["slot"])
+
+        if not path:
+            # Nothing stored for this slot, so fall back to making it here.
+            # Same prompt, same scene; it just costs a live session and can
+            # fail, which is why the batch exists.
+            if not (self.image_maker and self.image_maker.is_ready
+                    and self.image_maker.awake):
+                logger.info(f"No stored picture for the scheduled pin "
+                            f"'{entry['title'][:40]}' and no session to "
+                            f"make one; falling back.")
+                return None
+            made = await self.image_maker.make_from(
+                self.book.prompt_for(entry), entry["scene"])
+            if not made:
+                logger.info(f"No picture for the scheduled pin "
+                            f"'{entry['title'][:40]}'; falling back.")
+                return None
+            path, _ = made
 
         body = ""
         if self.writer:
